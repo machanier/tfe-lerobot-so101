@@ -1,0 +1,14 @@
+# ==============================================================
+# Dépendances principales pour le projet TFE LeRobot SO-101
+# ==============================================================
+# Installer avec : pip install -r requirements.txt
+# Puis installer LeRobot séparément (voir setup_env.sh)
+# ==============================================================
+
+# LeRobot est installé via pip install -e ".[feetech]"
+# depuis le clone du repo (voir setup_env.sh)
+
+# --- Outils supplémentaires ---
+wandb                   # Suivi d'expériences
+rerun-sdk               # Visualisation 3D
+imageio[ffmpeg]         # Lecture/écriture vidéo

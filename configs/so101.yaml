@@ -1,0 +1,26 @@
+# Configuration du robot SO-101
+# ================================
+# Ces valeurs sont à adapter à ton setup.
+# Utilise `lerobot-find-port` pour trouver les ports USB.
+
+robot:
+  type: so101
+  
+  leader:
+    port: "/dev/tty.usbmodem575E0031751"    # ← à adapter
+    id: "mon_leader"
+    calibration: "configs/calibration_leader.json"
+    
+  follower:
+    port: "/dev/tty.usbmodem575E0032081"    # ← à adapter  
+    id: "mon_follower"
+    calibration: "configs/calibration_follower.json"
+
+# Caméras (à configurer quand tu en ajouteras une)
+# cameras:
+#   webcam:
+#     type: opencv
+#     index: 0
+#     width: 640
+#     height: 480
+#     fps: 30
