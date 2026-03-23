@@ -3,11 +3,6 @@
 # ============================================
 venv/
 .venv/
-
-# ============================================
-# LeRobot (clone local, installé en editable)
-# ============================================
-lerobot/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -16,7 +11,12 @@ build/
 *.egg
 
 # ============================================
-# Données lourdes (datasets, modèles)
+# LeRobot (clone local, installe en editable)
+# ============================================
+lerobot/
+
+# ============================================
+# Donnees lourdes (datasets, modeles)
 # ============================================
 data/
 outputs/
@@ -32,7 +32,7 @@ outputs/
 # IDE / OS
 # ============================================
 .DS_Store
-.vscode/settings.json
+.vscode/
 .idea/
 *.swp
 *.swo
@@ -57,6 +57,12 @@ logs/
 *.key
 
 # ============================================
-# Snapshot des dépendances (juste pour ref)
+# Claude Code (dossier interne + worktrees)
+# ============================================
+.claude/
+tfe-lerobot-so101/
+
+# ============================================
+# Snapshots dependances
 # ============================================
 requirements.freeze.txt
