@@ -95,6 +95,11 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
 
+    # Dossier pour sauvegarder les images
+    images_dir = f"outputs/calibration_images/extrinsic_cam_{args.camera_index}"
+    os.makedirs(images_dir, exist_ok=True)
+    print(f"Images sauvegardees dans: {images_dir}/")
+
     print("Place le damier dans l'espace de travail du robot.")
     print("Deplace-le a differentes positions pour capturer plusieurs poses.")
     print()
@@ -145,7 +150,12 @@ def main():
             camera_tvecs.append(tvec)
             captures += 1
             dist_mm = np.linalg.norm(tvec)
-            print(f"  Capture {captures}: distance={dist_mm:.0f}mm")
+            # Sauvegarder les images
+            raw_path = os.path.join(images_dir, f"capture_{captures:02d}_raw.png")
+            annotated_path = os.path.join(images_dir, f"capture_{captures:02d}_axes.png")
+            cv2.imwrite(raw_path, frame)
+            cv2.imwrite(annotated_path, display)
+            print(f"  Capture {captures}: distance={dist_mm:.0f}mm -> {raw_path}")
 
         elif key == ord("q"):
             break
