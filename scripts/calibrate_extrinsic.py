@@ -68,10 +68,10 @@ def main():
         default=None,
         help="Fichier de calibration intrinseque (defaut: configs/calibration_cam_<index>.json)",
     )
-    parser.add_argument("--rows", type=int, default=6, help="Coins internes du damier (lignes)")
-    parser.add_argument("--cols", type=int, default=9, help="Coins internes du damier (colonnes)")
+    parser.add_argument("--rows", type=int, default=7, help="Coins internes du damier (lignes)")
+    parser.add_argument("--cols", type=int, default=7, help="Coins internes du damier (colonnes)")
     parser.add_argument(
-        "--square-size", type=float, default=25.0, help="Taille des carres du damier en mm"
+        "--square-size", type=float, default=22.19, help="Taille des carres du damier en mm"
     )
     parser.add_argument("--output", type=str, default=None, help="Fichier de sortie")
     args = parser.parse_args()

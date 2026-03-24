@@ -193,10 +193,10 @@ def calibrate(camera_index, rows, cols, square_size_mm, width, height, save_imag
 def main():
     parser = argparse.ArgumentParser(description="Calibration intrinseque de camera")
     parser.add_argument("--index", type=int, default=CAMERA_INDEX, help="Index de la camera")
-    parser.add_argument("--rows", type=int, default=6, help="Nombre de coins internes (lignes)")
-    parser.add_argument("--cols", type=int, default=9, help="Nombre de coins internes (colonnes)")
+    parser.add_argument("--rows", type=int, default=7, help="Nombre de coins internes (lignes)")
+    parser.add_argument("--cols", type=int, default=7, help="Nombre de coins internes (colonnes)")
     parser.add_argument(
-        "--square-size", type=float, default=25.0, help="Taille d'un carre du damier en mm"
+        "--square-size", type=float, default=22.19, help="Taille d'un carre du damier en mm"
     )
     parser.add_argument("--width", type=int, default=CAMERA_WIDTH, help="Largeur de l'image")
     parser.add_argument("--height", type=int, default=CAMERA_HEIGHT, help="Hauteur de l'image")
