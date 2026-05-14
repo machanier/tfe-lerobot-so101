@@ -1,0 +1,903 @@
+{
+  "camera_index": 1,
+  "camera_key": "cam_1",
+  "intrinsic_file": "configs/calibration_cam_1.json",
+  "motor_calibration_file": "configs/calibration_follower.json",
+  "checkerboard": {
+    "rows": 7,
+    "cols": 7,
+    "square_size_mm": 22.1875
+  },
+  "motor_names": [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+    "gripper"
+  ],
+  "motor_position_units": "raw_encoder_counts",
+  "num_captures": 40,
+  "captures": [
+    {
+      "id": 1,
+      "rvec_target_cam": [
+        1.5607716499106263,
+        0.06778568031013871,
+        0.09139969641981945
+      ],
+      "tvec_target_cam": [
+        -39.469513053691465,
+        -160.56418582757834,
+        362.1026422380581
+      ],
+      "distance_mm": 398.0666071739147,
+      "motor_positions_raw": {
+        "shoulder_pan": 2022.0,
+        "shoulder_lift": 1905.0,
+        "elbow_flex": 2801.0,
+        "wrist_flex": 2507.0,
+        "wrist_roll": 4030.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 2,
+      "rvec_target_cam": [
+        1.0720528835222196,
+        0.05235721776397445,
+        0.04580425997001128
+      ],
+      "tvec_target_cam": [
+        -34.67564981197142,
+        -136.88232372247793,
+        324.7665435230581
+      ],
+      "distance_mm": 354.1362435976613,
+      "motor_positions_raw": {
+        "shoulder_pan": 2014.0,
+        "shoulder_lift": 2096.0,
+        "elbow_flex": 3075.0,
+        "wrist_flex": 1730.0,
+        "wrist_roll": 4020.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 3,
+      "rvec_target_cam": [
+        0.924721685990919,
+        0.011923827077110767,
+        0.02686473401426697
+      ],
+      "tvec_target_cam": [
+        -19.108980881683273,
+        -58.39298535224024,
+        235.58413456501083
+      ],
+      "distance_mm": 243.46412127339957,
+      "motor_positions_raw": {
+        "shoulder_pan": 1996.0,
+        "shoulder_lift": 2863.0,
+        "elbow_flex": 2394.0,
+        "wrist_flex": 1549.0,
+        "wrist_roll": 4021.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 4,
+      "rvec_target_cam": [
+        0.738932470940416,
+        0.014349040188753952,
+        0.02691339301803874
+      ],
+      "tvec_target_cam": [
+        -18.03301856509151,
+        -25.637371909459308,
+        196.58896997859176
+      ],
+      "distance_mm": 199.07206663476552,
+      "motor_positions_raw": {
+        "shoulder_pan": 1994.0,
+        "shoulder_lift": 3404.0,
+        "elbow_flex": 1588.0,
+        "wrist_flex": 1707.0,
+        "wrist_roll": 4024.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 5,
+      "rvec_target_cam": [
+        0.7038533279310945,
+        0.03837400348105916,
+        0.02840436452573374
+      ],
+      "tvec_target_cam": [
+        -28.124454820425715,
+        -28.315173798673932,
+        199.0570841152875
+      ],
+      "distance_mm": 203.01836557975713,
+      "motor_positions_raw": {
+        "shoulder_pan": 2007.0,
+        "shoulder_lift": 3539.0,
+        "elbow_flex": 1366.0,
+        "wrist_flex": 1760.0,
+        "wrist_roll": 4021.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 6,
+      "rvec_target_cam": [
+        1.0745112895156128,
+        0.04095288622582944,
+        0.03653879354420796
+      ],
+      "tvec_target_cam": [
+        -26.45057493200008,
+        -14.876947216111239,
+        198.17900491461114
+      ],
+      "distance_mm": 200.48908813611223,
+      "motor_positions_raw": {
+        "shoulder_pan": 2006.0,
+        "shoulder_lift": 3401.0,
+        "elbow_flex": 1365.0,
+        "wrist_flex": 2134.0,
+        "wrist_roll": 4022.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 7,
+      "rvec_target_cam": [
+        0.7256303332708751,
+        -0.3589500338293272,
+        1.0873128600068485
+      ],
+      "tvec_target_cam": [
+        51.11389901498128,
+        -70.07732997809467,
+        154.84580024971584
+      ],
+      "distance_mm": 177.48432241848116,
+      "motor_positions_raw": {
+        "shoulder_pan": 2033.0,
+        "shoulder_lift": 3421.0,
+        "elbow_flex": 1365.0,
+        "wrist_flex": 1905.0,
+        "wrist_roll": 3715.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 8,
+      "rvec_target_cam": [
+        0.9735449892926112,
+        -0.16206708109181206,
+        0.4486897305146883
+      ],
+      "tvec_target_cam": [
+        4.567494194358152,
+        -69.90695298126313,
+        155.60377526253794
+      ],
+      "distance_mm": 170.6469424112089,
+      "motor_positions_raw": {
+        "shoulder_pan": 2014.0,
+        "shoulder_lift": 3315.0,
+        "elbow_flex": 1366.0,
+        "wrist_flex": 2171.0,
+        "wrist_roll": 216.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 9,
+      "rvec_target_cam": [
+        1.0383797452530965,
+        0.19910503694150986,
+        0.5425203287273922
+      ],
+      "tvec_target_cam": [
+        -154.74761831285747,
+        -101.85024500934591,
+        182.9632740744455
+      ],
+      "distance_mm": 260.37637650525494,
+      "motor_positions_raw": {
+        "shoulder_pan": 2249.0,
+        "shoulder_lift": 3320.0,
+        "elbow_flex": 1365.0,
+        "wrist_flex": 2166.0,
+        "wrist_roll": 216.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 10,
+      "rvec_target_cam": [
+        0.9182620974069692,
+        -0.35905801900758716,
+        0.3889644533787936
+      ],
+      "tvec_target_cam": [
+        95.73812011142522,
+        -71.03295810619224,
+        156.30974980908348
+      ],
+      "distance_mm": 196.58129785196763,
+      "motor_positions_raw": {
+        "shoulder_pan": 1878.0,
+        "shoulder_lift": 3315.0,
+        "elbow_flex": 1365.0,
+        "wrist_flex": 2164.0,
+        "wrist_roll": 216.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 11,
+      "rvec_target_cam": [
+        0.8015136933525849,
+        -0.5695842294133798,
+        0.6717460713228459
+      ],
+      "tvec_target_cam": [
+        146.77872478429364,
+        -77.62690326349542,
+        158.67695461494736
+      ],
+      "distance_mm": 229.66999387263797,
+      "motor_positions_raw": {
+        "shoulder_pan": 1857.0,
+        "shoulder_lift": 3333.0,
+        "elbow_flex": 1366.0,
+        "wrist_flex": 2092.0,
+        "wrist_roll": 3511.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 12,
+      "rvec_target_cam": [
+        1.1656887978904757,
+        0.03091679264308037,
+        0.8357903001029161
+      ],
+      "tvec_target_cam": [
+        -152.1841924218913,
+        -96.93217008338024,
+        180.90408604312148
+      ],
+      "distance_mm": 255.50374237430202,
+      "motor_positions_raw": {
+        "shoulder_pan": 2298.0,
+        "shoulder_lift": 3297.0,
+        "elbow_flex": 1368.0,
+        "wrist_flex": 2198.0,
+        "wrist_roll": 3513.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 13,
+      "rvec_target_cam": [
+        0.9236834451328589,
+        -1.203934070840659,
+        1.3858266914966966
+      ],
+      "tvec_target_cam": [
+        178.62361621370977,
+        -73.86251475862817,
+        223.17172521442288
+      ],
+      "distance_mm": 295.2417421214573,
+      "motor_positions_raw": {
+        "shoulder_pan": 1901.0,
+        "shoulder_lift": 2998.0,
+        "elbow_flex": 1643.0,
+        "wrist_flex": 2445.0,
+        "wrist_roll": 4063.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 14,
+      "rvec_target_cam": [
+        1.3529022705127138,
+        0.013271895075355528,
+        0.10590767208288766
+      ],
+      "tvec_target_cam": [
+        -26.057111553357654,
+        -78.25345312991763,
+        199.7256736775331
+      ],
+      "distance_mm": 216.08544771734347,
+      "motor_positions_raw": {
+        "shoulder_pan": 2008.0,
+        "shoulder_lift": 2988.0,
+        "elbow_flex": 1643.0,
+        "wrist_flex": 2445.0,
+        "wrist_roll": 4063.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 15,
+      "rvec_target_cam": [
+        1.2995076909382495,
+        0.3560287850370929,
+        0.14584723581701542
+      ],
+      "tvec_target_cam": [
+        -154.26300950711124,
+        -104.81872720923317,
+        221.37259272836044
+      ],
+      "distance_mm": 289.464793173939,
+      "motor_positions_raw": {
+        "shoulder_pan": 2223.0,
+        "shoulder_lift": 3015.0,
+        "elbow_flex": 1643.0,
+        "wrist_flex": 2387.0,
+        "wrist_roll": 4063.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 16,
+      "rvec_target_cam": [
+        1.432793708082042,
+        -0.06783569954063132,
+        0.7059610308600704
+      ],
+      "tvec_target_cam": [
+        -133.3138910469785,
+        -96.02662228826799,
+        199.02799448060154
+      ],
+      "distance_mm": 258.081088654612,
+      "motor_positions_raw": {
+        "shoulder_pan": 2273.0,
+        "shoulder_lift": 3020.0,
+        "elbow_flex": 1644.0,
+        "wrist_flex": 2387.0,
+        "wrist_roll": 3494.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 17,
+      "rvec_target_cam": [
+        1.1143413642808502,
+        -0.6551764349437171,
+        0.6548752336552591
+      ],
+      "tvec_target_cam": [
+        127.3316718668146,
+        -72.91829796870987,
+        173.31628980474352
+      ],
+      "distance_mm": 227.0880207116473,
+      "motor_positions_raw": {
+        "shoulder_pan": 1880.0,
+        "shoulder_lift": 3050.0,
+        "elbow_flex": 1643.0,
+        "wrist_flex": 2294.0,
+        "wrist_roll": 3493.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 18,
+      "rvec_target_cam": [
+        1.3870498844821204,
+        0.11822369252780561,
+        0.05901894413325485
+      ],
+      "tvec_target_cam": [
+        -48.36083487740128,
+        -145.16436552844627,
+        340.6313547194382
+      ],
+      "distance_mm": 373.4182416370622,
+      "motor_positions_raw": {
+        "shoulder_pan": 2035.0,
+        "shoulder_lift": 2005.0,
+        "elbow_flex": 2879.0,
+        "wrist_flex": 2220.0,
+        "wrist_roll": 4017.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 19,
+      "rvec_target_cam": [
+        1.1652219465167795,
+        0.6112141687084486,
+        0.1266474836557179
+      ],
+      "tvec_target_cam": [
+        -185.13739469792722,
+        -162.5422683282451,
+        352.34257576758233
+      ],
+      "distance_mm": 429.93154642031305,
+      "motor_positions_raw": {
+        "shoulder_pan": 2365.0,
+        "shoulder_lift": 2352.0,
+        "elbow_flex": 2806.0,
+        "wrist_flex": 1824.0,
+        "wrist_roll": 4018.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 20,
+      "rvec_target_cam": [
+        1.151238883719241,
+        -0.08630298793551455,
+        0.013265768488807955
+      ],
+      "tvec_target_cam": [
+        10.49927883039963,
+        -109.70927489095779,
+        284.63916926707776
+      ],
+      "distance_mm": 305.23075948224874,
+      "motor_positions_raw": {
+        "shoulder_pan": 1929.0,
+        "shoulder_lift": 2343.0,
+        "elbow_flex": 2798.0,
+        "wrist_flex": 1815.0,
+        "wrist_roll": 4018.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 21,
+      "rvec_target_cam": [
+        0.6472018664822621,
+        -1.1234961869029598,
+        1.3427118337809743
+      ],
+      "tvec_target_cam": [
+        206.584604509897,
+        -132.4710933170854,
+        315.72122188880405
+      ],
+      "distance_mm": 399.8820817892369,
+      "motor_positions_raw": {
+        "shoulder_pan": 1790.0,
+        "shoulder_lift": 2342.0,
+        "elbow_flex": 2797.0,
+        "wrist_flex": 1815.0,
+        "wrist_roll": 4018.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 22,
+      "rvec_target_cam": [
+        0.512956690737069,
+        -1.2162188723695548,
+        1.3042747992047414
+      ],
+      "tvec_target_cam": [
+        248.8255184995301,
+        -150.78737465148762,
+        325.8601366359055
+      ],
+      "distance_mm": 436.84757027963326,
+      "motor_positions_raw": {
+        "shoulder_pan": 1684.0,
+        "shoulder_lift": 2371.0,
+        "elbow_flex": 2742.0,
+        "wrist_flex": 1822.0,
+        "wrist_roll": 4018.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 23,
+      "rvec_target_cam": [
+        0.6503564113300894,
+        -1.5380424818083462,
+        1.447737511032757
+      ],
+      "tvec_target_cam": [
+        198.8849267109205,
+        -182.97037614320948,
+        414.8162479347256
+      ],
+      "distance_mm": 495.08170251933115,
+      "motor_positions_raw": {
+        "shoulder_pan": 1718.0,
+        "shoulder_lift": 1820.0,
+        "elbow_flex": 2897.0,
+        "wrist_flex": 2429.0,
+        "wrist_roll": 57.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 24,
+      "rvec_target_cam": [
+        1.0962598409840416,
+        -1.2710544052289392,
+        1.4559537856990092
+      ],
+      "tvec_target_cam": [
+        113.7288672908843,
+        -143.36245888585833,
+        380.21808366642097
+      ],
+      "distance_mm": 421.9630801622726,
+      "motor_positions_raw": {
+        "shoulder_pan": 1992.0,
+        "shoulder_lift": 1850.0,
+        "elbow_flex": 2896.0,
+        "wrist_flex": 2429.0,
+        "wrist_roll": 57.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 25,
+      "rvec_target_cam": [
+        1.5148728773336286,
+        0.2726986884412624,
+        0.2227241750184176
+      ],
+      "tvec_target_cam": [
+        -95.30429908576131,
+        -176.39643953115956,
+        375.26556074867517
+      ],
+      "distance_mm": 425.4678065230269,
+      "motor_positions_raw": {
+        "shoulder_pan": 2216.0,
+        "shoulder_lift": 1854.0,
+        "elbow_flex": 2895.0,
+        "wrist_flex": 2429.0,
+        "wrist_roll": 57.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 26,
+      "rvec_target_cam": [
+        0.6219955660431865,
+        1.745895826050161,
+        -1.6541553582195416
+      ],
+      "tvec_target_cam": [
+        10.068993771458683,
+        -146.13244079133128,
+        526.1365842148783
+      ],
+      "distance_mm": 546.1462992060839,
+      "motor_positions_raw": {
+        "shoulder_pan": 2082.0,
+        "shoulder_lift": 1916.0,
+        "elbow_flex": 2839.0,
+        "wrist_flex": 2442.0,
+        "wrist_roll": 3573.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 27,
+      "rvec_target_cam": [
+        0.6218392884404909,
+        1.746749280775242,
+        -1.6542557062843297
+      ],
+      "tvec_target_cam": [
+        10.097882864491497,
+        -146.08453554920774,
+        526.0149403037536
+      ],
+      "distance_mm": 546.0168277514294,
+      "motor_positions_raw": {
+        "shoulder_pan": 2082.0,
+        "shoulder_lift": 1916.0,
+        "elbow_flex": 2839.0,
+        "wrist_flex": 2442.0,
+        "wrist_roll": 3573.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 28,
+      "rvec_target_cam": [
+        1.2143398390608637,
+        -0.8985768763702076,
+        0.7664368828026732
+      ],
+      "tvec_target_cam": [
+        119.41156125313111,
+        -158.93618804498448,
+        331.9695583590171
+      ],
+      "distance_mm": 386.9413657238805,
+      "motor_positions_raw": {
+        "shoulder_pan": 1825.0,
+        "shoulder_lift": 1918.0,
+        "elbow_flex": 2862.0,
+        "wrist_flex": 2333.0,
+        "wrist_roll": 3581.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 29,
+      "rvec_target_cam": [
+        1.246715156898225,
+        -0.8719213036566204,
+        0.7523286443897917
+      ],
+      "tvec_target_cam": [
+        131.65977538188687,
+        -114.98788033455294,
+        274.51569622500483
+      ],
+      "distance_mm": 325.4464265456628,
+      "motor_positions_raw": {
+        "shoulder_pan": 1843.0,
+        "shoulder_lift": 2364.0,
+        "elbow_flex": 2541.0,
+        "wrist_flex": 2221.0,
+        "wrist_roll": 3574.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 30,
+      "rvec_target_cam": [
+        1.266268753654444,
+        -0.6319330037748191,
+        0.769712558086789
+      ],
+      "tvec_target_cam": [
+        69.70428065779166,
+        -67.0119323633172,
+        209.267615343341
+      ],
+      "distance_mm": 230.52596524594472,
+      "motor_positions_raw": {
+        "shoulder_pan": 1976.0,
+        "shoulder_lift": 2757.0,
+        "elbow_flex": 2135.0,
+        "wrist_flex": 2172.0,
+        "wrist_roll": 3574.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 31,
+      "rvec_target_cam": [
+        0.4788372731597587,
+        1.5808293441067087,
+        -1.7824278430408684
+      ],
+      "tvec_target_cam": [
+        -22.16704930737333,
+        -29.644132206780256,
+        394.285485131726
+      ],
+      "distance_mm": 396.0191869529166,
+      "motor_positions_raw": {
+        "shoulder_pan": 2117.0,
+        "shoulder_lift": 2783.0,
+        "elbow_flex": 2124.0,
+        "wrist_flex": 2165.0,
+        "wrist_roll": 3574.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 32,
+      "rvec_target_cam": [
+        1.322736364604586,
+        -0.15029525926352394,
+        0.8308594899670299
+      ],
+      "tvec_target_cam": [
+        -111.63075371881658,
+        -87.3220463566718,
+        190.08833984643826
+      ],
+      "distance_mm": 237.10786975830817,
+      "motor_positions_raw": {
+        "shoulder_pan": 2258.0,
+        "shoulder_lift": 2962.0,
+        "elbow_flex": 1845.0,
+        "wrist_flex": 2174.0,
+        "wrist_roll": 3573.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 33,
+      "rvec_target_cam": [
+        0.7051074427396761,
+        -1.2165944715405324,
+        1.2812833995681552
+      ],
+      "tvec_target_cam": [
+        216.2283005581627,
+        -128.57257235524406,
+        328.44370321838113
+      ],
+      "distance_mm": 413.71590555370193,
+      "motor_positions_raw": {
+        "shoulder_pan": 1755.0,
+        "shoulder_lift": 2328.0,
+        "elbow_flex": 2782.0,
+        "wrist_flex": 1899.0,
+        "wrist_roll": 3986.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 34,
+      "rvec_target_cam": [
+        1.240150267278115,
+        -0.027145712046519502,
+        -0.01499383689852237
+      ],
+      "tvec_target_cam": [
+        0.7349570240299282,
+        -88.13575138656576,
+        276.245653459299
+      ],
+      "distance_mm": 289.9657081267659,
+      "motor_positions_raw": {
+        "shoulder_pan": 1940.0,
+        "shoulder_lift": 2464.0,
+        "elbow_flex": 2637.0,
+        "wrist_flex": 1901.0,
+        "wrist_roll": 3985.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 35,
+      "rvec_target_cam": [
+        1.2039512176152904,
+        0.42494420344894973,
+        0.03828728292938855
+      ],
+      "tvec_target_cam": [
+        -151.40625953474856,
+        -97.50242736120613,
+        285.6898097376357
+      ],
+      "distance_mm": 337.7117797109799,
+      "motor_positions_raw": {
+        "shoulder_pan": 2221.0,
+        "shoulder_lift": 2668.0,
+        "elbow_flex": 2429.0,
+        "wrist_flex": 1901.0,
+        "wrist_roll": 3982.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 36,
+      "rvec_target_cam": [
+        0.9678753885619543,
+        0.3577763372517686,
+        0.0635161506134027
+      ],
+      "tvec_target_cam": [
+        -158.205456059005,
+        -48.80691815912984,
+        220.28684720339788
+      ],
+      "distance_mm": 275.56737223017336,
+      "motor_positions_raw": {
+        "shoulder_pan": 2198.0,
+        "shoulder_lift": 3375.0,
+        "elbow_flex": 1444.0,
+        "wrist_flex": 2022.0,
+        "wrist_roll": 3987.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 37,
+      "rvec_target_cam": [
+        0.9015418921145414,
+        -1.0204321303155757,
+        1.3101543785508507
+      ],
+      "tvec_target_cam": [
+        169.824951782515,
+        -25.467879383071853,
+        209.88838209130225
+      ],
+      "distance_mm": 271.1867623338365,
+      "motor_positions_raw": {
+        "shoulder_pan": 1896.0,
+        "shoulder_lift": 3274.0,
+        "elbow_flex": 1445.0,
+        "wrist_flex": 2285.0,
+        "wrist_roll": 3981.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 38,
+      "rvec_target_cam": [
+        0.628416927771721,
+        -0.4171257100875315,
+        1.4863927898096991
+      ],
+      "tvec_target_cam": [
+        69.15242846434025,
+        -72.43170196851172,
+        157.76660653818485
+      ],
+      "distance_mm": 186.86549160063083,
+      "motor_positions_raw": {
+        "shoulder_pan": 2057.0,
+        "shoulder_lift": 3407.0,
+        "elbow_flex": 1372.0,
+        "wrist_flex": 1860.0,
+        "wrist_roll": 3981.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 39,
+      "rvec_target_cam": [
+        0.5582251991183571,
+        -0.05417869090890115,
+        -0.11461919719983699
+      ],
+      "tvec_target_cam": [
+        25.104831308173647,
+        -76.49183566690411,
+        168.74979805420003
+      ],
+      "distance_mm": 186.9699115420388,
+      "motor_positions_raw": {
+        "shoulder_pan": 1922.0,
+        "shoulder_lift": 3437.0,
+        "elbow_flex": 1374.0,
+        "wrist_flex": 1747.0,
+        "wrist_roll": 3981.0,
+        "gripper": 1519.0
+      }
+    },
+    {
+      "id": 40,
+      "rvec_target_cam": [
+        0.7075915058807709,
+        0.2990257061873401,
+        0.39865992534641886
+      ],
+      "tvec_target_cam": [
+        -163.70998770944064,
+        -107.81469030565285,
+        196.34831890927322
+      ],
+      "distance_mm": 277.4484273879142,
+      "motor_positions_raw": {
+        "shoulder_pan": 2248.0,
+        "shoulder_lift": 3446.0,
+        "elbow_flex": 1374.0,
+        "wrist_flex": 1831.0,
+        "wrist_roll": 89.0,
+        "gripper": 1519.0
+      }
+    }
+  ]
+}
