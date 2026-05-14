@@ -181,8 +181,6 @@ def fk_so101(joint_angles_rad, urdf_path=DEFAULT_URDF):
 # Tests rapides (lance avec : python -m src.calibration.forward_kinematics)
 # ============================================================
 if __name__ == "__main__":
-    import json
-
     print("Tests forward_kinematics.py")
     print()
 
@@ -226,28 +224,32 @@ if __name__ == "__main__":
         print(f"  [OK] articulation manquante detectee (KeyError)")
     print()
 
-    # 4. Integration avec motor_to_angle sur une vraie capture de calibration
-    from src.calibration.motor_to_angle import load_motor_calibration, raw_to_radians
+    # 4. Integration motor_to_angle -> FK : le centre de deroulage de chaque
+    #    encodeur correspond a un angle nul, donc doit redonner la pose zero T0.
+    #    (test base sur la calibration courante, pas sur d'anciennes captures)
+    from src.calibration.motor_to_angle import (
+        load_encoder_unwrap,
+        load_motor_calibration,
+        raw_to_radians,
+    )
 
     repo_root = Path(__file__).resolve().parents[2]
-    capture_path = repo_root / "configs" / "extrinsic_capture_cam_0.json"
     calib_path = repo_root / "configs" / "calibration_follower.json"
-    if capture_path.exists() and calib_path.exists():
+    unwrap_path = repo_root / "configs" / "encoder_unwrap.json"
+    if calib_path.exists():
         calib = load_motor_calibration(calib_path)
-        data = json.load(open(capture_path))
-        first = data["captures"][0]
-        raw = first["motor_positions_raw"]
-        q = {j: raw_to_radians(raw[j], calib[j]) for j in ARM_JOINTS}
+        unwrap = load_encoder_unwrap(unwrap_path, calib)
+        centers_raw = {
+            j: unwrap.get(j, (calib[j]["range_min"] + calib[j]["range_max"]) / 2)
+            for j in ARM_JOINTS
+        }
+        q = {j: raw_to_radians(centers_raw[j], calib[j], unwrap.get(j)) for j in ARM_JOINTS}
         T = chain.fk(q)
-        t = T[:3, 3]
-        angles_deg = ", ".join(f"{j}={np.rad2deg(a):.1f}" for j, a in q.items())
-        print(f"  Capture 1 de extrinsic_capture_cam_0.json :")
-        print(f"    angles (deg) : {angles_deg}")
-        print(f"    effecteur    : ({t[0] * 1000:.1f}, {t[1] * 1000:.1f}, "
-              f"{t[2] * 1000:.1f}) mm, distance base = {np.linalg.norm(t) * 1000:.1f} mm")
-        assert 0.05 < np.linalg.norm(t) < 0.6, "pose effecteur implausible sur donnee reelle"
-        print(f"  [OK] integration motor_to_angle -> FK coherente")
+        assert np.allclose(T, T0, atol=1e-6), "centre encodeur != configuration zero"
+        unwrapped = [j for j in ARM_JOINTS if j in unwrap]
+        print(f"  [OK] integration motor_to_angle -> FK : centre encodeur = config zero")
+        print(f"       (joints deroules via encoder_unwrap.json : {unwrapped or 'aucun'})")
     else:
-        print(f"  [SKIP] fichiers de capture absents")
+        print(f"  [SKIP] calibration absente")
     print()
     print("Tous les tests passent.")
