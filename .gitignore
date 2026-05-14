@@ -28,6 +28,10 @@ outputs/
 *.pth
 *.ckpt
 
+# PDF d'articles exportes par Zotero (lourds, sous copyright).
+# Le fichier .bib lui-meme est versionne.
+docs/references/*/files/
+
 # ============================================
 # IDE / OS
 # ============================================
