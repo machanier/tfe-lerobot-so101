@@ -63,16 +63,20 @@ def sync_calibration_to_configs(kind):
     print(f"  Calibration synchronisee : configs/{dst.name}")
 
 
-def check_ports():
-    """Verifie que les ports USB sont disponibles."""
+def check_ports(need_leader, need_follower):
+    """Verifie que les ports USB necessaires sont disponibles.
+
+    On ne verifie que les ports utiles a la calibration demandee : inutile
+    d'avoir le leader branche pour `--follower` (et inversement).
+    """
     ports = glob.glob("/dev/tty.usbmodem*")
     if not ports:
         print("Aucun port USB detecte ! Le robot est-il branche et alimente ?")
         sys.exit(1)
     missing = []
-    if LEADER_PORT not in ports:
+    if need_leader and LEADER_PORT not in ports:
         missing.append(f"Leader ({LEADER_PORT})")
-    if FOLLOWER_PORT not in ports:
+    if need_follower and FOLLOWER_PORT not in ports:
         missing.append(f"Follower ({FOLLOWER_PORT})")
     if missing:
         print(f"Ports non trouves : {', '.join(missing)}")
@@ -154,10 +158,10 @@ def main():
     parser.add_argument("--follower", action="store_true", help="Calibrer seulement le follower")
     args = parser.parse_args()
 
-    check_ports()
-
     do_leader = args.leader or (not args.leader and not args.follower)
     do_follower = args.follower or (not args.leader and not args.follower)
+
+    check_ports(do_leader, do_follower)
 
     if do_leader:
         calibrate_leader()
