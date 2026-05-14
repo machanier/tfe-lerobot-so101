@@ -22,10 +22,45 @@ Pendant la calibration :
 
 import argparse
 import glob
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from config import FOLLOWER_ID, FOLLOWER_PORT, LEADER_ID, LEADER_PORT
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def sync_calibration_to_configs(kind):
+    """Recopie la calibration generee par LeRobot vers configs/.
+
+    LeRobot ecrit la calibration dans son cache
+    (~/.cache/huggingface/lerobot/calibration/...). Le reste du projet lit
+    configs/calibration_{leader,follower}.json. On recopie donc le resultat
+    juste apres la calibration, pour que tout le code (motor_to_angle,
+    cinematique directe, ...) parte de la version a jour.
+    """
+    try:
+        from lerobot.utils.constants import HF_LEROBOT_CALIBRATION
+    except ImportError:
+        print("  AVERTISSEMENT : LeRobot introuvable, copie de la calibration ignoree.")
+        return
+
+    if kind == "leader":
+        src = HF_LEROBOT_CALIBRATION / "teleoperators" / "so101_leader" / f"{LEADER_ID}.json"
+        dst = REPO_ROOT / "configs" / "calibration_leader.json"
+    else:
+        src = HF_LEROBOT_CALIBRATION / "robots" / "so101_follower" / f"{FOLLOWER_ID}.json"
+        dst = REPO_ROOT / "configs" / "calibration_follower.json"
+
+    if not src.exists():
+        print(f"  AVERTISSEMENT : calibration LeRobot introuvable :\n    {src}")
+        print(f"  -> copie-la manuellement vers {dst}")
+        return
+
+    shutil.copyfile(src, dst)
+    print(f"  Calibration synchronisee : configs/{dst.name}")
 
 
 def check_ports():
@@ -74,6 +109,7 @@ def calibrate_leader():
     try:
         subprocess.run(cmd, check=True)
         print("\n  Calibration du leader terminee !")
+        sync_calibration_to_configs("leader")
     except subprocess.CalledProcessError:
         print("\n  Erreur pendant la calibration du leader.")
         sys.exit(1)
@@ -106,6 +142,7 @@ def calibrate_follower():
     try:
         subprocess.run(cmd, check=True)
         print("\n  Calibration du follower terminee !")
+        sync_calibration_to_configs("follower")
     except subprocess.CalledProcessError:
         print("\n  Erreur pendant la calibration du follower.")
         sys.exit(1)
@@ -131,8 +168,12 @@ def main():
     print()
     print("=" * 60)
     print("  Calibration terminee !")
-    print("  Vous pouvez maintenant teleoperer :")
-    print("    python scripts/teleoperate.py")
+    if do_follower:
+        print("  Etape suivante : verifier la calibration moteur :")
+        print("    python scripts/check_motor_calibration.py")
+    else:
+        print("  Vous pouvez maintenant teleoperer :")
+        print("    python scripts/teleoperate.py")
     print("=" * 60)
 
 

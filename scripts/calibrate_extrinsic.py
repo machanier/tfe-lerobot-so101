@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """
-calibrate_extrinsic.py - Capture des donnees pour calibration hand-eye eye-to-hand.
+calibrate_extrinsic.py - Capture des donnees pour la calibration hand-eye.
 
-Cible les cameras fixes (cam_0, cam_1) avec damier colle sur la pince fermee.
-Pour cam_2 (eye-in-hand) : utiliser calibrate_extrinsic_eye_in_hand.py (a venir).
+Gere les 3 cameras. La procedure physique depend du role de la camera :
+  - eye-to-hand (cam_0, cam_1, fixes) : damier colle sur la pince FERMEE,
+    la camera ne bouge pas, on bouge le BRAS devant elle.
+  - eye-in-hand (cam_2, montee sur le bras) : damier FIXE sur la table, on
+    bouge le BRAS pour que la camera le voie sous des angles varies.
+Les donnees capturees sont les memes ; seule la resolution
+(cv2.calibrateHandEye) differe selon le role. Le script rappelle la
+procedure adaptee au lancement.
 
 Usage :
     python scripts/calibrate_extrinsic.py --index 0
     python scripts/calibrate_extrinsic.py --index 1 --rows 7 --cols 7 --square-size 22
 
 Procedure :
-    1. Coller le damier rigide sur la pince fermee du robot
+    1. Mettre le damier en place (sur la pince OU fixe sur la table selon
+       le role de la camera - le script l'indique au lancement)
     2. Verifier que la camera est a sa position finale (structure assemblee)
     3. Lancer le script
     4. Bouger le bras dans 15-25 poses variees (rotations autour de >=2 axes)
@@ -134,8 +141,21 @@ def main():
     if cam_key is None:
         print(f"AVERTISSEMENT : index {args.index} non trouve dans config.CAMERAS")
         cam_key = f"cam_{args.index}"
+        role = "eye_to_hand"
     else:
-        print(f"Camera ciblee : {cam_key} ({CAMERAS[cam_key]['role']})")
+        role = CAMERAS[cam_key]["role"]
+        print(f"Camera ciblee : {cam_key} ({role})")
+
+    print()
+    if role == "eye_in_hand":
+        print("  PROCEDURE eye-in-hand (camera montee sur le bras) :")
+        print("  - Damier POSE ET FIXE sur la table (il ne bouge pas).")
+        print("  - Bouge le BRAS pour que la camera voie le damier sous des angles varies.")
+    else:
+        print("  PROCEDURE eye-to-hand (camera fixe) :")
+        print("  - Damier COLLE sur la pince FERMEE du robot.")
+        print("  - La camera ne bouge pas ; bouge le BRAS pour varier la pose du damier.")
+    print()
 
     intrinsic_path = args.intrinsic or f"configs/calibration_cam_{args.index}.json"
     if not os.path.exists(intrinsic_path):
