@@ -36,10 +36,11 @@ def sync_calibration_to_configs(kind):
     """Recopie la calibration generee par LeRobot vers configs/.
 
     LeRobot ecrit la calibration dans son cache
-    (~/.cache/huggingface/lerobot/calibration/...). Le reste du projet lit
-    configs/calibration_{leader,follower}.json. On recopie donc le resultat
-    juste apres la calibration, pour que tout le code (motor_to_angle,
-    cinematique directe, ...) parte de la version a jour.
+    (~/.cache/huggingface/lerobot/calibration/...). Le nom du sous-dossier
+    depend de la version de LeRobot (so_follower, so101_follower, ...), donc
+    on prend le fichier {id}.json le plus recemment ecrit. Le reste du projet
+    lit configs/calibration_{leader,follower}.json : on y recopie le resultat
+    juste apres la calibration.
     """
     try:
         from lerobot.utils.constants import HF_LEROBOT_CALIBRATION
@@ -48,19 +49,24 @@ def sync_calibration_to_configs(kind):
         return
 
     if kind == "leader":
-        src = HF_LEROBOT_CALIBRATION / "teleoperators" / "so101_leader" / f"{LEADER_ID}.json"
+        search_dir = HF_LEROBOT_CALIBRATION / "teleoperators"
+        motor_id = LEADER_ID
         dst = REPO_ROOT / "configs" / "calibration_leader.json"
     else:
-        src = HF_LEROBOT_CALIBRATION / "robots" / "so101_follower" / f"{FOLLOWER_ID}.json"
+        search_dir = HF_LEROBOT_CALIBRATION / "robots"
+        motor_id = FOLLOWER_ID
         dst = REPO_ROOT / "configs" / "calibration_follower.json"
 
-    if not src.exists():
-        print(f"  AVERTISSEMENT : calibration LeRobot introuvable :\n    {src}")
+    candidates = list(search_dir.glob(f"*/{motor_id}.json"))
+    if not candidates:
+        print(f"  AVERTISSEMENT : aucune calibration LeRobot trouvee dans {search_dir}")
         print(f"  -> copie-la manuellement vers {dst}")
         return
 
+    # le fichier le plus recent = celui que la calibration vient d'ecrire
+    src = max(candidates, key=lambda p: p.stat().st_mtime)
     shutil.copyfile(src, dst)
-    print(f"  Calibration synchronisee : configs/{dst.name}")
+    print(f"  Calibration synchronisee : {src.parent.name}/{src.name} -> configs/{dst.name}")
 
 
 def check_ports(need_leader, need_follower):
