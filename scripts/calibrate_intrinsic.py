@@ -54,7 +54,7 @@ def generate_checkerboard(rows, cols, square_size_px=80, output_path="configs/ch
 def calibrate(camera_index, rows, cols, square_size_mm, width, height, save_images=True):
     """Capture des poses d'un damier et calibre la camera."""
     # Dossier pour sauvegarder les images de calibration
-    images_dir = f"outputs/calibration_images/cam_{camera_index}"
+    images_dir = f"outputs/calibration_images/intrinsic_cam_{camera_index}"
     if save_images:
         os.makedirs(images_dir, exist_ok=True)
         print(f"Images sauvegardees dans: {images_dir}/")
