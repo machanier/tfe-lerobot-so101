@@ -152,17 +152,41 @@ def check_chain():
     for module in ["src.utils.transforms",
                    "src.calibration.motor_to_angle",
                    "src.calibration.forward_kinematics"]:
-        result = subprocess.run(
-            [sys.executable,"-m", module],
-            capture_output=True, text=True, check=False, cwd=str(REPO),
-        )
-        last = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
-        if "Tous les tests passent" in last or "tous les tests passent" in last:
-            ok(module, "self-test passe")
-        else:
-            warn(module, f"self-test echoue : {last}")
-            print(result.stdout)
-            print(result.stderr)
+        _run_selftest(module)
+
+
+def check_perception_modules():
+    section("MODULES PERCEPTION (Sprint 2)")
+    for module in ["src.perception.scene",
+                   "src.perception.robot_state",
+                   "src.perception.camera_io",
+                   "src.perception.detector",
+                   "src.perception.pose_estimator"]:
+        _run_selftest(module)
+    # Test d'integration synthetique
+    result = subprocess.run(
+        [sys.executable, str(REPO / "tests/perception/test_pipeline.py")],
+        capture_output=True, text=True, check=False, cwd=str(REPO),
+    )
+    last = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    if "Tous les tests d'integration passent" in last:
+        ok("tests/perception/test_pipeline.py", "passe")
+    else:
+        warn("tests/perception/test_pipeline.py", f"echoue : {last}")
+        print(result.stdout); print(result.stderr)
+
+
+def _run_selftest(module):
+    result = subprocess.run(
+        [sys.executable, "-m", module],
+        capture_output=True, text=True, check=False, cwd=str(REPO),
+    )
+    last = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    if "Tous les tests passent" in last or "tous les tests passent" in last:
+        ok(module, "self-test passe")
+    else:
+        warn(module, f"self-test echoue : {last}")
+        print(result.stdout); print(result.stderr)
 
 
 def main():
@@ -175,11 +199,12 @@ def main():
     extr_ok, cams = check_extrinsics()
     check_stereo_baseline(cams)
     check_chain()
+    check_perception_modules()
 
     section("BILAN")
     if intr_ok and motor_ok and extr_ok:
-        print("  [OK] Toute la chaine de calibration est validee.")
-        print("       Tu peux passer a la suite : perception + planification + controle.")
+        print("  [OK] Calibration validee + modules perception auto-testes.")
+        print("       Prochain pas : scripts/calibrate_hsv.py puis scripts/run_perception.py")
     else:
         print("  [!] Au moins une etape demande revision (voir details ci-dessus).")
     print()

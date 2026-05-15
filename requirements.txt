@@ -13,3 +13,9 @@ numpy>=1.24              # Calcul matriciel
 wandb                    # Suivi d'experiences
 rerun-sdk                # Visualisation 3D
 imageio[ffmpeg]          # Lecture/ecriture video
+
+# --- Extension V2 (HFDetector open-vocabulary, optionnel) ---
+# Decommenter quand on active HFDetector :
+# transformers>=4.40     # OWL-ViTv2 / Grounding-DINO via Hugging Face
+# torch>=2.2             # Backend du modele
+# pillow                 # Pretraitement image (input transformers)

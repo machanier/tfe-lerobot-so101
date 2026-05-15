@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""
+calibrate_hsv.py - Genere les plages HSV de chaque primitive coloree par
+echantillonnage de pixels.
+
+Procedure :
+    1. Lance le script en pointant la camera principale (cam_0 par defaut).
+    2. Pose chaque objet primitif (cube rouge, cylindre vert, ...) bien en
+       evidence sous l'eclairage definitif du poste.
+    3. Pour chaque objet :
+        - tape le nom (label) dans le terminal (ex: red_cube).
+        - clique sur la fenetre video pour echantillonner des pixels DE
+          L'OBJET. Aux endroits de couleur la plus pure. ~20 clics suffisent.
+        - touche 'n' pour passer a l'objet suivant.
+    4. Touche 's' a la fin pour sauvegarder.
+
+Sortie :
+    configs/perception/hsv_specs.json
+        Liste d'ObjectSpec avec plages HSV (h_lo, h_hi, s_lo, ...) calculees
+        comme [mean - 2.5*std, mean + 2.5*std] sur les pixels echantillonnes.
+        Le rouge est detecte automatiquement (cluster autour de H~0/179) et
+        on emet `hue_extra_lo/hi`.
+
+Pas de hardware necessaire (juste la camera). On utilise la calibration
+intrinseque pour eventuellement debruiter, mais HSV est lui-meme robuste.
+
+Reference : OpenCV doc, cv2.cvtColor + COLOR_BGR2HSV. H in [0,179], S/V in [0,255].
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "scripts"))
+
+from config import CAMERAS  # noqa: E402
+
+OUTPUT_PATH = REPO / "configs" / "perception" / "hsv_specs.json"
+PATCH_HALF = 3  # demi-cote du patch echantillonne autour du clic (en pixels)
+
+
+class HSVSampler:
+    """Etat partage entre la fenetre OpenCV et la boucle principale."""
+
+    def __init__(self):
+        self.current_label: str | None = None
+        self.samples: dict[str, list[np.ndarray]] = {}
+        self.last_frame_hsv: np.ndarray | None = None
+
+    def on_mouse(self, event, x, y, flags, param):
+        if event != cv2.EVENT_LBUTTONDOWN or self.last_frame_hsv is None:
+            return
+        if self.current_label is None:
+            print("  (clique apres avoir defini un label avec 'n')")
+            return
+        h, w = self.last_frame_hsv.shape[:2]
+        y0, y1 = max(0, y - PATCH_HALF), min(h, y + PATCH_HALF + 1)
+        x0, x1 = max(0, x - PATCH_HALF), min(w, x + PATCH_HALF + 1)
+        patch = self.last_frame_hsv[y0:y1, x0:x1].reshape(-1, 3)
+        self.samples.setdefault(self.current_label, []).append(patch)
+        total = sum(p.shape[0] for p in self.samples[self.current_label])
+        print(f"  + {patch.shape[0]} px ({total} cumules pour {self.current_label})")
+
+
+def _build_spec(label: str, samples: np.ndarray) -> dict:
+    """Construit un dict ObjectSpec depuis les pixels echantillonnes."""
+    H = samples[:, 0].astype(np.int32)
+    S = samples[:, 1].astype(np.int32)
+    V = samples[:, 2].astype(np.int32)
+
+    # Detection automatique du rouge (cluster autour de 0/179)
+    # On regarde quelle fraction des pixels est PROCHE de la couture 0/180.
+    # Si >= 60 % sont a moins de 25 de la couture (cote 0 OU cote 179),
+    # on considere que la teinte traverse 0.
+    near_low = (H <= 25).mean()
+    near_high = (H >= 155).mean()
+    wraps_zero = (near_low + near_high) >= 0.6 and near_low > 0.05 and near_high > 0.05
+
+    if wraps_zero:
+        # On "deroule" H autour de 0 : si H > 90, on retranche 180.
+        H_unwrapped = np.where(H > 90, H - 180, H)
+        h_mean = float(np.mean(H_unwrapped))
+        h_std = float(np.std(H_unwrapped))
+        # Plage etroite autour du mean +/- 3*std (clip a [-180, 180])
+        h_lo_raw = h_mean - 3.0 * h_std
+        h_hi_raw = h_mean + 3.0 * h_std
+        # Re-mappe : la plage principale est l'intersection avec [0, 179] ;
+        # la plage extra est l'autre cote.
+        if h_lo_raw < 0:
+            # Partie cote bas : [0, h_hi_raw], extra : [180 + h_lo_raw, 179]
+            h_lo, h_hi = 0, int(max(0, min(179, h_hi_raw)))
+            extra_lo, extra_hi = int(max(0, min(179, 180 + h_lo_raw))), 179
+        elif h_hi_raw > 179:
+            # Partie cote haut : [h_lo_raw, 179], extra : [0, h_hi_raw - 180]
+            h_lo, h_hi = int(max(0, min(179, h_lo_raw))), 179
+            extra_lo, extra_hi = 0, int(max(0, min(179, h_hi_raw - 180)))
+        else:
+            h_lo, h_hi = int(max(0, h_lo_raw)), int(min(179, h_hi_raw))
+            extra_lo, extra_hi = None, None
+    else:
+        h_lo = int(max(0, np.percentile(H, 2)))
+        h_hi = int(min(179, np.percentile(H, 98)))
+        extra_lo = extra_hi = None
+
+    spec = {
+        "label": label,
+        "h_lo": h_lo,
+        "h_hi": h_hi,
+        "s_lo": int(max(20, np.percentile(S, 2))),
+        "s_hi": 255,
+        "v_lo": int(max(20, np.percentile(V, 2))),
+        "v_hi": 255,
+        "min_area_px": 500,
+        "max_area_px": 200000,
+        "meta": {},
+        "_n_samples_px": int(samples.shape[0]),
+    }
+    if extra_lo is not None:
+        spec["hue_extra_lo"] = extra_lo
+        spec["hue_extra_hi"] = extra_hi
+    return spec
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Echantillonneur de couleurs HSV pour les primitives.")
+    parser.add_argument("--camera", type=int, default=CAMERAS["cam_0"]["index"],
+                        help="Index de la camera a utiliser.")
+    parser.add_argument("--width", type=int, default=CAMERAS["cam_0"]["width"])
+    parser.add_argument("--height", type=int, default=CAMERAS["cam_0"]["height"])
+    parser.add_argument("--output", type=str, default=str(OUTPUT_PATH))
+    args = parser.parse_args()
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(args.camera)
+    if not cap.isOpened():
+        print(f"Impossible d'ouvrir la camera {args.camera}.")
+        return
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(args.width))
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(args.height))
+
+    sampler = HSVSampler()
+    win = "Calibration HSV"
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(win, sampler.on_mouse)
+
+    print()
+    print("Procedure :")
+    print("  'n' = nouveau label (te demande son nom)")
+    print("  clic gauche dans la fenetre = echantillonne un patch HSV")
+    print("  's' = sauvegarder et quitter")
+    print("  'q' = quitter sans sauvegarder")
+    print()
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                print("Lecture echouee.")
+                break
+
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            sampler.last_frame_hsv = hsv
+
+            display = frame.copy()
+            status = f"label: {sampler.current_label or '(aucun)'} | "
+            status += f"echantillons: " + ", ".join(
+                f"{k}={sum(p.shape[0] for p in v)}" for k, v in sampler.samples.items()
+            )
+            cv2.putText(display, status, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.imshow(win, display)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                print("Annule.")
+                return
+            if key == ord("n"):
+                cv2.destroyWindow(win)  # libere le focus terminal
+                name = input("Nom du nouveau label (ex: red_cube, blue_triangle) : ").strip()
+                cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+                cv2.setMouseCallback(win, sampler.on_mouse)
+                if name:
+                    sampler.current_label = name
+                    print(f"  -> label courant : {name}")
+            if key == ord("s"):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+    if not sampler.samples:
+        print("Aucun echantillon : rien a sauvegarder.")
+        return
+
+    specs = []
+    for label, patches in sampler.samples.items():
+        samples = np.concatenate(patches, axis=0)
+        if samples.shape[0] < 20:
+            print(f"  AVERTISSEMENT : {label} a {samples.shape[0]} pixels (< 20 recommandes)")
+        specs.append(_build_spec(label, samples))
+
+    payload = {
+        "_doc": "Genere par scripts/calibrate_hsv.py. Voir src/perception/detector.py.",
+        "specs": specs,
+    }
+    with open(output, "w") as f:
+        json.dump(payload, f, indent=2)
+    print()
+    print(f"{len(specs)} specs HSV sauvegardees : {output}")
+    for s in specs:
+        extra = ""
+        if "hue_extra_lo" in s:
+            extra = f" + H[{s['hue_extra_lo']}, {s['hue_extra_hi']}]"
+        print(f"  {s['label']:<18} H[{s['h_lo']}, {s['h_hi']}]{extra}  "
+              f"S>={s['s_lo']}  V>={s['v_lo']}")
+
+
+if __name__ == "__main__":
+    main()

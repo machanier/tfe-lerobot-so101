@@ -30,7 +30,7 @@ possibles : imitation learning (références dans `docs/references/`).
 **Métriques d'évaluation imposées** par le cahier des charges :
 taux de réussite, nombre de replans, collisions évitées, précision de la prise.
 
-## 2. État au 2026-05-15
+## 2. État au 2026-05-15 (Sprint 2 — fin Phase calibration + démarrage perception)
 
 ### Hardware
 - SO-101 leader + follower assemblés, téléopération opérationnelle.
@@ -132,37 +132,113 @@ Le SO-ARM100 a deux URDF (`new_calib` et `old_calib`). On utilise
 à la formule `(raw - mid) * 360 / 4095` qu'applique LeRobot dans `_normalize`
 (cf `lerobot/motors/motors_bus.py:858`).
 
+### D6 — Architecture perception modulaire (Sprint 2)
+
+**Décision** : on isole la perception dans `src/perception/`, derrière une
+interface stable (`Scene` / `ObjectInstance`), au lieu de coder en monolithe.
+
+**Pourquoi** :
+- Le cahier des charges (Partie I) impose la décomposition
+  **perception → planification → contrôle**. Toute architecture monolithique
+  serait incohérente avec l'évaluation.
+- On veut pouvoir **comparer méthodes** dans le mémoire (HSV classique vs
+  détecteur appris) : ça impose que `ObjectDetector` soit une ABC.
+
+**Choix de baseline V1** : `HSVDetector` (seuillage HSV + contours OpenCV)
+sur les 4 primitives colorées. Méthode classique, déterministe, reproductible,
+zéro dépendance ML. **Permet d'isoler la contribution de la géométrie**
+(calibration + triangulation) avant d'introduire les incertitudes d'un
+détecteur appris. Standard en robotique de manipulation pour benchmarker une
+chaîne de calibration. Référence : Forsyth & Ponce, *Computer Vision: A
+Modern Approach*, ch. 6.
+
+**Choix de triangulation** : DLT linéaire (Hartley & Zisserman 2018, ch. 12)
+sur centres de détection, à partir de `T_base_cam` connus (hand-eye). Avec
+un test d'erreur de reprojection comme garde-fou. Précision sub-mm sur le
+synthétique (cf `tests/perception/test_pipeline.py`).
+
+**Fallback monoculaire** : PnP (cv2.solvePnP / IPPE_SQUARE) avec les
+dimensions métriques connues, pour le cas où seule `cam_2` voit l'objet.
+Limite connue : ambiguïté planaire pour 4 coins coplanaires alignés au plan
+image (Lepetit et al. 2009, *EPnP*, sec. "Planar case"). Acceptable : la
+validation Sprint 2 repose sur la stéréo.
+
+### D7 — Extension V2 prévue : détecteur HF dans l'écosystème LeRobot
+
+**Décision** : la classe `HFDetector` (stub) reste dans `detector.py`,
+prête à être implémentée plus tard avec `transformers.AutoModelForZeroShotObjectDetection`
+(OWL-ViTv2 ou Grounding-DINO).
+
+**Pourquoi cet alignement** :
+- Le projet est bâti sur **LeRobot** (Hugging Face) : on garde la cohérence
+  d'écosystème (les détecteurs HF utilisent le même `transformers` que les
+  policies HF type SmolVLA / ACT).
+- L'open-vocabulary detection couvre les **objets quotidien** (rubik's cube,
+  paquet de mouchoir, stylo, tasse, gobelet) que le HSV ne peut pas atteindre.
+- C'est une **contribution comparative** valorisable dans le mémoire :
+  approche classique HSV vs approche moderne foundation-model, sur le même
+  pipeline géométrique. Référence biblio : SmolVLA (Shukor et al. 2025).
+
+**Périmètre V2 exclu pour l'instant** : pose 6D (FoundationPose), VLA
+end-to-end. Mentionnés comme ouverture du mémoire, pas comme contribution.
+
+## 2bis. Sprint 2 — Détail
+
+État au 2026-05-15 : **modules implémentés et auto-testés**. Reste à
+calibrer les couleurs sous l'éclairage du poste et à mesurer l'erreur de
+localisation 3D avec le ground truth pied à coulisse.
+
+### Modules livrés (tous auto-testés via `python scripts/check_calibration.py`)
+
+| Fichier | Rôle | Test |
+|---|---|---|
+| [`src/perception/scene.py`](../src/perception/scene.py) | Dataclasses (`Frame`, `Detection2D`, `ObjectInstance`, `Scene`) | self-test |
+| [`src/perception/robot_state.py`](../src/perception/robot_state.py) | Lecture moteurs + FK (3 modes : live / raw / angles) | self-test |
+| [`src/perception/camera_io.py`](../src/perception/camera_io.py) | `MultiCamera` (live) + `ReplayCamera` (offline), compose `T_base_cam` selon eye-to/eye-in-hand | self-test |
+| [`src/perception/detector.py`](../src/perception/detector.py) | `ObjectDetector` (ABC) + `HSVDetector` (V1) + `HFDetector` (stub V2) | self-test |
+| [`src/perception/pose_estimator.py`](../src/perception/pose_estimator.py) | Triangulation stéréo DLT + raffinement + PnP mono fallback | self-test |
+| [`tests/perception/test_pipeline.py`](../tests/perception/test_pipeline.py) | Test d'intégration synthétique du pipeline complet | 4 cas |
+
+### Scripts opérationnels
+
+| Script | Quand l'utiliser |
+|---|---|
+| `scripts/calibrate_hsv.py` | **À lancer une fois sous l'éclairage final** : pointe la cam_0 sur chaque primitive, clique des pixels, sauve `configs/perception/hsv_specs.json`. |
+| `scripts/record_perception_frames.py` | Enregistre un dataset de validation (3 caméras + moteurs) au format manifest pour `ReplayCamera`. |
+| `scripts/run_perception.py` | Pipeline complet, 3 modes : `--mode live` (boucle vidéo), `--mode replay` (rejoue un dataset), `--mode oneshot` (1 trame + sauvegarde JSON). |
+| `scripts/check_perception.py` | **Validation chiffrée** : pose des objets à des positions mesurées au pied à coulisse (`--gt FILE` ou `--interactive`), compare, sort un rapport mm. |
+
+### Validation expérimentale à mener (procédure)
+
+1. `python scripts/calibrate_hsv.py --camera 0` → calibrer les 4 primitives sous l'éclairage du poste.
+2. Poser un cube rouge à une position mesurée précisément (X, Y, Z en mm depuis la base, mesure au pied à coulisse) et noter le triplet.
+3. Créer `outputs/perception/gt_test.json` :
+   ```json
+   {"objects":[{"label":"red_cube","position_base_mm":[X,Y,Z]}]}
+   ```
+4. `python scripts/check_perception.py --gt outputs/perception/gt_test.json`
+5. **Critère de succès** (cf cahier des charges + plancher de bruit hand-eye) :
+   erreur moyenne ≤ 10 mm. Au-delà : recalibrer HSV ou re-vérifier hand-eye.
+
+### Roadmap perception (V2, à venir)
+
+- Implémenter `HFDetector` (OWL-ViTv2) → couverture des 5 objets quotidien (rubik's, mouchoir, stylo, tasse, gobelet).
+- Mesurer mAP / précision de localisation 3D sur dataset enregistré par `record_perception_frames.py` : ce sera une **section comparative** du mémoire.
+- Étudier l'extension active vision (le module `camera_io` est déjà compatible : un seul provider pour les 3 caméras).
+
 ## 4. Roadmap forward
 
 | Sprint | Contenu | État | Livrables principaux |
 |---|---|---|---|
 | 1 | Calibration hand-eye | **✅ FAIT** | `configs/handeye_cam_*.json`, `scripts/check_calibration.py` |
-| 2 | Perception : détection + triangulation 3D + scène | À FAIRE | `src/perception/{camera_io,detector,pose_estimator,scene}.py` |
+| 2 | Perception : détection + triangulation 3D + scène | **🟡 CODE LIVRÉ, validation à mener** | `src/perception/` (5 modules, tous auto-testés), 4 scripts CLI |
 | 3 | Planification + contrôle : grasp + IK + interface LeRobot Python | À faire | `src/planning/`, `src/control/`, `src/pipeline.py` |
 | 4 | Boucle fermée : replanification + active vision minimale | À faire | enrichissement `src/pipeline.py` |
 | 5 | Évaluation expérimentale + rédaction | À faire | rapport TFE + campagne d'expériences avec les 4 métriques |
 
-### Sprint 2 — détail
-
-Cible : pipeline minimal `objet visible → position 3D dans le repère base
-du robot`.
-
-Fichiers à créer (signatures fixes, corps à remplir) :
-
-- `src/perception/camera_io.py` : `MultiCamera.grab()` → dict `{cam_key:
-  Frame}` avec `Frame = {image, K, dist, T_base_cam, timestamp}`. Synchronise
-  les 3 caméras.
-- `src/perception/detector.py` : `ObjectDetector.detect(frames, specs)` →
-  liste de `Detection`. V1 : seuillage HSV + contours OpenCV.
-- `src/perception/pose_estimator.py` : `triangulate(det_cam_0, det_cam_1)` →
-  position 3D dans le repère base. Triangulation stéréo classique avec les
-  `T_base_cam` connues (Hartley-Zisserman ch. 12).
-- `src/perception/scene.py` : `@dataclass Scene` = liste d'objets + obstacles
-  exprimés dans le repère base, prête pour la planification.
-
-Validation Sprint 2 : un cube de couleur posé à une position mesurée au pied
-à coulisse → `triangulate` retombe dessus à ~10 mm près (cohérent avec le
-plancher de bruit calibration).
+Validation Sprint 2 (à faire) : cube colorée posé à une position mesurée au
+pied à coulisse → triangulation doit retomber dessus à ~10 mm près (procédure
+détaillée en [§2bis](#2bis-sprint-2--détail)).
 
 ## 5. Pièges connus (à se rappeler)
 
@@ -194,12 +270,20 @@ tfe-lerobot-so101/
     calibration_{leader,follower}.json          calibration moteurs
     extrinsic_capture_cam_{0,1,2}.json          captures hand-eye brutes
     handeye_cam_{0,1,2}.json                    résultats hand-eye
+    perception/
+      hsv_specs.json                            plages HSV (généré par calibrate_hsv.py)
   src/
     utils/transforms.py                         SE(3) helpers
     calibration/
       motor_to_angle.py                         encoder → radians (wraparound-aware)
       forward_kinematics.py                     FK SO-101 depuis URDF
       handeye.py                                solve {eye_to_hand,eye_in_hand}{,_robust}
+    perception/
+      scene.py                                  Frame, Detection2D, ObjectInstance, Scene
+      robot_state.py                            lecture moteurs + FK (live/raw/angles)
+      camera_io.py                              MultiCamera (live) + ReplayCamera
+      detector.py                               ABC ObjectDetector + HSVDetector + HFDetector (stub)
+      pose_estimator.py                         triangulation stéréo + PnP mono fallback
   scripts/
     config.py                                   ports USB + caméras
     calibrate.py                                wrapper lerobot-calibrate
@@ -213,9 +297,15 @@ tfe-lerobot-so101/
     generate_chessboard.py                      damier PNG imprimable
     check_motor_calibration.py                  valide la calibration moteur
     check_extrinsic_capture.py                  valide une capture extrinsèque
-    check_calibration.py                        validation globale
+    check_calibration.py                        validation globale (+ modules perception)
     solve_handeye_cam.py                        résout hand-eye d'une caméra
+    calibrate_hsv.py                            échantillonne couleurs → hsv_specs.json
+    record_perception_frames.py                 enregistre dataset 3 cams + moteurs
+    run_perception.py                           pipeline complet (live / replay / oneshot)
+    check_perception.py                         validation chiffrée (pied à coulisse)
     teleoperate.py, record_dataset.py, train.py wrappers LeRobot CLI
+  tests/
+    perception/test_pipeline.py                 tests d'intégration synthétiques
   docs/
     bachelor_chanier_25_26.pdf                  cahier des charges (Partie I)
     PROJECT_STATUS.md                           CE FICHIER
@@ -257,8 +347,10 @@ Pour la prochaine étape, voir [§4 Roadmap](#4-roadmap-forward).
 des articles sont gitignorés (taille + copyright). Références centrales :
 
 - **Hand-eye** : Tsai & Lenz 1989 ; Horaud & Dornaika 1995 ; Li et al. 2025.
-- **Multiple view geometry / triangulation** : Hartley & Zisserman 2018.
+- **Multiple view geometry / triangulation** : Hartley & Zisserman 2018, ch. 12 (DLT, triangulation linéaire). Utilisé pour `pose_estimator.triangulate_stereo`.
+- **PnP monoculaire** : Lepetit et al. 2009, *EPnP*. Mode fallback de `pose_estimator`.
+- **Détection couleur classique** : Forsyth & Ponce, *Computer Vision: A Modern Approach*, ch. 6 (color-based segmentation). Référence pour `HSVDetector` (V1).
 - **Asservissement visuel** : Chaumette & Hutchinson 2006/2007 ; Flandin et al. 2000.
-- **Grasp planning** : Bohg et al. 2014 (survey).
+- **Grasp planning** : Bohg et al. 2014 (survey). Inspire la structure `ObjectInstance` / `Scene`.
 - **Planification trajectoires** : LaValle 2006.
-- **Active vision / extensions ML** : Diffusion Policy (Chi et al.), SmolVLA (Shukor et al.), ACT, papers active-vision divers.
+- **Active vision / extensions ML** : Diffusion Policy (Chi et al.), SmolVLA (Shukor et al.), ACT. Cités pour justifier la V2 (`HFDetector` open-vocabulary, cohérent avec l'écosystème LeRobot/HF).

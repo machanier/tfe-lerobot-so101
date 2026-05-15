@@ -36,7 +36,8 @@ reprendre le projet.
 - [x] Calibration intrinsèque des 3 caméras (reproj. 0.14–0.20 px)
 - [x] Calibration moteur du follower (avec recalage spécifique de `wrist_roll`)
 - [x] Calibration hand-eye des 3 caméras (résidus 2.5–7 mm moyens) — voir [PROJECT_STATUS](docs/PROJECT_STATUS.md#2-état-au-2026-05-15)
-- [ ] **Sprint 2 — Perception** : détection + triangulation 3D + modèle de scène
+- [x] **Sprint 2 — Perception (code)** : 5 modules `src/perception/` + 4 scripts CLI, tous auto-testés (triangulation sub-mm sur synthétique)
+- [ ] Sprint 2 — Validation expérimentale (calibrer HSV sous éclairage + mesurer erreur 3D pied à coulisse)
 - [ ] **Sprint 3** : grasp planning + planification trajectoire + interface LeRobot Python
 - [ ] **Sprint 4** : replanification boucle fermée + active vision
 - [ ] **Sprint 5** : évaluation expérimentale + rédaction du mémoire
@@ -46,42 +47,31 @@ reprendre le projet.
 ```
 tfe-lerobot-so101/
 ├── configs/                        # Calibrations + modèle robot (versionnés)
-│   ├── so101.yaml                  # Config robot high-level
-│   ├── so101_new_calib.urdf        # URDF (TheRobotStudio/SO-ARM100)
-│   ├── calibration_cam_{0,1,2}.json     # Intrinsèques
-│   ├── calibration_{leader,follower}.json   # Calibration moteurs
-│   ├── extrinsic_capture_cam_{0,1,2}.json   # Captures hand-eye brutes
-│   └── handeye_cam_{0,1,2}.json    # Résultats hand-eye (T_base_cam / T_gripper_cam)
+│   ├── so101.yaml, so101_new_calib.urdf
+│   ├── calibration_cam_{0,1,2}.json          # Intrinsèques
+│   ├── calibration_{leader,follower}.json    # Calibration moteurs
+│   ├── extrinsic_capture_cam_{0,1,2}.json    # Captures hand-eye brutes
+│   ├── handeye_cam_{0,1,2}.json              # Résultats hand-eye
+│   └── perception/hsv_specs.json             # Plages HSV (généré)
 ├── src/
 │   ├── utils/transforms.py         # SE(3) helpers
-│   └── calibration/
-│       ├── motor_to_angle.py       # Encoder → radians (wraparound-aware)
-│       ├── forward_kinematics.py   # FK SO-101 depuis URDF (zéro dépendance lourde)
-│       └── handeye.py              # solve_eye_to_hand{,_robust} + solve_eye_in_hand{,_robust}
-├── scripts/                        # Scripts CLI
-│   ├── config.py                   # Ports USB + caméras
-│   ├── calibrate.py                # Wrapper lerobot-calibrate
-│   ├── calibrate_intrinsic.py      # Calibration intrinsèque caméra
-│   ├── calibrate_extrinsic.py      # Captures pour hand-eye
-│   ├── solve_handeye_cam.py        # Résolution hand-eye d'une caméra (mode robuste)
-│   ├── measure_wrist_roll.py       # One-shot : mesure du centre de wrist_roll
-│   ├── fix_wrist_roll_calibration.py    # One-shot : recale le Homing_Offset wrist_roll
-│   ├── verify_wrist_roll.py        # Live : vérifie la calibration wrist_roll
-│   ├── check_motor_calibration.py  # Valide la calibration moteur
-│   ├── check_extrinsic_capture.py  # Valide une capture extrinsèque
-│   ├── check_calibration.py        # Validation globale de toute la chaîne
-│   ├── generate_chessboard.py      # Génère un damier PNG imprimable
-│   ├── detect_cameras.py           # Liste les caméras connectées
-│   └── preview_camera.py           # Prévisualisation
-├── docs/
-│   ├── PROJECT_STATUS.md           # Document vivant : état du projet
-│   ├── bachelor_chanier_25_26.pdf  # Cahier des charges Partie I
-│   └── references/                 # Bibliographie Zotero
-├── lerobot/                        # Clone éditable de LeRobot (gitignored)
-├── venv/                           # Environnement Python (gitignored)
-├── outputs/, data/                 # Artefacts non-tracés (gitignored)
-├── requirements.txt
-└── setup_env.sh
+│   ├── calibration/                # Hand-eye + FK + motor_to_angle
+│   └── perception/                 # Sprint 2 (NOUVEAU)
+│       ├── scene.py                # Dataclasses Frame, Detection2D, ObjectInstance, Scene
+│       ├── robot_state.py          # Lecture moteurs + FK
+│       ├── camera_io.py            # MultiCamera (live) + ReplayCamera (offline)
+│       ├── detector.py             # ABC + HSVDetector (V1) + HFDetector (stub V2)
+│       └── pose_estimator.py       # Triangulation stéréo + PnP mono fallback
+├── scripts/
+│   ├── (calibration: calibrate*.py, solve_handeye_cam.py, check_calibration.py …)
+│   ├── calibrate_hsv.py            # Échantillonne couleurs → hsv_specs.json
+│   ├── record_perception_frames.py # Enregistre dataset 3 cams + moteurs (replay)
+│   ├── run_perception.py           # Pipeline complet (live / replay / oneshot)
+│   └── check_perception.py         # Validation chiffrée (ground truth pied à coulisse)
+├── tests/
+│   └── perception/test_pipeline.py # Tests d'intégration synthétiques (4 cas)
+├── docs/PROJECT_STATUS.md          # Document vivant
+└── requirements.txt, setup_env.sh
 ```
 
 ## Installation
@@ -99,7 +89,7 @@ source venv/bin/activate
 # Activer le venv
 source venv/bin/activate
 
-# Vérifier que toute la calibration est OK
+# Vérifier que toute la calibration + modules perception passent
 python scripts/check_calibration.py
 
 # Téléopérer le robot
@@ -107,6 +97,11 @@ python scripts/teleoperate.py
 
 # Prévisualiser une caméra (cam_0 par défaut, --camera N pour les autres)
 python scripts/preview_camera.py
+
+# Sprint 2 : pipeline perception multi-caméras
+python scripts/calibrate_hsv.py             # une fois, sous l'éclairage final
+python scripts/run_perception.py            # boucle live des 3 caméras
+python scripts/check_perception.py --gt outputs/perception/gt_test.json   # validation chiffrée
 ```
 
 Pour les procédures détaillées (recalibrer, déboguer un capteur, etc.) et les
