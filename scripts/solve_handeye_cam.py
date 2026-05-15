@@ -149,22 +149,29 @@ def main():
 
     used_indices = list(range(len(captures)))
 
-    if config_type == "eye_to_hand" and not args.naive:
+    if not args.naive:
         # Mode robuste : gere l'ambiguite de detection des damiers symetriques
-        # (rotation + decalage d'origine, jusqu'a 4 orientations pour 7x7) +
-        # rejet iteratif d'outliers.
+        # (rotation + decalage d'origine) + rejet iteratif d'outliers.
         cb = data["checkerboard"]
         corrections = handeye.symmetric_board_corrections(
             cb["square_size_mm"] / 1000.0, cb["rows"], cb["cols"]
         )
         print(f"Mode robuste : {len(corrections)} orientations possibles "
               f"pour le damier {cb['rows']}x{cb['cols']} ({cb['square_size_mm']} mm)")
-        T_solved, used_indices, stats = handeye.solve_eye_to_hand_robust(
-            R_g2b, t_g2b, R_t2c, t_t2c,
-            corrections=corrections,
-            method=handeye.METHODS[args.method],
-        )
-        transform_name = "T_base_cam"
+        if config_type == "eye_to_hand":
+            T_solved, used_indices, stats = handeye.solve_eye_to_hand_robust(
+                R_g2b, t_g2b, R_t2c, t_t2c,
+                corrections=corrections,
+                method=handeye.METHODS[args.method],
+            )
+            transform_name = "T_base_cam"
+        else:
+            T_solved, used_indices, stats = handeye.solve_eye_in_hand_robust(
+                R_g2b, t_g2b, R_t2c, t_t2c,
+                corrections=corrections,
+                method=handeye.METHODS[args.method],
+            )
+            transform_name = "T_gripper_cam"
         print(f"  {len(used_indices)} / {len(captures)} poses retenues apres "
               f"alignement + rejet d'outliers")
         print()

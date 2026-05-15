@@ -201,6 +201,86 @@ def _rot_angle_deg(R1, R2):
     return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
 
 
+def solve_eye_in_hand_robust(R_gripper2base, t_gripper2base,
+                              R_target2cam, t_target2cam,
+                              corrections,
+                              method=cv2.CALIB_HAND_EYE_HORAUD,
+                              max_iter=10,
+                              drop_pct=10,
+                              min_poses=20):
+    """Solveur eye-in-hand robuste, symetrique a solve_eye_to_hand_robust.
+
+    Pour l'eye-in-hand, c'est T_base_target qui doit etre constant (le damier
+    est fixe dans le monde). On utilise le meme pipeline : solve initial, ID
+    du cluster, realignement des corrections, rejet iteratif des 10% les pires.
+    """
+    N = len(R_gripper2base)
+    T_g2b_list = [_to_se3(R, t) for R, t in zip(R_gripper2base, t_gripper2base)]
+    T_t2c_list = [_to_se3(R, t) for R, t in zip(R_target2cam, t_target2cam)]
+
+    T_gc0 = solve_eye_in_hand(R_gripper2base, t_gripper2base,
+                               R_target2cam, t_target2cam, method=method)
+    T_bt0 = [T_g2b_list[i] @ T_gc0 @ T_t2c_list[i] for i in range(N)]
+
+    counts = np.zeros(N, dtype=int)
+    for i in range(N):
+        for j in range(N):
+            if _rot_angle_deg(T_bt0[i][:3, :3], T_bt0[j][:3, :3]) < 5.0:
+                counts[i] += 1
+    seed = int(np.argmax(counts))
+    T_bt_ref = T_bt0[seed]
+
+    T_t2c_corr = []
+    for i in range(N):
+        best_score = float("inf")
+        best_T = T_t2c_list[i]
+        for C in corrections:
+            T_try = T_t2c_list[i] @ C
+            T_bt_try = T_g2b_list[i] @ T_gc0 @ T_try
+            r_d = _rot_angle_deg(T_bt_ref[:3, :3], T_bt_try[:3, :3])
+            t_d = float(np.linalg.norm(T_bt_try[:3, 3] - T_bt_ref[:3, 3])) * 1000.0
+            score = r_d + 0.1 * t_d
+            if score < best_score:
+                best_score, best_T = score, T_try
+        T_t2c_corr.append(best_T)
+
+    indices = list(range(N))
+    T_gc = T_gc0
+    t_dev = R_devs = None
+    for _ in range(max_iter):
+        R_g2b_sub = [T_g2b_list[i][:3, :3] for i in indices]
+        t_g2b_sub = [T_g2b_list[i][:3, 3] for i in indices]
+        R_t2c_sub = [T_t2c_corr[i][:3, :3] for i in indices]
+        t_t2c_sub = [T_t2c_corr[i][:3, 3] for i in indices]
+        T_gc = solve_eye_in_hand(R_g2b_sub, t_g2b_sub, R_t2c_sub, t_t2c_sub, method=method)
+        T_bt = [T_g2b_list[i] @ T_gc @ T_t2c_corr[i] for i in indices]
+        t_arr = np.array([T[:3, 3] for T in T_bt])
+        t_mean = t_arr.mean(axis=0)
+        t_dev = np.linalg.norm(t_arr - t_mean, axis=1) * 1000.0
+        idx_min = int(np.argmin(t_dev))
+        R_ref = T_bt[idx_min][:3, :3]
+        R_devs = np.array([_rot_angle_deg(R_ref, T[:3, :3]) for T in T_bt])
+        combined = t_dev + 10.0 * R_devs
+        threshold = np.percentile(combined, 100 - drop_pct)
+        new_indices = [indices[i] for i in range(len(indices)) if combined[i] <= threshold]
+        if len(new_indices) < min_poses or len(new_indices) == len(indices):
+            break
+        indices = new_indices
+
+    stats = {
+        "label": "T_base_target (apres alignement + rejet outliers)",
+        "n_poses": len(indices),
+        "n_poses_total": N,
+        "translation_mean_dev_mm": float(t_dev.mean()),
+        "translation_max_dev_mm": float(t_dev.max()),
+        "translation_median_dev_mm": float(np.median(t_dev)),
+        "rotation_mean_dev_deg": float(R_devs.mean()),
+        "rotation_max_dev_deg": float(R_devs.max()),
+        "rotation_median_dev_deg": float(np.median(R_devs)),
+    }
+    return T_gc, indices, stats
+
+
 def solve_eye_to_hand_robust(R_gripper2base, t_gripper2base,
                               R_target2cam, t_target2cam,
                               corrections,
