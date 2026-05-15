@@ -1,0 +1,73 @@
+{
+  "camera_key": "cam_1",
+  "camera_index": 1,
+  "configuration": "eye_to_hand",
+  "method": "HORAUD",
+  "robust": true,
+  "transform_name": "T_base_cam",
+  "transform": [
+    [
+      -0.049791600425477645,
+      0.5596281258532374,
+      -0.8272467330132308,
+      0.6674720737138731
+    ],
+    [
+      0.995216001726098,
+      0.09751071248705567,
+      0.006063897969697955,
+      -0.013107133412758987
+    ],
+    [
+      0.08405894619485688,
+      -0.822987254885676,
+      -0.5618060802984877,
+      0.23041047914389035
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "n_poses_total": 72,
+  "n_poses_used": 23,
+  "used_capture_ids": [
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    35,
+    36,
+    46,
+    54,
+    63,
+    64,
+    65
+  ],
+  "residuals": {
+    "label": "T_gripper_target (apres alignement + rejet outliers)",
+    "n_poses": 23,
+    "n_poses_total": 72,
+    "translation_mean_dev_mm": 6.802633013753649,
+    "translation_max_dev_mm": 15.038538812091938,
+    "translation_median_dev_mm": 5.729711115250268,
+    "rotation_mean_dev_deg": 1.8875473421453342,
+    "rotation_max_dev_deg": 2.974014595358359,
+    "rotation_median_dev_deg": 2.1269081397186946
+  },
+  "capture_file": "configs/extrinsic_capture_cam_1.json"
+}
