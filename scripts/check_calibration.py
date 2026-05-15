@@ -66,7 +66,7 @@ def check_motor():
     section("CALIBRATION MOTEUR (follower)")
     try:
         result = subprocess.run(
-            ["python", str(REPO / "scripts/check_motor_calibration.py")],
+            [sys.executable,str(REPO / "scripts/check_motor_calibration.py")],
             capture_output=True, text=True, check=False,
         )
     except FileNotFoundError:
@@ -153,7 +153,7 @@ def check_chain():
                    "src.calibration.motor_to_angle",
                    "src.calibration.forward_kinematics"]:
         result = subprocess.run(
-            ["python", "-m", module],
+            [sys.executable,"-m", module],
             capture_output=True, text=True, check=False, cwd=str(REPO),
         )
         last = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
