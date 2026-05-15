@@ -1,8 +1,0 @@
-{
-  "wrist_roll": {
-    "unwrap_center": 2344,
-    "reachable_span_deg": 333.6,
-    "homing_offset_when_measured": 1197,
-    "note": "Centre de la course reelle de wrist_roll, mesure par scripts/measure_wrist_roll.py. wrist_roll a une course large qui chevauche la couture 0/4095 de l'encodeur 12 bits ; motor_to_angle.py deroule les angles autour de ce centre. A re-mesurer si le follower est recalibre (le homing change)."
-  }
-}
