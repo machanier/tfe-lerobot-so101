@@ -97,12 +97,13 @@ def main():
     parser = argparse.ArgumentParser(description="Resout la calibration hand-eye d'une camera")
     parser.add_argument("--index", type=int, required=True, help="Index camera (0, 1 ou 2)")
     parser.add_argument(
-        "--method", choices=list(handeye.METHODS), default="PARK",
-        help="Methode cv2.calibrateHandEye (defaut: PARK)"
+        "--method", choices=list(handeye.METHODS), default="HORAUD",
+        help="Methode cv2.calibrateHandEye (defaut: HORAUD, robuste)"
     )
     parser.add_argument(
-        "--all-methods", action="store_true",
-        help="Resout avec toutes les methodes (diagnostic)"
+        "--naive", action="store_true",
+        help="Desactive le mode robuste (alignement damier symetrique + rejet "
+             "d'outliers). Utile pour diagnostiquer."
     )
     args = parser.parse_args()
 
@@ -130,7 +131,7 @@ def main():
 
     print(f"Capture : configs/{cap_path.name}  ({cam_key}, role={role})")
     print(f"Configuration : {config_type}")
-    print(f"Methode : {args.method}{' + toutes' if args.all_methods else ''}")
+    print(f"Methode : {args.method}{' (naive)' if args.naive else ' (robuste)'}")
     print(f"Poses : {len(captures)}")
     print()
 
@@ -146,52 +147,70 @@ def main():
     R_t2c = [T[:3, :3] for T in T_t2c_list]
     t_t2c = [T[:3, 3] for T in T_t2c_list]
 
-    methods = list(handeye.METHODS) if args.all_methods else [args.method]
-    results = {}
+    used_indices = list(range(len(captures)))
 
-    for m in methods:
-        cv2_method = handeye.METHODS[m]
-        if config_type == "eye_to_hand":
-            T_solved = handeye.solve_eye_to_hand(R_g2b, t_g2b, R_t2c, t_t2c, method=cv2_method)
-            stats = handeye.residuals_eye_to_hand(T_g2b_list, T_t2c_list, T_solved)
-            transform_name = "T_base_cam"
-        else:
-            T_solved = handeye.solve_eye_in_hand(R_g2b, t_g2b, R_t2c, t_t2c, method=cv2_method)
-            stats = handeye.residuals_eye_in_hand(T_g2b_list, T_t2c_list, T_solved)
-            transform_name = "T_gripper_cam"
-        results[m] = (T_solved, stats)
-
-        print(f"--- Methode {m} ---")
-        print(f"  {transform_name} = ")
-        print(format_4x4(T_solved))
-        print(f"  position (mm) : "
-              f"({T_solved[0, 3] * 1000:+.1f}, {T_solved[1, 3] * 1000:+.1f}, "
-              f"{T_solved[2, 3] * 1000:+.1f})")
-        print(f"  Residu {stats['label']} sur {stats['n_poses']} poses :")
-        print(f"    translation : moyenne {stats['translation_mean_dev_mm']:.2f} mm  |  "
-              f"max {stats['translation_max_dev_mm']:.2f} mm")
-        print(f"    rotation    : moyenne {stats['rotation_mean_dev_deg']:.3f} deg  |  "
-              f"max {stats['rotation_max_dev_deg']:.3f} deg")
-        print(f"  -> {verdict(stats)}")
+    if config_type == "eye_to_hand" and not args.naive:
+        # Mode robuste : gere l'ambiguite de detection des damiers symetriques
+        # (rotation + decalage d'origine, jusqu'a 4 orientations pour 7x7) +
+        # rejet iteratif d'outliers.
+        cb = data["checkerboard"]
+        corrections = handeye.symmetric_board_corrections(
+            cb["square_size_mm"] / 1000.0, cb["rows"], cb["cols"]
+        )
+        print(f"Mode robuste : {len(corrections)} orientations possibles "
+              f"pour le damier {cb['rows']}x{cb['cols']} ({cb['square_size_mm']} mm)")
+        T_solved, used_indices, stats = handeye.solve_eye_to_hand_robust(
+            R_g2b, t_g2b, R_t2c, t_t2c,
+            corrections=corrections,
+            method=handeye.METHODS[args.method],
+        )
+        transform_name = "T_base_cam"
+        print(f"  {len(used_indices)} / {len(captures)} poses retenues apres "
+              f"alignement + rejet d'outliers")
         print()
+    else:
+        if config_type == "eye_to_hand":
+            T_solved = handeye.solve_eye_to_hand(
+                R_g2b, t_g2b, R_t2c, t_t2c, method=handeye.METHODS[args.method]
+            )
+            stats = handeye.residuals_eye_to_hand(T_g2b_list, T_t2c_list, T_solved)
+        else:
+            T_solved = handeye.solve_eye_in_hand(
+                R_g2b, t_g2b, R_t2c, t_t2c, method=handeye.METHODS[args.method]
+            )
+            stats = handeye.residuals_eye_in_hand(T_g2b_list, T_t2c_list, T_solved)
+        transform_name = "T_base_cam" if config_type == "eye_to_hand" else "T_gripper_cam"
 
-    # Sauvegarde : on prend le resultat de la methode demandee (ou PARK par defaut)
-    chosen = args.method
-    T_chosen, stats_chosen = results[chosen]
+    print(f"--- Resultat ({args.method}) ---")
+    print(f"  {transform_name} = ")
+    print(format_4x4(T_solved))
+    print(f"  position (mm) : "
+          f"({T_solved[0, 3] * 1000:+.1f}, {T_solved[1, 3] * 1000:+.1f}, "
+          f"{T_solved[2, 3] * 1000:+.1f})")
+    print(f"  Residus {stats['label']} sur {stats['n_poses']} poses :")
+    print(f"    translation : moyenne {stats['translation_mean_dev_mm']:.2f} mm  |  "
+          f"max {stats['translation_max_dev_mm']:.2f} mm  |  "
+          f"mediane {stats['translation_median_dev_mm']:.2f} mm")
+    print(f"    rotation    : moyenne {stats['rotation_mean_dev_deg']:.3f} deg  |  "
+          f"max {stats['rotation_max_dev_deg']:.3f} deg  |  "
+          f"mediane {stats['rotation_median_dev_deg']:.3f} deg")
+    print(f"  -> {verdict(stats)}")
+    print()
 
     out = {
         "camera_key": cam_key,
         "camera_index": args.index,
         "configuration": config_type,
-        "method": chosen,
-        "transform_name": "T_base_cam" if config_type == "eye_to_hand" else "T_gripper_cam",
-        "transform": T_chosen.tolist(),
-        "n_poses": len(captures),
-        "residuals": stats_chosen,
+        "method": args.method,
+        "robust": (config_type == "eye_to_hand" and not args.naive),
+        "transform_name": transform_name,
+        "transform": T_solved.tolist(),
+        "n_poses_total": len(captures),
+        "n_poses_used": len(used_indices),
+        "used_capture_ids": [int(captures[i]["id"]) for i in used_indices],
+        "residuals": stats,
         "capture_file": str(cap_path.relative_to(REPO_ROOT)),
     }
-    if args.all_methods:
-        out["comparison"] = {m: results[m][1] for m in methods}
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
     print(f"Resultat sauvegarde : configs/{out_path.name}")
