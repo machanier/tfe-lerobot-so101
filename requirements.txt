@@ -14,8 +14,9 @@ wandb                    # Suivi d'experiences
 rerun-sdk                # Visualisation 3D
 imageio[ffmpeg]          # Lecture/ecriture video
 
-# --- Extension V2 (HFDetector open-vocabulary, optionnel) ---
-# Decommenter quand on active HFDetector :
-# transformers>=4.40     # OWL-ViTv2 / Grounding-DINO via Hugging Face
-# torch>=2.2             # Backend du modele
-# pillow                 # Pretraitement image (input transformers)
+# --- Extension V2 : HFDetector open-vocabulary (OWL-ViTv2) ---
+# Necessaire pour le detecteur Hugging Face. ~1.5 Go au total (modele 600 Mo + torch).
+# Installer avec : pip install transformers torch pillow
+transformers>=4.40       # OWL-ViTv2 / autres detecteurs HF
+torch>=2.2               # Backend pytorch (Apple Silicon MPS supporte)
+pillow                   # Pretraitement image (input transformers)

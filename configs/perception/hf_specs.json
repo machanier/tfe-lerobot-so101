@@ -1,0 +1,31 @@
+{
+  "_doc": "Configuration HFDetector (OWL-ViTv2, Hugging Face). Labels EN ANGLAIS (les modeles HF sont plus precis en anglais qu'en francais). Tu peux ajouter/retirer/modifier les labels sans rien d'autre a changer.",
+  "model_name": "google/owlv2-base-patch16-ensemble",
+  "score_threshold": 0.15,
+  "_score_threshold_doc": "Seuil de confiance minimum. 0.15 = permissif (peut faire des faux positifs). 0.30 = strict (rate des objets a faible contraste). Ajuste apres tes premiers tests.",
+  "labels": [
+    "orange cube",
+    "blue rectangular box",
+    "purple cylinder",
+    "black triangular prism",
+    "white mug",
+    "pen",
+    "rubiks cube",
+    "tissue box",
+    "tall plastic cup",
+    "robot arm"
+  ],
+  "_label_mapping": {
+    "_doc": "Optionnel : mapping label HF (anglais) -> label interne. Si pas fourni, on garde le label HF tel quel. Utile si tu veux que le grasp planner / la doc utilisent des noms specifiques.",
+    "orange cube": "orange_cube",
+    "blue rectangular box": "blue_rectangular_box",
+    "purple cylinder": "purple_cylinder",
+    "black triangular prism": "black_triangular_prism",
+    "white mug": "white_mug",
+    "pen": "pen",
+    "rubiks cube": "rubiks_cube",
+    "tissue box": "tissue_box",
+    "tall plastic cup": "tall_plastic_cup",
+    "robot arm": "robot_arm"
+  }
+}

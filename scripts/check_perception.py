@@ -42,6 +42,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -53,8 +54,11 @@ from config import FOLLOWER_PORT  # noqa: E402
 
 from src.perception.camera_io import MultiCamera  # noqa: E402
 from src.perception.detector import (  # noqa: E402
+    HFDetector,
     HSVDetector,
+    default_hf_labels,
     default_hsv_specs,
+    load_hf_specs,
     load_hsv_specs,
 )
 from src.perception.pose_estimator import PoseEstimator  # noqa: E402
@@ -91,15 +95,46 @@ def prompt_ground_truth(labels: list[str]) -> list[dict]:
     return out
 
 
-def estimate_scene(no_robot: bool, port: str, specs_path: str, warmup: int = 5):
-    """Acquiert une scene 3D avec la chaine complete."""
-    if Path(specs_path).exists():
-        specs = load_hsv_specs(Path(specs_path))
+def estimate_scene(no_robot: bool, port: str, specs_path: str,
+                   detector_kind: str = "hsv",
+                   hf_specs_path: Optional[str] = None,
+                   warmup: int = 5):
+    """Acquiert une scene 3D avec la chaine complete (HSV ou HF detector)."""
+    if detector_kind == "hsv":
+        if Path(specs_path).exists():
+            specs = load_hsv_specs(Path(specs_path))
+        else:
+            specs = default_hsv_specs()
+            print("  (specs HSV par defaut - resultats indicatifs)")
+        detector = HSVDetector(specs)
+        specs_meta = {s.label: s.meta for s in specs}
+    elif detector_kind == "hf":
+        if hf_specs_path and Path(hf_specs_path).exists():
+            cfg = load_hf_specs(Path(hf_specs_path))
+            labels = cfg["labels"]
+            model_name = cfg.get("model_name", "google/owlv2-base-patch16-ensemble")
+            threshold = float(cfg.get("score_threshold", 0.15))
+            mapping = cfg.get("_label_mapping") or {}
+        else:
+            labels = default_hf_labels()
+            model_name = "google/owlv2-base-patch16-ensemble"
+            threshold = 0.15
+            mapping = {}
+        detector = HFDetector(prompt_labels=labels, model_name=model_name,
+                              score_threshold=threshold)
+        # Wrap detect pour appliquer mapping si fourni
+        if mapping:
+            orig_detect = detector.detect
+            def detect_with_mapping(frame):
+                dets = orig_detect(frame)
+                for d in dets:
+                    if d.label in mapping:
+                        d.label = mapping[d.label]
+                return dets
+            detector.detect = detect_with_mapping
+        specs_meta = {}
     else:
-        specs = default_hsv_specs()
-        print("  (specs HSV par defaut - resultats indicatifs)")
-    detector = HSVDetector(specs)
-    specs_meta = {s.label: s.meta for s in specs}
+        raise ValueError(f"detector_kind inconnu: {detector_kind}")
     estimator = PoseEstimator(specs_by_label=specs_meta)
 
     provider = RobotStateProvider()
@@ -180,8 +215,12 @@ def main():
                         help="Fichier JSON ground truth (positions mm)")
     parser.add_argument("--interactive", action="store_true",
                         help="Saisir le ground truth au clavier")
+    parser.add_argument("--detector", choices=["hsv", "hf"], default="hsv",
+                        help="hsv = V1 (rapide deterministe), hf = V2 (OWL-ViTv2 robuste)")
     parser.add_argument("--specs", type=str,
                         default=str(REPO / "configs" / "perception" / "hsv_specs.json"))
+    parser.add_argument("--hf-specs", type=str,
+                        default=str(REPO / "configs" / "perception" / "hf_specs.json"))
     parser.add_argument("--port", type=str, default=FOLLOWER_PORT)
     parser.add_argument("--no-robot", action="store_true")
     args = parser.parse_args()
@@ -212,7 +251,9 @@ def main():
     # 2. Acquisition
     print()
     print("Acquisition de la scene en cours...")
-    scene, _ = estimate_scene(args.no_robot, args.port, args.specs)
+    scene, _ = estimate_scene(args.no_robot, args.port, args.specs,
+                              detector_kind=args.detector,
+                              hf_specs_path=args.hf_specs)
     print(scene.pretty())
     print()
 

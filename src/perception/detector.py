@@ -277,40 +277,158 @@ class HSVDetector(ObjectDetector):
 
 
 class HFDetector(ObjectDetector):
-    """Stub : detecteur open-vocabulary via la stack Hugging Face.
+    """Detecteur open-vocabulary base sur OWL-ViTv2 (Hugging Face).
 
-    PAS IMPLEMENTE en V1. L'extension prevue (cf PROJECT_STATUS.md) est
-    d'utiliser `transformers.AutoModelForZeroShotObjectDetection` avec un
-    modele comme :
-      - "google/owlv2-base-patch16-ensemble" (OWL-ViT v2)
-      - "IDEA-Research/grounding-dino-tiny" (Grounding-DINO)
+    Strategie : on donne une LISTE de labels EN TEXTE NATUREL ("orange cube",
+    "robot arm", ...) et le modele renvoie pour chaque label une liste de
+    bboxes + scores. Le modele a ete entraine sur des millions d'images +
+    legendes : il peut distinguer le cube orange du bras orange du robot
+    par la FORME et le CONTEXTE, pas seulement la couleur.
 
-    L'API a maintenir : on injecte la liste de labels (queries en langage
-    naturel) dans `prompt_labels`, et `detect()` renvoie des Detection2D
-    avec la meme convention que HSVDetector. Cela permet de swap-er
-    HSVDetector <-> HFDetector dans run_perception.py sans modifier le reste.
+    Difference cle avec HSVDetector :
+      - HSVDetector : "il y a des pixels oranges ici" (sans savoir ce que c'est).
+      - HFDetector  : "il y a un 'orange cube' ici (proba 0.92) ET un
+        'robot arm' la (proba 0.88)" -- distingue les categories semantiques.
 
-    Quand on l'activera : `pip install transformers torch pillow`, puis on
-    remplacera ce stub. La biblio inclut deja les references (SmolVLA,
-    open-vocabulary detection).
+    Coherence stack : utilise la lib `transformers` de Hugging Face, qui
+    est la meme que celle utilisee par LeRobot pour ses policies (SmolVLA,
+    ACT, etc.). Pas de fragmentation de dependances.
+
+    Sortie : Detection2D avec la meme convention que HSVDetector. Le pseudo-
+    contour est constitue des 4 coins de la bbox (utilisable par le grasp
+    planner top-down ; pour une orientation fine du wrist_roll, il faudra
+    ajouter une segmentation a poste, mais ce n'est pas requis en V1).
+
+    Reference : Minderer et al. 2023, "Scaling Open-Vocabulary Object
+    Detection", NeurIPS, arxiv:2306.09683.
     """
 
     def __init__(self, prompt_labels: list[str], *,
                  model_name: str = "google/owlv2-base-patch16-ensemble",
-                 score_threshold: float = 0.2):
+                 score_threshold: float = 0.15,
+                 device: Optional[str] = None,
+                 verbose: bool = True):
+        try:
+            from transformers import Owlv2ForObjectDetection, Owlv2Processor
+            import torch
+        except ImportError as e:
+            raise ImportError(
+                "HFDetector necessite transformers, torch, pillow. "
+                "Installe avec :\n  pip install transformers torch pillow\n"
+                f"Erreur originale : {e}"
+            ) from e
+
+        if not prompt_labels:
+            raise ValueError("HFDetector : au moins un label requis.")
         self.prompt_labels = list(prompt_labels)
         self.model_name = model_name
-        self.score_threshold = score_threshold
+        self.score_threshold = float(score_threshold)
+
+        # Detection device : MPS (Apple Silicon GPU) > CUDA > CPU
+        if device is None:
+            if torch.backends.mps.is_available():
+                device = "mps"
+            elif torch.cuda.is_available():
+                device = "cuda"
+            else:
+                device = "cpu"
+        self.device = device
+
+        if verbose:
+            print(f"[HFDetector] Chargement {model_name} sur {device}...")
+        self._processor = Owlv2Processor.from_pretrained(model_name)
+        self._model = Owlv2ForObjectDetection.from_pretrained(model_name).to(device)
+        self._model.eval()
+        self._torch = torch  # garde reference pour torch.no_grad()
+        if verbose:
+            print(f"[HFDetector] Pret. {len(self.prompt_labels)} labels actifs : "
+                  f"{self.prompt_labels}")
 
     @property
     def name(self) -> str:
-        return f"HFDetector({self.model_name}, stub)"
+        return f"HFDetector({self.model_name})"
 
     def detect(self, frame: Frame) -> list[Detection2D]:
-        raise NotImplementedError(
-            "HFDetector est un stub V2 (extension prevue). Pour la V1, "
-            "utilise HSVDetector. Voir docs/PROJECT_STATUS.md."
+        from PIL import Image
+        # OpenCV BGR -> PIL RGB
+        img_rgb = cv2.cvtColor(frame.image, cv2.COLOR_BGR2RGB)
+        pil = Image.fromarray(img_rgb)
+
+        with self._torch.no_grad():
+            inputs = self._processor(
+                text=[self.prompt_labels], images=pil, return_tensors="pt"
+            ).to(self.device)
+            outputs = self._model(**inputs)
+
+        # Post-process : convertit en bboxes (xyxy en pixels), scores, labels
+        target_sizes = self._torch.tensor([(pil.height, pil.width)]).to(self.device)
+        results = self._processor.post_process_object_detection(
+            outputs=outputs, target_sizes=target_sizes,
+            threshold=self.score_threshold,
+        )[0]
+
+        detections: list[Detection2D] = []
+        for score, label_idx, box in zip(results["scores"],
+                                          results["labels"],
+                                          results["boxes"]):
+            label = self.prompt_labels[int(label_idx)]
+            x0, y0, x1, y1 = [float(v) for v in box.cpu().numpy()]
+            cx = (x0 + x1) / 2.0
+            cy = (y0 + y1) / 2.0
+            # Pseudo-contour rectangulaire (4 coins de la bbox).
+            # Permet au grasp planner d'estimer un yaw approximatif via
+            # l'aspect ratio bbox, en attendant une segmentation reelle.
+            contour = np.array(
+                [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                dtype=np.float32,
+            )
+            d = Detection2D(
+                cam_key=frame.cam_key,
+                label=label,
+                center_px=(cx, cy),
+                bbox=(x0, y0, x1, y1),
+                contour=contour,
+                area_px=float((x1 - x0) * (y1 - y0)),
+                score=float(score),
+                meta={
+                    "detector": "HFDetector",
+                    "model": self.model_name,
+                    "device": self.device,
+                },
+            )
+            detections.append(d)
+        return detections
+
+
+def load_hf_specs(path: Optional[Path] = None) -> dict:
+    """Charge la config HFDetector depuis configs/perception/hf_specs.json."""
+    path = path or (REPO / "configs" / "perception" / "hf_specs.json")
+    if not Path(path).exists():
+        raise FileNotFoundError(
+            f"hf_specs.json introuvable : {path}\n"
+            "Cree-le ou utilise les valeurs par defaut de default_hf_labels()."
         )
+    return json.load(open(path))
+
+
+def default_hf_labels() -> list[str]:
+    """Labels par defaut pour HFDetector (cas tes 9 objets + robot).
+
+    Convention : en anglais (les modeles HF sont entraines majoritairement
+    en anglais, meilleure precision).
+    """
+    return [
+        "orange cube",
+        "blue rectangular box",
+        "purple cylinder",
+        "black triangular prism",
+        "white mug",
+        "pen",
+        "rubiks cube",
+        "tissue box",
+        "tall plastic cup",
+        "robot arm",
+    ]
 
 
 # ============================================================
@@ -445,13 +563,22 @@ if __name__ == "__main__":
     except TypeError:
         print("  [OK] ObjectDetector est abstrait (TypeError)")
 
-    # 6. HFDetector est un stub : detecte() doit lever NotImplementedError
-    hf = HFDetector(["red cube", "pen"])
+    # 6. HFDetector : ne tente l'init que si transformers est installe
     try:
-        hf.detect(frame)
-        raise AssertionError("aurait du lever NotImplementedError")
-    except NotImplementedError:
-        print("  [OK] HFDetector stub (NotImplementedError)")
+        import transformers  # noqa: F401
+        # Si on est la, on peut tenter une mini init (mais on skip le modele
+        # reel pour ne pas telecharger 600 Mo a chaque self-test).
+        # On verifie juste que les imports fonctionnent + ValueError sur labels vides.
+        try:
+            HFDetector([])  # type: ignore[arg-type]
+            raise AssertionError("aurait du lever ValueError")
+        except ValueError:
+            print("  [OK] HFDetector : ValueError sur labels vides")
+        print("  [SKIP] HFDetector : import transformers OK, "
+              "test live skippe (necessiterait 600 Mo de telechargement)")
+    except ImportError:
+        print("  [SKIP] HFDetector : transformers/torch non installes "
+              "(pip install transformers torch pillow pour activer)")
 
     # 7. default_hsv_specs : 4 primitives
     specs = default_hsv_specs()

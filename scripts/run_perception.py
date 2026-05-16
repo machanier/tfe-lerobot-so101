@@ -42,8 +42,11 @@ from config import FOLLOWER_PORT  # noqa: E402
 
 from src.perception.camera_io import MultiCamera, ReplayCamera  # noqa: E402
 from src.perception.detector import (  # noqa: E402
+    HFDetector,
     HSVDetector,
+    default_hf_labels,
     default_hsv_specs,
+    load_hf_specs,
     load_hsv_specs,
 )
 from src.perception.pose_estimator import PoseEstimator, PoseEstimatorConfig  # noqa: E402
@@ -105,19 +108,67 @@ def horizontal_tile(images, target_w=960):
 # ============================================================
 
 
-def make_detector(specs_path):
-    if specs_path and Path(specs_path).exists():
-        specs = load_hsv_specs(Path(specs_path))
-        print(f"Specs HSV chargees : {specs_path}  ({len(specs)} labels)")
-    else:
-        specs = default_hsv_specs()
-        print("Specs HSV : valeurs par defaut "
-              "(genere configs/perception/hsv_specs.json via scripts/calibrate_hsv.py)")
-    return HSVDetector(specs), {s.label: s.meta for s in specs}
+def make_detector(detector_kind: str, specs_path: str, hf_specs_path: str):
+    """Construit le detecteur (HSV ou HF) + le mapping label->meta.
+
+    Args:
+        detector_kind : "hsv" (V1 deterministe) ou "hf" (V2 OWL-ViTv2).
+        specs_path    : chemin hsv_specs.json (utilise si detector_kind=hsv).
+        hf_specs_path : chemin hf_specs.json (utilise si detector_kind=hf).
+
+    Returns:
+        (detector, specs_by_label_dict)
+    """
+    if detector_kind == "hsv":
+        if specs_path and Path(specs_path).exists():
+            specs = load_hsv_specs(Path(specs_path))
+            print(f"Specs HSV chargees : {specs_path}  ({len(specs)} labels)")
+        else:
+            specs = default_hsv_specs()
+            print("Specs HSV : valeurs par defaut "
+                  "(genere configs/perception/hsv_specs.json via scripts/calibrate_hsv.py)")
+        return HSVDetector(specs), {s.label: s.meta for s in specs}
+
+    if detector_kind == "hf":
+        if hf_specs_path and Path(hf_specs_path).exists():
+            cfg = load_hf_specs(Path(hf_specs_path))
+            labels = cfg["labels"]
+            model_name = cfg.get("model_name", "google/owlv2-base-patch16-ensemble")
+            threshold = float(cfg.get("score_threshold", 0.15))
+            mapping = cfg.get("_label_mapping") or {}
+            print(f"Specs HF chargees : {hf_specs_path}  ({len(labels)} labels)")
+        else:
+            labels = default_hf_labels()
+            model_name = "google/owlv2-base-patch16-ensemble"
+            threshold = 0.15
+            mapping = {}
+            print("Specs HF : valeurs par defaut.")
+
+        det = HFDetector(prompt_labels=labels, model_name=model_name,
+                         score_threshold=threshold)
+        # Si un mapping est fourni, on wrap pour renommer les labels
+        if mapping:
+            from src.perception.detector import HFDetector as _HF  # type: ignore
+            orig_detect = det.detect
+
+            def detect_with_mapping(frame):
+                dets = orig_detect(frame)
+                for d in dets:
+                    if d.label in mapping:
+                        d.label = mapping[d.label]
+                return dets
+            det.detect = detect_with_mapping  # type: ignore[assignment]
+
+        # specs_by_label vide (pas de dimensions metriques pour HF)
+        # Le PnP mono ne marchera pas sans (mais c'est OK car HF couvre
+        # plus de cas que HSV via la stereo).
+        return det, {}
+
+    raise ValueError(f"detector_kind inconnu: {detector_kind!r}")
 
 
 def run_live(args):
-    detector, specs_meta = make_detector(args.specs)
+    detector, specs_meta = make_detector(args.detector, args.specs, args.hf_specs)
     estimator = PoseEstimator(specs_by_label=specs_meta)
 
     provider = RobotStateProvider()
@@ -176,7 +227,7 @@ def run_live(args):
 
 
 def run_replay(args):
-    detector, specs_meta = make_detector(args.specs)
+    detector, specs_meta = make_detector(args.detector, args.specs, args.hf_specs)
     estimator = PoseEstimator(specs_by_label=specs_meta)
     rc = ReplayCamera(Path(args.replay))
     print(f"Replay : {len(rc)} snapshots")
@@ -203,7 +254,7 @@ def run_replay(args):
 
 
 def run_oneshot(args):
-    detector, specs_meta = make_detector(args.specs)
+    detector, specs_meta = make_detector(args.detector, args.specs, args.hf_specs)
     estimator = PoseEstimator(specs_by_label=specs_meta)
 
     provider = RobotStateProvider()
@@ -266,8 +317,16 @@ def run_oneshot(args):
 def main():
     parser = argparse.ArgumentParser(description="Pipeline de perception multi-cameras.")
     parser.add_argument("--mode", choices=["live", "replay", "oneshot"], default="live")
+    parser.add_argument("--detector", choices=["hsv", "hf"], default="hsv",
+                        help="Detecteur a utiliser. 'hsv' = V1 (seuillage couleur, "
+                             "rapide, deterministe). 'hf' = V2 (OWL-ViTv2, robuste, "
+                             "necessite transformers+torch installes).")
     parser.add_argument("--specs", type=str,
-                        default=str(REPO / "configs" / "perception" / "hsv_specs.json"))
+                        default=str(REPO / "configs" / "perception" / "hsv_specs.json"),
+                        help="Fichier specs HSV (utilise si --detector hsv).")
+    parser.add_argument("--hf-specs", type=str,
+                        default=str(REPO / "configs" / "perception" / "hf_specs.json"),
+                        help="Fichier specs HF (utilise si --detector hf).")
     parser.add_argument("--port", type=str, default=FOLLOWER_PORT)
     parser.add_argument("--no-robot", action="store_true",
                         help="Pas de bus moteur ; cam_2 utilisera la config zero (degrade).")

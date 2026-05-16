@@ -544,13 +544,14 @@ if __name__ == "__main__":
         in_robot = np.array([0.02, 0.0, 0.10])
         assert not e_with_scene._in_workspace(in_robot), \
             f"point ({in_robot}) sur la base robot devrait etre rejete par exclusion zone"
-        # un point devant le robot OK
-        in_front = np.array([0.20, 0.0, 0.05])
+        # un point clairement devant le robot, hors zones d'envelope (cube typique
+        # a 30 cm devant la base, sur la table)
+        in_front = np.array([0.30, 0.0, -0.017])
         assert e_with_scene._in_workspace(in_front), \
             f"point ({in_front}) devant le robot devrait etre accepte"
         print(f"  [OK] Zones d'exclusion (scene.json) : "
               f"{len(e_with_scene._exclusion_zones)} zone(s) actives, "
-              f"point sur robot rejete, point devant accepte")
+              f"point sur robot rejete, point cube (30cm devant) accepte")
     else:
         print("  [SKIP] scene.json absent : test des zones d'exclusion saute")
 

@@ -172,6 +172,33 @@ validation Sprint 2 repose sur la stéréo.
 
 Cette mesure doit être refaite si on déplace le robot ou si on change la base. Documenté ici pour reproductibilité.
 
+### D13 — HFDetector activé en V2 : OWL-ViTv2 (Sprint 2, 2026-05-16)
+
+**Problème** : la validation expérimentale du HSVDetector (D8) a montré des **limites fondamentales**, irréductibles par ajustement de seuils :
+- cube orange confondu avec la pince orange du robot (même couleur physique) ;
+- mug blanc confondu avec le sol blanc ;
+- prisme noir détecté de façon instable (V faible = peu d'information discriminante) ;
+- aucune compréhension de la **forme** ou du **contexte** (uniquement la couleur).
+
+Ces limites font partie de la **nature du seuillage HSV** : on regarde des pixels, pas des objets.
+
+**Solution** : passage anticipé au V2 (initialement prévu fin de projet) via **OWL-ViTv2** (Minderer et al. 2023, *Scaling Open-Vocabulary Object Detection*, NeurIPS).
+
+**Architecture** :
+- `src/perception/detector.py::HFDetector` (anciennement stub) implémente l'interface `ObjectDetector` (V1 et V2 inter-changeables).
+- Modèle : `google/owlv2-base-patch16-ensemble` (180M paramètres, ~600 Mo, ~3-5 FPS sur MacBook M4 via MPS).
+- Liste de labels en texte (anglais) configurée via `configs/perception/hf_specs.json` (10 labels par défaut : les 9 objets cibles + "robot arm").
+- Mapping optionnel anglais → label interne (pour cohérence avec le reste du code).
+
+**Cohérence stack** : `transformers` (HF) est déjà la lib utilisée par les policies LeRobot (SmolVLA, ACT, etc.). Pas de fragmentation de dépendances.
+
+**Pour le mémoire** : permet une **comparaison empirique** HSV V1 vs OWL-ViTv2 V2 sur les mêmes scènes et les mêmes 4 métriques (taux de réussite, replans, collisions, précision). C'est la contribution scientifique propre du TFE bachelor.
+
+**Limites identifiées V2** :
+- Pas de masque de segmentation (juste bbox) → grasp planner V1 utilise les 4 coins de bbox comme pseudo-contour.
+- ~3-5 FPS : trop lent pour un asservissement visuel temps-réel (Sprint 4) ; à examiner avec un modèle plus rapide ou downsampling.
+- Score threshold = 0.15 par défaut : permissif. À ajuster selon les faux positifs observés.
+
 ### D12 — Architecture USB : 3 caméras sur 2 contrôleurs séparés (2026-05-16)
 
 **Problème** : 3 caméras USB 1080p sur un seul hub partagé saturent la bande passante du contrôleur xHCI, ce qui faisait échouer `cam_2`.
