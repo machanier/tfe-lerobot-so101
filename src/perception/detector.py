@@ -360,18 +360,48 @@ class HFDetector(ObjectDetector):
             ).to(self.device)
             outputs = self._model(**inputs)
 
-        # Post-process : convertit en bboxes (xyxy en pixels), scores, labels
+        # Post-process : convertit en bboxes (xyxy en pixels), scores, labels.
+        # COMPAT transformers 4.x / 5.x : la methode a ete renommee en 5.x.
+        # On utilise la nouvelle si dispo (>=5.0), sinon l'ancienne (4.x).
         target_sizes = self._torch.tensor([(pil.height, pil.width)]).to(self.device)
-        results = self._processor.post_process_object_detection(
-            outputs=outputs, target_sizes=target_sizes,
-            threshold=self.score_threshold,
-        )[0]
+        if hasattr(self._processor, "post_process_grounded_object_detection"):
+            # transformers >= 5.0 (Maxence a 5.8.1)
+            results = self._processor.post_process_grounded_object_detection(
+                outputs=outputs, target_sizes=target_sizes,
+                threshold=self.score_threshold,
+            )[0]
+        elif hasattr(self._processor, "post_process_object_detection"):
+            # transformers 4.x (ancienne API)
+            results = self._processor.post_process_object_detection(
+                outputs=outputs, target_sizes=target_sizes,
+                threshold=self.score_threshold,
+            )[0]
+        else:
+            raise RuntimeError(
+                "Aucune methode de post-processing trouvee sur Owlv2Processor. "
+                "Version transformers incompatible ?"
+            )
+
+        # Compat clef "labels" : en 5.x, peut s'appeler "text_labels" (qui sont
+        # directement les strings) au lieu de "labels" (indices entiers).
+        if "text_labels" in results:
+            labels_field = results["text_labels"]
+            # text_labels contient deja les strings, pas besoin d'indexer self.prompt_labels
+            use_text_directly = True
+        else:
+            labels_field = results["labels"]
+            use_text_directly = False
 
         detections: list[Detection2D] = []
-        for score, label_idx, box in zip(results["scores"],
-                                          results["labels"],
-                                          results["boxes"]):
-            label = self.prompt_labels[int(label_idx)]
+        for score, label_entry, box in zip(results["scores"],
+                                            labels_field,
+                                            results["boxes"]):
+            if use_text_directly:
+                # text_labels = chaine deja resolue
+                label = str(label_entry)
+            else:
+                # labels = index entier dans self.prompt_labels
+                label = self.prompt_labels[int(label_entry)]
             x0, y0, x1, y1 = [float(v) for v in box.cpu().numpy()]
             cx = (x0 + x1) / 2.0
             cy = (y0 + y1) / 2.0
@@ -412,22 +442,26 @@ def load_hf_specs(path: Optional[Path] = None) -> dict:
 
 
 def default_hf_labels() -> list[str]:
-    """Labels par defaut pour HFDetector (cas tes 9 objets + robot).
+    """Labels (= descriptions textuelles) par defaut pour HFDetector.
+
+    OWL-ViTv2 marche mieux avec des descriptions ENRICHIES (couleur + forme +
+    materiau + taille) qu'avec des labels minimalistes. Voir D13 dans
+    docs/PROJECT_STATUS.md.
 
     Convention : en anglais (les modeles HF sont entraines majoritairement
     en anglais, meilleure precision).
     """
     return [
-        "orange cube",
-        "blue rectangular box",
-        "purple cylinder",
-        "black triangular prism",
-        "white mug",
-        "pen",
-        "rubiks cube",
-        "tissue box",
-        "tall plastic cup",
-        "robot arm",
+        "a small bright orange plastic cube",
+        "a blue rectangular plastic box",
+        "a purple plastic cylinder",
+        "a small black triangular prism",
+        "a small white ceramic mug with a handle",
+        "a thin pen or pencil",
+        "a colorful rubiks cube with multiple square faces",
+        "a rectangular cardboard tissue box",
+        "a tall transparent plastic cup",
+        "a metallic robotic arm with a gripper",
     ]
 
 
