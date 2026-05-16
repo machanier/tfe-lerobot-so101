@@ -176,6 +176,12 @@ def check_perception_modules():
         print(result.stdout); print(result.stderr)
 
 
+def check_planning_modules():
+    section("MODULES PLANNING (Sprint 3)")
+    for module in ["src.planning.grasp"]:
+        _run_selftest(module)
+
+
 def _run_selftest(module):
     result = subprocess.run(
         [sys.executable, "-m", module],
@@ -200,6 +206,7 @@ def main():
     check_stereo_baseline(cams)
     check_chain()
     check_perception_modules()
+    check_planning_modules()
 
     section("BILAN")
     if intr_ok and motor_ok and extr_ok:
