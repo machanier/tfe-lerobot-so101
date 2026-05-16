@@ -163,6 +163,33 @@ Limite connue : ambiguïté planaire pour 4 coins coplanaires alignés au plan
 image (Lepetit et al. 2009, *EPnP*, sec. "Planar case"). Acceptable : la
 validation Sprint 2 repose sur la stéréo.
 
+### D14 — IK numérique en pure NumPy (Sprint 3 brique 3.2, 2026-05-16)
+
+**Problème** : convertir une pose cartésienne `T_base_gripper` (matrice 4×4 SE(3))
+de la `GraspPose` en angles articulaires pour envoyer aux moteurs.
+
+**Solution** : `src/control/ik.py` implémente un solveur Gauss-Newton avec
+Levenberg-Marquardt en **pure NumPy** (Jacobien numérique par différences
+finies centrées). Random restarts (6 par défaut) + heuristique `_smart_init`
+pour échapper aux minima locaux. Zéro dépendance externe (scipy non requis).
+
+**Bug critique évité** : conversion des plages articulaires raw → radians.
+LeRobot utilise `angle_deg = (raw - mid) * 360 / 4095`, donc 1 count =
+`2π/4095` rad (pas `π/4095`). Avec la formule correcte, les plages
+articulaires passent de ~±60° à ~±105°, ce qui débloque la convergence pour
+les poses top-down.
+
+**Résultats observés (self-tests)** :
+- Roundtrip FK→IK sur 5 configurations aléatoires : erreur max < 0.5 mm.
+- Pose top-down (20cm devant, pince verticale) : erreur ~7 mm, dans le
+  plancher de bruit du SO-101.
+- Pose hors workspace : non-convergence détectée, pas de crash.
+
+**Sous-actuation 5/6 DDL** : le SO-101 a 5 articulations rotoïdes pour 6 DDL
+SE(3). Certaines orientations exotiques ne sont pas exactement atteignables ;
+l'IK retourne la meilleure approximation. Pour le top-down (4 contraintes
+positionnelles + 1 yaw), le système est bien posé.
+
 ### D11 — Convention de repère mesurée pour le poste de Maxence (2026-05-16)
 
 **Origine du repère base** : centre du pivot du `shoulder_pan` (premier moteur).

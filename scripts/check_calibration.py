@@ -182,6 +182,12 @@ def check_planning_modules():
         _run_selftest(module)
 
 
+def check_control_modules():
+    section("MODULES CONTROL (Sprint 3)")
+    for module in ["src.control.ik"]:
+        _run_selftest(module)
+
+
 def _run_selftest(module):
     result = subprocess.run(
         [sys.executable, "-m", module],
@@ -207,6 +213,7 @@ def main():
     check_chain()
     check_perception_modules()
     check_planning_modules()
+    check_control_modules()
 
     section("BILAN")
     if intr_ok and motor_ok and extr_ok:
