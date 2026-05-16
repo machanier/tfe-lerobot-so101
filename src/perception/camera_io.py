@@ -158,9 +158,27 @@ class MultiCamera:
     # ----- contexte --------------------------------------------------------
 
     def open(self):
-        """Ouvre les peripheriques et charge intrinseques/hand-eye."""
+        """Ouvre les peripheriques et charge intrinseques/hand-eye.
+
+        Strategie pour pouvoir ouvrir 3 cameras USB 1080p sur macOS simultanement :
+
+        1. Force le codec **MJPG** (Motion-JPEG). Sans ca, OpenCV demande YUYV
+           non-compresse a la camera (~125 Mo/s par cam en 1080p30) qui sature
+           la bande passante USB. Avec MJPG, l'image est compressee dans la
+           camera avant l'envoi USB (~12 Mo/s) -> 3 cameras tiennent.
+        2. Warmup : on lit quelques frames apres chaque open pour stabiliser
+           l'autoexposure et l'allocation USB. Sans warmup, cam_2 (la derniere
+           ouverte) echoue souvent au premier grab() sur macOS.
+
+        Cela ne change pas la calibration intrinseque : MJPG et YUYV ont le
+        meme modele pinhole (le seul effet est une legere compression JPEG,
+        invisible pour la geometrie a 1080p).
+        """
         if self._opened:
             return
+        # MJPG fourcc = compression motion-JPEG dans la camera.
+        # Voir https://docs.opencv.org/4.x/dd/d43/tutorial_py_video_display.html
+        MJPG = cv2.VideoWriter_fourcc(*'MJPG')
         for k in self.cam_keys:
             cfg = CAMERAS[k]
             cap = cv2.VideoCapture(cfg["index"])
@@ -172,6 +190,8 @@ class MultiCamera:
                     "Verifie l'autorisation camera macOS et que la camera "
                     "n'est pas utilisee par un autre processus."
                 )
+            # ORDRE IMPORTANT : codec d'abord, puis resolution, puis FPS
+            cap.set(cv2.CAP_PROP_FOURCC, MJPG)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(cfg["width"]))
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(cfg["height"]))
             cap.set(cv2.CAP_PROP_FPS, float(cfg["fps"]))
@@ -183,6 +203,15 @@ class MultiCamera:
             self._caps[k] = cap
             self._intrinsics[k] = load_intrinsics(k, self.configs_dir)
             self._handeye[k] = load_handeye(k, self.configs_dir)
+
+        # WARMUP : 5 frames par camera pour stabiliser USB + autoexposure.
+        # Sans ca, les premiers grab() echouent souvent sur macOS (notamment cam_2).
+        import time
+        for _ in range(5):
+            for cap in self._caps.values():
+                cap.grab()
+            time.sleep(0.05)
+
         self._opened = True
 
     def close(self):
@@ -219,17 +248,29 @@ class MultiCamera:
         if not self._opened:
             raise RuntimeError("MultiCamera n'est pas ouvert. Appelle open() d'abord.")
 
-        # 1. emet grab() pour les N cameras de facon rapprochee
+        # 1. emet grab() pour les N cameras de facon rapprochee.
+        # Petit retry en cas d'echec ponctuel (rejet USB intermittent sur macOS).
         grab_ok = {}
         for k in self.cam_keys:
-            grab_ok[k] = self._caps[k].grab()
+            ok = self._caps[k].grab()
+            if not ok:
+                # Mini delai puis retry une seule fois
+                time.sleep(0.01)
+                ok = self._caps[k].grab()
+            grab_ok[k] = ok
         ts = time.time()
 
         # 2. decode les frames qui ont reussi
         frames: dict[str, Optional[Frame]] = {}
         for k in self.cam_keys:
             if not grab_ok[k]:
-                print(f"[camera_io] grab() KO pour {k}", file=sys.stderr)
+                # Log limite pour ne pas flooder (les premieres fois suffisent
+                # pour diagnostiquer ; ensuite on tait)
+                if not getattr(self, "_grab_warned", False):
+                    print(f"[camera_io] grab() KO pour {k} - "
+                          "verifier bande passante USB (essaie de debrancher les autres "
+                          "peripheriques USB) ou diminuer la resolution", file=sys.stderr)
+                    self._grab_warned = True
                 frames[k] = None
                 continue
             ok, img = self._caps[k].retrieve()

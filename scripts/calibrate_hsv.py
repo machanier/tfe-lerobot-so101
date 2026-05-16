@@ -68,12 +68,73 @@ class HSVSampler:
         print(f"  + {patch.shape[0]} px ({total} cumules pour {self.current_label})")
 
 
-def _build_spec(label: str, samples: np.ndarray) -> dict:
-    """Construit un dict ObjectSpec depuis les pixels echantillonnes."""
+def _detect_color_mode(samples: np.ndarray) -> str:
+    """Detecte automatiquement le mode (chromatic / black / white / gray).
+
+    Regle (basee sur les proprietes de l'espace HSV) :
+      - V_median tres bas -> black (teinte n'a pas de sens quand V~0)
+      - S_median bas + V_median tres haut -> white (pas de saturation, lumineux)
+      - S_median bas + V_median intermediaire -> gray
+      - sinon -> chromatic (teinte significative)
+
+    Voir docs/PROJECT_STATUS.md decision D8 pour la justification.
+    """
     H = samples[:, 0].astype(np.int32)
     S = samples[:, 1].astype(np.int32)
     V = samples[:, 2].astype(np.int32)
+    s_med = float(np.median(S))
+    v_med = float(np.median(V))
+    if v_med < 70:
+        return "black"
+    if s_med < 50 and v_med > 180:
+        return "white"
+    if s_med < 50:
+        return "gray"
+    return "chromatic"
 
+
+def _build_spec(label: str, samples: np.ndarray) -> dict:
+    """Construit un dict ObjectSpec depuis les pixels echantillonnes.
+
+    Adapte le mode (chromatic / black / white / gray) automatiquement.
+    """
+    H = samples[:, 0].astype(np.int32)
+    S = samples[:, 1].astype(np.int32)
+    V = samples[:, 2].astype(np.int32)
+    mode = _detect_color_mode(samples)
+
+    # --- Couleurs achromatiques : on ignore H ---
+    if mode == "black":
+        # On capte ce qui est sombre. v_hi = 95eme percentile + petite marge.
+        v_hi = int(min(255, np.percentile(V, 95) + 15))
+        return {
+            "label": label, "color_mode": "black", "v_hi": v_hi,
+            "min_area_px": 500, "max_area_px": 200000, "meta": {},
+            "_n_samples_px": int(samples.shape[0]),
+            "_diagnostic": f"V median={int(np.median(V))}, max={int(np.max(V))}",
+        }
+    if mode == "white":
+        s_hi = int(min(255, np.percentile(S, 95) + 15))
+        v_lo = int(max(0, np.percentile(V, 5) - 15))
+        return {
+            "label": label, "color_mode": "white", "s_hi": s_hi, "v_lo": v_lo,
+            "min_area_px": 500, "max_area_px": 200000, "meta": {},
+            "_n_samples_px": int(samples.shape[0]),
+            "_diagnostic": f"S median={int(np.median(S))}, V median={int(np.median(V))}",
+        }
+    if mode == "gray":
+        s_hi = int(min(255, np.percentile(S, 95) + 15))
+        v_lo = int(max(0, np.percentile(V, 5) - 15))
+        v_hi = int(min(255, np.percentile(V, 95) + 15))
+        return {
+            "label": label, "color_mode": "gray",
+            "s_hi": s_hi, "v_lo": v_lo, "v_hi": v_hi,
+            "min_area_px": 500, "max_area_px": 200000, "meta": {},
+            "_n_samples_px": int(samples.shape[0]),
+            "_diagnostic": f"S median={int(np.median(S))}, V median={int(np.median(V))}",
+        }
+
+    # --- Couleur chromatique : on utilise H + S + V ---
     # Detection automatique du rouge (cluster autour de 0/179)
     # On regarde quelle fraction des pixels est PROCHE de la couture 0/180.
     # Si >= 60 % sont a moins de 25 de la couture (cote 0 OU cote 179),
@@ -110,6 +171,7 @@ def _build_spec(label: str, samples: np.ndarray) -> dict:
 
     spec = {
         "label": label,
+        "color_mode": "chromatic",
         "h_lo": h_lo,
         "h_hi": h_hi,
         "s_lo": int(max(20, np.percentile(S, 2))),
@@ -120,6 +182,7 @@ def _build_spec(label: str, samples: np.ndarray) -> dict:
         "max_area_px": 200000,
         "meta": {},
         "_n_samples_px": int(samples.shape[0]),
+        "_diagnostic": f"H median={int(np.median(H))}, S median={int(np.median(S))}, V median={int(np.median(V))}",
     }
     if extra_lo is not None:
         spec["hue_extra_lo"] = extra_lo
@@ -215,12 +278,32 @@ def main():
         json.dump(payload, f, indent=2)
     print()
     print(f"{len(specs)} specs HSV sauvegardees : {output}")
+    print()
+    print(f"  {'LABEL':<25} {'MODE':<10} CONDITION DE DETECTION")
+    print(f"  {'-' * 70}")
     for s in specs:
-        extra = ""
-        if "hue_extra_lo" in s:
-            extra = f" + H[{s['hue_extra_lo']}, {s['hue_extra_hi']}]"
-        print(f"  {s['label']:<18} H[{s['h_lo']}, {s['h_hi']}]{extra}  "
-              f"S>={s['s_lo']}  V>={s['v_lo']}")
+        mode = s.get("color_mode", "chromatic")
+        if mode == "black":
+            cond = f"V <= {s['v_hi']}  (H et S ignores)"
+        elif mode == "white":
+            cond = f"S <= {s['s_hi']} ET V >= {s['v_lo']}  (H ignore)"
+        elif mode == "gray":
+            cond = f"S <= {s['s_hi']} ET V in [{s['v_lo']}, {s['v_hi']}]  (H ignore)"
+        else:
+            extra = ""
+            if "hue_extra_lo" in s:
+                extra = f" + H[{s['hue_extra_lo']}, {s['hue_extra_hi']}]"
+            cond = (f"H[{s['h_lo']}, {s['h_hi']}]{extra}  "
+                    f"S>={s['s_lo']}  V>={s['v_lo']}")
+        print(f"  {s['label']:<25} {mode:<10} {cond}")
+        if "_diagnostic" in s:
+            print(f"  {'':<25} {'':<10} (diag: {s['_diagnostic']})")
+    print()
+    print("Conseils :")
+    print("  - Si une couleur 'chromatic' detecte le ROBOT (orange physique), "
+          "le pose_estimator filtrera via les zones d'exclusion (configs/scene.json).")
+    print("  - Si une couleur 'black'/'white' a un v_hi/v_lo trop large, re-echantillonne "
+          "en cliquant uniquement sur le centre de l'objet (pas les bords).")
 
 
 if __name__ == "__main__":

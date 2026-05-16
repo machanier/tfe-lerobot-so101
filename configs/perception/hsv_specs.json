@@ -1,0 +1,55 @@
+{
+  "_doc": "Genere par scripts/calibrate_hsv.py. white_mug retire (mauvaise calibration : H trop large). black_triangular_prism : H trop large (couvre bleu+violet), A RECALIBRER avec le nouveau mode='black'.",
+  "specs": [
+    {
+      "label": "orange_cube",
+      "color_mode": "chromatic",
+      "h_lo": 2,
+      "h_hi": 11,
+      "s_lo": 108,
+      "s_hi": 255,
+      "v_lo": 144,
+      "v_hi": 255,
+      "min_area_px": 500,
+      "max_area_px": 200000,
+      "meta": {},
+      "_n_samples_px": 1519,
+      "_note_robot_orange": "ATTENTION : peut confondre avec le filament orange du robot. Le pose_estimator filtre via les exclusion zones de configs/scene.json."
+    },
+    {
+      "label": "blue_rectangular_box",
+      "color_mode": "chromatic",
+      "h_lo": 108,
+      "h_hi": 121,
+      "s_lo": 109,
+      "s_hi": 255,
+      "v_lo": 69,
+      "v_hi": 255,
+      "min_area_px": 500,
+      "max_area_px": 200000,
+      "meta": {}
+    },
+    {
+      "label": "purple_cylinder",
+      "color_mode": "chromatic",
+      "h_lo": 122,
+      "h_hi": 135,
+      "s_lo": 58,
+      "s_hi": 255,
+      "v_lo": 80,
+      "v_hi": 255,
+      "min_area_px": 500,
+      "max_area_px": 200000,
+      "meta": {}
+    },
+    {
+      "label": "black_triangular_prism",
+      "color_mode": "black",
+      "v_hi": 60,
+      "min_area_px": 500,
+      "max_area_px": 200000,
+      "meta": {},
+      "_note_a_recalibrer": "Valeur v_hi=60 par defaut, RECALIBRER en lancant : python scripts/calibrate_hsv.py et en cliquant uniquement sur le centre noir du prisme."
+    }
+  ]
+}

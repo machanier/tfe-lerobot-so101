@@ -46,31 +46,66 @@ from src.perception.scene import Detection2D, Frame
 
 @dataclass
 class HSVRange:
-    """Plage de seuillage HSV.
+    """Plage de seuillage HSV avec gestion des couleurs achromatiques.
 
-    OpenCV utilise H in [0, 179], S et V dans [0, 255]. Pour le rouge, qui
-    chevauche H=0 (donc H proche de 0 ET H proche de 179), on peut definir
-    DEUX plages disjointes via `hue_extra_lo`/`hue_extra_hi` (combinees par OU).
+    OpenCV : H in [0, 179], S et V dans [0, 255].
+
+    color_mode :
+      - "chromatic" : la couleur a une teinte significative (rouge, bleu,
+        vert, violet, ...). On seuille H + S + V. Cas standard pour les
+        primitives colorees.
+      - "black"     : LA TEINTE N'A PAS DE SENS pour le noir (V proche de 0).
+        On seuille uniquement V <= v_hi (typiquement < 60). H et S ignores.
+      - "white"     : pas de saturation. On seuille S <= s_hi (typiquement
+        < 30) ET V >= v_lo (typiquement > 200). H ignore.
+      - "gray"      : peu de saturation, V intermediaire. On seuille S <= s_hi
+        ET v_lo <= V <= v_hi.
+
+    Cette distinction est CRITIQUE : sans elle, "noir" et "blanc" calibres
+    en mode chromatic captent toutes les teintes a la fois, ce qui
+    provoque des confusions massives entre objets sombres (noir/bleu/violet)
+    ou clairs (blanc/objets pales). Voir docs/PROJECT_STATUS.md D8.
+
+    Pour le rouge qui chevauche la couture H=0/179, on definit DEUX plages
+    chromatic via `hue_extra_lo`/`hue_extra_hi`.
 
     Attributes:
-        h_lo, h_hi : bornes du teinte principale.
-        s_lo, s_hi : bornes saturation.
-        v_lo, v_hi : bornes valeur (luminosite).
-        hue_extra_lo, hue_extra_hi : optionnelles, pour les couleurs qui
-            chevauchent H=0 (rouge typiquement).
+        color_mode : voir ci-dessus ("chromatic" par defaut pour compat).
+        h_lo, h_hi : bornes teinte (chromatic uniquement).
+        s_lo, s_hi : bornes saturation. Pour "white"/"gray", on utilise s_hi.
+        v_lo, v_hi : bornes valeur. Pour "black", on utilise v_hi. Pour
+                     "white", v_lo.
+        hue_extra_lo, hue_extra_hi : 2eme plage H pour rouge wrap-around.
     """
 
-    h_lo: int
-    h_hi: int
-    s_lo: int = 80
+    h_lo: int = 0
+    h_hi: int = 179
+    s_lo: int = 0
     s_hi: int = 255
-    v_lo: int = 50
+    v_lo: int = 0
     v_hi: int = 255
     hue_extra_lo: Optional[int] = None
     hue_extra_hi: Optional[int] = None
+    color_mode: str = "chromatic"
 
     def mask(self, hsv: np.ndarray) -> np.ndarray:
         """Renvoie un masque uint8 (H, W) avec 255 ou les pixels matchent."""
+        if self.color_mode == "black":
+            # V bas suffit. H et S ignores.
+            lower = np.array([0, 0, 0], dtype=np.uint8)
+            upper = np.array([179, 255, self.v_hi], dtype=np.uint8)
+            return cv2.inRange(hsv, lower, upper)
+        if self.color_mode == "white":
+            # S bas + V haut. H ignore.
+            lower = np.array([0, 0, self.v_lo], dtype=np.uint8)
+            upper = np.array([179, self.s_hi, 255], dtype=np.uint8)
+            return cv2.inRange(hsv, lower, upper)
+        if self.color_mode == "gray":
+            # S bas + V intermediaire. H ignore.
+            lower = np.array([0, 0, self.v_lo], dtype=np.uint8)
+            upper = np.array([179, self.s_hi, self.v_hi], dtype=np.uint8)
+            return cv2.inRange(hsv, lower, upper)
+        # chromatic (cas par defaut)
         lower = np.array([self.h_lo, self.s_lo, self.v_lo], dtype=np.uint8)
         upper = np.array([self.h_hi, self.s_hi, self.v_hi], dtype=np.uint8)
         m = cv2.inRange(hsv, lower, upper)
@@ -316,10 +351,11 @@ def load_hsv_specs(path: Optional[Path] = None) -> list[ObjectSpec]:
     out = []
     for s in data.get("specs", []):
         hsv = HSVRange(
-            h_lo=int(s["h_lo"]), h_hi=int(s["h_hi"]),
-            s_lo=int(s.get("s_lo", 80)), s_hi=int(s.get("s_hi", 255)),
-            v_lo=int(s.get("v_lo", 50)), v_hi=int(s.get("v_hi", 255)),
+            h_lo=int(s.get("h_lo", 0)), h_hi=int(s.get("h_hi", 179)),
+            s_lo=int(s.get("s_lo", 0)), s_hi=int(s.get("s_hi", 255)),
+            v_lo=int(s.get("v_lo", 0)), v_hi=int(s.get("v_hi", 255)),
             hue_extra_lo=s.get("hue_extra_lo"), hue_extra_hi=s.get("hue_extra_hi"),
+            color_mode=str(s.get("color_mode", "chromatic")),
         )
         out.append(ObjectSpec(
             label=str(s["label"]), hsv=hsv,
@@ -423,5 +459,36 @@ if __name__ == "__main__":
     assert {s.label for s in specs} == {"red_cube", "green_cylinder",
                                          "blue_triangle", "yellow_rectangle"}
     print("  [OK] default_hsv_specs : 4 primitives colorees")
+
+    # 8. color_mode = "black" : ne capte que les pixels sombres, INDEPENDAMMENT de H
+    img_blk = np.zeros((100, 100, 3), dtype=np.uint8)  # noir pur
+    # BGR (40, 5, 5) : presque noir, legerement bleute. V_HSV ≈ 40
+    img_almost_black_blue = np.full((100, 100, 3), [40, 5, 5], dtype=np.uint8)
+    # BGR (5, 5, 40) : presque noir, legerement rouge. V_HSV ≈ 40
+    img_almost_black_red = np.full((100, 100, 3), [5, 5, 40], dtype=np.uint8)
+    # BGR (200, 50, 50) : bleu MOYEN, pas noir. V_HSV ≈ 200
+    img_medium_blue = np.full((100, 100, 3), [200, 50, 50], dtype=np.uint8)
+    hsv_blk = cv2.cvtColor(img_blk, cv2.COLOR_BGR2HSV)
+    hsv_ab = cv2.cvtColor(img_almost_black_blue, cv2.COLOR_BGR2HSV)
+    hsv_ar = cv2.cvtColor(img_almost_black_red, cv2.COLOR_BGR2HSV)
+    hsv_mb = cv2.cvtColor(img_medium_blue, cv2.COLOR_BGR2HSV)
+    rng_black = HSVRange(color_mode="black", v_hi=60)
+    assert rng_black.mask(hsv_blk).mean() > 250, "noir pur doit etre capte"
+    assert rng_black.mask(hsv_ab).mean() > 250, "presque-noir bleute aussi"
+    assert rng_black.mask(hsv_ar).mean() > 250, "presque-noir rouge aussi (H ignore)"
+    assert rng_black.mask(hsv_mb).mean() < 5,  "bleu moyen (V=200) ne doit PAS etre capte"
+    print("  [OK] color_mode='black' capte V<=v_hi peu importe H (independance teinte)")
+
+    # 9. color_mode = "white" : ne capte que pixels peu satures + clairs
+    img_wht = np.full((100, 100, 3), [240, 240, 240], dtype=np.uint8)  # blanc cassé
+    img_red_pure = np.full((100, 100, 3), [0, 0, 240], dtype=np.uint8)
+    hsv_wht = cv2.cvtColor(img_wht, cv2.COLOR_BGR2HSV)
+    hsv_red = cv2.cvtColor(img_red_pure, cv2.COLOR_BGR2HSV)
+    rng_white = HSVRange(color_mode="white", s_hi=30, v_lo=200)
+    m_wht = rng_white.mask(hsv_wht)
+    m_red = rng_white.mask(hsv_red)
+    assert m_wht.mean() > 250, "blanc cassé doit etre capte"
+    assert m_red.mean() < 5, "rouge pur ne doit PAS etre capte (S eleve)"
+    print("  [OK] color_mode='white' capte S<=s_hi ET V>=v_lo (H ignore)")
 
     print("Tous les tests passent.")

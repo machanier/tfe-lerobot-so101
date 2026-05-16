@@ -163,6 +163,40 @@ Limite connue : ambiguïté planaire pour 4 coins coplanaires alignés au plan
 image (Lepetit et al. 2009, *EPnP*, sec. "Planar case"). Acceptable : la
 validation Sprint 2 repose sur la stéréo.
 
+### D8 — HSV : distinction `color_mode` chromatic / black / white / gray (Sprint 2)
+
+**Problème découvert (2026-05-16)** : la première calibration HSV de Maxence sur 5 objets a montré que **noir et blanc ne sont pas des couleurs en HSV**. Pour le noir, V≈0 rend H et S indéterminés (mathématiquement) ; pour le blanc, S≈0 rend H indéterminé. Conséquence : le seuillage par H sur un objet noir donnait `H ∈ [103, 168]`, couvrant simultanément le bleu et le violet → confusions massives entre objets sombres.
+
+**Solution** : `HSVRange` a maintenant un champ `color_mode` qui contrôle quelles bornes sont appliquées :
+- `"chromatic"` (défaut) : seuillage H + S + V comme avant.
+- `"black"` : V ≤ v_hi seulement (H, S ignorés).
+- `"white"` : S ≤ s_hi ET V ≥ v_lo (H ignoré).
+- `"gray"` : S ≤ s_hi ET v_lo ≤ V ≤ v_hi (H ignoré).
+
+`calibrate_hsv.py` détecte automatiquement le bon mode en regardant la médiane de S et V des pixels échantillonnés (cf `_detect_color_mode`).
+
+**Référence** : c'est la propriété fondamentale du modèle HSV décrite dans tout manuel de Computer Vision (Forsyth & Ponce 2012, ch. 6.1.2 ; Smith 1978 *Color Gamut Transform Pairs*, papier original HSV).
+
+### D9 — Zones d'exclusion + bornes workspace dans `configs/scene.json` (Sprint 2)
+
+**Problème découvert (2026-05-16)** : le filament orange du robot SO-101 est physiquement la même teinte que le cube orange. HSV ne peut PAS les distinguer (par définition).
+
+**Solution** : `configs/scene.json` déclare des **zones d'exclusion spatiales** (cylindre autour de la base robot) et des **bornes workspace**. Le `pose_estimator` filtre toute estimation 3D qui tombe dedans → la "détection" du robot orange est rejetée car la position triangulée tombe sur la base, hors workspace utile.
+
+C'est une approche **prior géométrique** : on injecte la connaissance "le robot est ici, donc ce n'est pas un objet à saisir". Économique en compute, robuste, justifiable.
+
+`configs/scene.json` contient aussi la position de la **boîte de dépose** (fixée au sol, mesurée une fois). Elle servira au Sprint 3 (cible du retract) et au Sprint 4 (obstacle d'évitement).
+
+### D10 — Codec MJPG pour 3 caméras USB 1080p (Sprint 2)
+
+**Problème découvert (2026-05-16)** : sur macOS, ouvrir 3 caméras USB 1080p simultanément sature la bande passante USB → la 3ème caméra (cam_2) échoue en boucle au `grab()`.
+
+**Cause** : OpenCV demande par défaut un flux YUYV non-compressé = ~125 Mo/s par caméra à 1080p30 → 375 Mo/s total, dépasse USB 3.0.
+
+**Solution** : forcer le codec **MJPG** (Motion-JPEG) qui compresse l'image dans la caméra avant l'envoi USB. Coût : ~12 Mo/s par caméra (×10 moins). Effet sur la calibration intrinsèque : nul (même modèle pinhole, légère compression JPEG invisible à 1080p).
+
+Combiné à un **warmup** (5 frames par caméra après open) pour stabiliser l'autoexposure et l'allocation USB, cela résout le problème cam_2.
+
 ### D7 — Extension V2 prévue : détecteur HF dans l'écosystème LeRobot
 
 **Décision** : la classe `HFDetector` (stub) reste dans `detector.py`,

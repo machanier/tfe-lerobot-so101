@@ -85,7 +85,7 @@ def test_red_cube_triangulated_under_5mm():
     assert dets_by_cam["cam_0"], "Detection L vide"
     assert dets_by_cam["cam_1"], "Detection R vide"
 
-    estimator = PoseEstimator()
+    estimator = PoseEstimator(load_scene_config=False)
     scene = estimator.build_scene(dets_by_cam, {"cam_0": frame_L, "cam_1": frame_R})
     assert len(scene.objects) == 1, f"Attendu 1 objet, recu {len(scene.objects)}"
     obj = scene.objects[0]
@@ -108,7 +108,7 @@ def test_workspace_filter_rejects_aberrant_solutions():
     frame_L = Frame(cam_key="cam_0", image=img_L, K=K, dist=dist, T_base_cam=T_L)
     frame_R = Frame(cam_key="cam_1", image=img_R, K=K, dist=dist, T_base_cam=T_R)
     det = HSVDetector([make_red_cube_spec()])
-    estimator = PoseEstimator()
+    estimator = PoseEstimator(load_scene_config=False)
     scene = estimator.build_scene(det.detect_multi({"cam_0": frame_L, "cam_1": frame_R}),
                                    {"cam_0": frame_L, "cam_1": frame_R})
     assert len(scene.objects) == 0, "Position hors workspace devrait etre filtree"
@@ -122,7 +122,7 @@ def test_single_camera_no_stereo_no_pnp():
     # Detection bidon avec center_px mais SANS contour (pas de PnP possible)
     det = Detection2D(cam_key="cam_0", label="red_cube",
                       center_px=(300.0, 200.0), contour=None)
-    estimator = PoseEstimator()
+    estimator = PoseEstimator(load_scene_config=False)
     scene = estimator.build_scene({"cam_0": [det]}, {"cam_0": frame_L})
     assert len(scene.objects) == 0
 
@@ -144,7 +144,8 @@ def test_reprojection_error_is_used_to_reject():
     det = HSVDetector([make_red_cube_spec()])
     # max_reproj_error_px tres strict pour forcer le rejet
     from src.perception.pose_estimator import PoseEstimatorConfig
-    estimator = PoseEstimator(PoseEstimatorConfig(max_reproj_error_px=5.0))
+    estimator = PoseEstimator(PoseEstimatorConfig(max_reproj_error_px=5.0),
+                              load_scene_config=False)
     scene = estimator.build_scene(det.detect_multi({"cam_0": frame_L, "cam_1": frame_R}),
                                    {"cam_0": frame_L, "cam_1": frame_R})
     assert len(scene.objects) == 0, "Erreur reprojection forte devrait rejeter"

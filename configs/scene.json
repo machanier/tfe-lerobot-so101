@@ -1,0 +1,28 @@
+{
+  "_doc": "Configuration geometrique du poste de travail (statique). A REMPLIR par Maxence avec des mesures au pied a coulisse depuis la base du robot. Toutes les coordonnees sont en METRES dans le repere BASE du robot.",
+
+  "drop_box": {
+    "_doc": "Boite de depose. Fixee au sol, MESUREE UNE FOIS. Sera utilisee : (1) au Sprint 3 comme cible du 'retract' apres saisie ; (2) au Sprint 4 comme obstacle d'evitement.",
+    "center_base_m": [0.00, 0.20, 0.05],
+    "dimensions_m": [0.15, 0.15, 0.10],
+    "_TODO_a_mesurer": "remplacer les valeurs ci-dessus par les mesures reelles (centre haut de la boite, dimensions externes)"
+  },
+
+  "exclusion_zones_base_m": [
+    {
+      "_doc": "Zone occupee par la base du robot lui-meme. Toute detection 3D tombant dedans est rejetee (anti-confusion robot-orange / cube-orange).",
+      "type": "cylinder",
+      "center_base_m": [0.00, 0.00, 0.00],
+      "radius_m": 0.10,
+      "height_m": 0.35,
+      "label": "robot_base"
+    }
+  ],
+
+  "workspace_bounds_base_m": {
+    "_doc": "Limites du workspace utile (plage atteignable par le SO-101). Detection 3D hors de ces bornes => rejetee. Plus large que strictement necessaire ; ce sont des bornes molles pour rejeter les positions delirantes.",
+    "x_min": -0.10, "x_max":  0.50,
+    "y_min": -0.40, "y_max":  0.40,
+    "z_min": -0.05, "z_max":  0.40
+  }
+}

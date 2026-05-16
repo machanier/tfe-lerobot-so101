@@ -242,6 +242,9 @@ class PoseEstimatorConfig:
                                    negatives).
         enable_mono_pnp_fallback : si vrai et stereo indisponible/echec, tente
                                    un PnP monoculaire (sur cam_2 en priorite).
+        scene_config_path        : chemin vers configs/scene.json (zones
+                                   d'exclusion + bornes workspace). Si None,
+                                   utilise les valeurs internes (min/max Z).
     """
 
     stereo_keys: tuple[str, str] = ("cam_0", "cam_1")
@@ -249,6 +252,7 @@ class PoseEstimatorConfig:
     max_z_base_m: float = 0.40
     min_z_base_m: float = -0.05
     enable_mono_pnp_fallback: bool = True
+    scene_config_path: Optional[object] = None  # Path ou str
 
 
 class PoseEstimator:
@@ -261,16 +265,53 @@ class PoseEstimator:
          trop grande) et que l'option fallback est active, tente le PnP
          monoculaire sur cam_2 (eye-in-hand, le plus precis).
       4. Filtre les estimations dont z (base) est dehors de la plage attendue.
+      5. Filtre les estimations qui tombent dans une **zone d'exclusion**
+         (charge depuis configs/scene.json) : c'est ce qui evite de detecter
+         le robot lui-meme comme un objet (cas du cube orange vs filament
+         orange du robot).
 
     L'implementation reste SIMPLE et lisible : la sophistication sera ajoutee
     si necessaire au Sprint 3 (e.g. RANSAC sur N>2 vues, prior bayesien...).
     """
 
     def __init__(self, config: Optional[PoseEstimatorConfig] = None,
-                 specs_by_label: Optional[dict[str, dict]] = None):
+                 specs_by_label: Optional[dict[str, dict]] = None,
+                 load_scene_config: bool = True):
+        """
+        Args:
+            config           : hyperparametres (defaut : PoseEstimatorConfig()).
+            specs_by_label   : {label: ObjectSpec.meta} pour le PnP monoculaire.
+            load_scene_config : si True (defaut), charge configs/scene.json
+                pour activer les zones d'exclusion + bornes workspace.
+                Passe False pour les tests synthetiques qui veulent un
+                comportement deterministe independant de la config reelle.
+        """
         self.config = config or PoseEstimatorConfig()
         # specs_by_label : {label: ObjectSpec.meta} pour PnP monoculaire
         self.specs_meta = specs_by_label or {}
+        # Zones d'exclusion + bornes workspace charges depuis scene.json (si dispo)
+        self._exclusion_zones: list[dict] = []
+        self._workspace_bounds: Optional[dict] = None
+        if load_scene_config:
+            self._load_scene_config(self.config.scene_config_path)
+
+    def _load_scene_config(self, path):
+        """Charge configs/scene.json si present. Defaut : pas de zones."""
+        import json
+        from pathlib import Path
+        if path is None:
+            # cherche le defaut a configs/scene.json relativement au repo
+            default = Path(__file__).resolve().parents[2] / "configs" / "scene.json"
+            if default.exists():
+                path = default
+            else:
+                return
+        path = Path(path)
+        if not path.exists():
+            return
+        data = json.load(open(path))
+        self._exclusion_zones = data.get("exclusion_zones_base_m", []) or []
+        self._workspace_bounds = data.get("workspace_bounds_base_m")
 
     # ----- API ------------------------------------------------------------
 
@@ -352,12 +393,44 @@ class PoseEstimator:
 
     def _in_workspace(self, X: np.ndarray) -> bool:
         x, y, z = float(X[0]), float(X[1]), float(X[2])
+        # Bornes Z par defaut (de la config code)
         if not (self.config.min_z_base_m <= z <= self.config.max_z_base_m):
             return False
         # SO-101 a un bras de ~30 cm : tout ce qui est au-dela de 1 m est aberrant.
         if (x * x + y * y + z * z) > 1.0:
             return False
+        # Bornes workspace de scene.json (si dispo)
+        if self._workspace_bounds is not None:
+            wb = self._workspace_bounds
+            if not (wb["x_min"] <= x <= wb["x_max"]): return False
+            if not (wb["y_min"] <= y <= wb["y_max"]): return False
+            if not (wb["z_min"] <= z <= wb["z_max"]): return False
+        # Zones d'exclusion : la position ne doit etre dans AUCUNE zone.
+        for zone in self._exclusion_zones:
+            if self._point_in_zone((x, y, z), zone):
+                return False
         return True
+
+    @staticmethod
+    def _point_in_zone(p: tuple[float, float, float], zone: dict) -> bool:
+        """Renvoie True si le point est dans la zone d'exclusion.
+
+        Types geres : "cylinder" (axe Z) et "box" (AABB en metres).
+        """
+        x, y, z = p
+        t = zone.get("type", "cylinder")
+        c = zone.get("center_base_m", [0, 0, 0])
+        if t == "cylinder":
+            r = float(zone.get("radius_m", 0.10))
+            h = float(zone.get("height_m", 0.30))
+            return ((x - c[0]) ** 2 + (y - c[1]) ** 2 <= r * r
+                    and c[2] - 0.01 <= z <= c[2] + h)
+        if t == "box":
+            d = zone.get("dimensions_m", [0.1, 0.1, 0.1])
+            return (abs(x - c[0]) <= d[0] / 2
+                    and abs(y - c[1]) <= d[1] / 2
+                    and abs(z - c[2]) <= d[2] / 2)
+        return False  # type inconnu : on ne bloque pas
 
 
 # ============================================================
@@ -429,8 +502,9 @@ if __name__ == "__main__":
     print("  [OK] reproject_error sur ground truth ~0")
 
     # 3. PoseEstimator.build_scene : pipeline complet
+    # load_scene_config=False pour test independant des configs reelles
     spec_meta = {"x": {"shape": "cube", "side_mm": 30.0}}
-    est = PoseEstimator(specs_by_label=spec_meta)
+    est = PoseEstimator(specs_by_label=spec_meta, load_scene_config=False)
     img = np.zeros((1080, 1920, 3), dtype=np.uint8)
     frames = {
         "cam_0": Frame(cam_key="cam_0", image=img, K=K, dist=dist, T_base_cam=T_L),
@@ -455,16 +529,33 @@ if __name__ == "__main__":
           f"({o.position_base_m[0] * 1000:.2f}, {o.position_base_m[1] * 1000:.2f}, "
           f"{o.position_base_m[2] * 1000:.2f}) mm")
 
-    # 4. _in_workspace : rejette les coordonnees aberrantes
+    # 4. _in_workspace : rejette les coordonnees aberrantes (sans scene config)
     cfg = PoseEstimatorConfig()
-    e = PoseEstimator(cfg)
+    e = PoseEstimator(cfg, load_scene_config=False)
     assert e._in_workspace(np.array([0.10, 0.0, 0.05]))
     assert not e._in_workspace(np.array([0.0, 0.0, 1.5]))   # z trop grand
     assert not e._in_workspace(np.array([10.0, 0, 0.05]))   # hors atteinte
     print("  [OK] _in_workspace filtre les positions aberrantes")
 
+    # 4b. Zones d'exclusion : test sur scene.json reelle (la base du robot)
+    e_with_scene = PoseEstimator()  # charge configs/scene.json automatiquement
+    if e_with_scene._exclusion_zones:
+        # un point pile sur la base du robot (0, 0, 0.10) doit etre rejete
+        in_robot = np.array([0.02, 0.0, 0.10])
+        assert not e_with_scene._in_workspace(in_robot), \
+            f"point ({in_robot}) sur la base robot devrait etre rejete par exclusion zone"
+        # un point devant le robot OK
+        in_front = np.array([0.20, 0.0, 0.05])
+        assert e_with_scene._in_workspace(in_front), \
+            f"point ({in_front}) devant le robot devrait etre accepte"
+        print(f"  [OK] Zones d'exclusion (scene.json) : "
+              f"{len(e_with_scene._exclusion_zones)} zone(s) actives, "
+              f"point sur robot rejete, point devant accepte")
+    else:
+        print("  [SKIP] scene.json absent : test des zones d'exclusion saute")
+
     # 5. PoseEstimator detecte les cas mono uniquement (fallback)
-    est2 = PoseEstimator(specs_by_label=spec_meta)
+    est2 = PoseEstimator(specs_by_label=spec_meta, load_scene_config=False)
     # Construit une detection mono avec un contour (carre projete)
     side_half = 0.015
     obj_pts = np.array([
