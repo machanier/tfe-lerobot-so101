@@ -4,8 +4,8 @@
   "drop_box": {
     "_doc": "Boite de depose. Fixee au sol, MESUREE UNE FOIS. Sera utilisee : (1) au Sprint 3 comme cible du 'retract' apres saisie ; (2) au Sprint 4 comme obstacle d'evitement.",
     "center_base_m": [0.00, 0.20, 0.05],
-    "dimensions_m": [0.15, 0.15, 0.10],
-    "_TODO_a_mesurer": "remplacer les valeurs ci-dessus par les mesures reelles (centre haut de la boite, dimensions externes)"
+    "dimensions_m": [0.15, 0.10, 0.06],
+    "_TODO_a_mesurer": "DIMENSIONS OK (15cm x 10cm x 6cm donnees par Maxence). RESTE A MESURER : center_base_m = position du centre du dessus de la boite, dans le repere base (X devant, Y a gauche, Z au-dessus de la table)."
   },
 
   "exclusion_zones_base_m": [
