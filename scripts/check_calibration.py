@@ -184,7 +184,9 @@ def check_planning_modules():
 
 def check_control_modules():
     section("MODULES CONTROL (Sprint 3)")
-    for module in ["src.control.ik"]:
+    for module in ["src.control.ik",
+                   "src.control.trajectory",
+                   "src.control.motor_controller"]:
         _run_selftest(module)
 
 

@@ -163,6 +163,40 @@ Limite connue : ambiguïté planaire pour 4 coins coplanaires alignés au plan
 image (Lepetit et al. 2009, *EPnP*, sec. "Planar case"). Acceptable : la
 validation Sprint 2 repose sur la stéréo.
 
+### D15 — Sprint 3 complet : pipeline pick-and-place opérationnel (2026-05-16)
+
+Le Sprint 3 est intégralement livré avec 5 modules + 1 script CLI :
+
+| Brique | Module | Rôle |
+|---|---|---|
+| 3.1 | `src/planning/grasp.py` | TopDownGrasp : position 3D → 3 poses pince |
+| 3.2 | `src/control/ik.py` | IK numérique : pose → angles moteur |
+| 3.3 | `src/control/trajectory.py` | Trajectoires quintiques lisses (jerk nul aux extrémités) |
+| 3.4 | `src/control/motor_controller.py` | Wrapper Feetech avec sécurités (clip plages, torque) |
+| 3.5 | `src/pipeline.py` + `scripts/pick_and_place.py` | Orchestration complète |
+
+**Séquence exécutée par le pipeline** :
+```
+courant → approach (pince ouverte)
+        → grasp (descendre)
+        → grasp + fermer pince (pause 1s)
+        → retract (remonter avec objet)
+        → drop_above (au-dessus boîte)
+        → drop_release (descendre dans boîte)
+        → release (ouvrir pince, pause 0.5s)
+        → rest (config zéro)
+```
+
+8 sous-trajectoires quintiques concaténées, durée totale ~15-20 s à 0.5 rad/s.
+
+**Usage** :
+```bash
+python scripts/pick_and_place.py --target orange_cube --detector hf
+python scripts/pick_and_place.py --target orange_cube --dry-run    # test sans hardware
+```
+
+**Critère de succès** (cf cahier des charges objectif 6) : à mesurer expérimentalement (Sprint 3.6). Cible : taux de réussite ≥ 70% sur 20 essais avec cube orange isolé.
+
 ### D14 — IK numérique en pure NumPy (Sprint 3 brique 3.2, 2026-05-16)
 
 **Problème** : convertir une pose cartésienne `T_base_gripper` (matrice 4×4 SE(3))
