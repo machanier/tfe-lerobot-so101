@@ -204,13 +204,36 @@ class MultiCamera:
             self._intrinsics[k] = load_intrinsics(k, self.configs_dir)
             self._handeye[k] = load_handeye(k, self.configs_dir)
 
-        # WARMUP : 5 frames par camera pour stabiliser USB + autoexposure.
-        # Sans ca, les premiers grab() echouent souvent sur macOS (notamment cam_2).
+        # WARMUP : tente de stabiliser USB + autoexposure.
+        # Sur macOS avec 3 cameras 1080p, cam_2 (la derniere ouverte) echoue
+        # frequemment. On itere jusqu'a 20 fois en mesurant le taux de reussite.
         import time
-        for _ in range(5):
-            for cap in self._caps.values():
-                cap.grab()
+        for attempt in range(20):
+            all_ok = True
+            for k, cap in self._caps.items():
+                if not cap.grab():
+                    all_ok = False
+            if all_ok and attempt >= 4:
+                break  # 5 grabs reussis d'affilee : OK
             time.sleep(0.05)
+        # Diagnostic final : tente un grab/retrieve par camera pour ouvrir les
+        # boucles correctement et detecter celles encore en erreur.
+        warned = []
+        for k, cap in self._caps.items():
+            ok = cap.grab() and cap.retrieve()[0]
+            if not ok:
+                warned.append(k)
+        if warned:
+            print(f"[camera_io] AVERTISSEMENT : apres warmup, {warned} n'a pas pu fournir "
+                  "de frame valide. Causes possibles :", file=sys.stderr)
+            print("  - bande passante USB saturee (debranche les peripheriques USB inutiles)",
+                  file=sys.stderr)
+            print("  - autre process utilise la camera (Photo Booth, Zoom, etc.)",
+                  file=sys.stderr)
+            print("  - autorisations macOS (Reglages > Confidentialite > Camera)",
+                  file=sys.stderr)
+            print("  Le pipeline continuera SANS cette camera (stereo en mode degrade).",
+                  file=sys.stderr)
 
         self._opened = True
 

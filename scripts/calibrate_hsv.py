@@ -105,13 +105,20 @@ def _build_spec(label: str, samples: np.ndarray) -> dict:
 
     # --- Couleurs achromatiques : on ignore H ---
     if mode == "black":
-        # On capte ce qui est sombre. v_hi = 95eme percentile + petite marge.
-        v_hi = int(min(255, np.percentile(V, 95) + 15))
+        # IMPORTANT : pour le noir, on PRIVILEGIE un seuil conservateur (etroit)
+        # pour eviter de capter le fond gris ou des ombres. Formule retenue :
+        #   v_hi = max(45, mediane * 1.8)
+        # plafonne a 100 (au-dela ce n'est plus du noir).
+        # Le 95e percentile + marge donnait des seuils trop laxistes (>= 150)
+        # quand l'utilisateur cliquait sur des bords avec reflets.
+        v_med = float(np.median(V))
+        v_hi = int(min(100, max(45, v_med * 1.8)))
         return {
             "label": label, "color_mode": "black", "v_hi": v_hi,
             "min_area_px": 500, "max_area_px": 200000, "meta": {},
             "_n_samples_px": int(samples.shape[0]),
-            "_diagnostic": f"V median={int(np.median(V))}, max={int(np.max(V))}",
+            "_diagnostic": f"V median={int(v_med)}, max={int(np.max(V))}, "
+                           f"v_hi retenu (median*1.8 clamp [45,100]) = {v_hi}",
         }
     if mode == "white":
         s_hi = int(min(255, np.percentile(S, 95) + 15))
@@ -191,16 +198,36 @@ def _build_spec(label: str, samples: np.ndarray) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Echantillonneur de couleurs HSV pour les primitives.")
+    parser = argparse.ArgumentParser(
+        description="Echantillonneur de couleurs HSV pour les primitives. "
+                    "Par defaut : AJOUTE les nouvelles specs aux existantes "
+                    "(remplace si meme label). --overwrite pour repartir de zero.",
+    )
     parser.add_argument("--camera", type=int, default=CAMERAS["cam_0"]["index"],
                         help="Index de la camera a utiliser.")
     parser.add_argument("--width", type=int, default=CAMERAS["cam_0"]["width"])
     parser.add_argument("--height", type=int, default=CAMERAS["cam_0"]["height"])
     parser.add_argument("--output", type=str, default=str(OUTPUT_PATH))
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Repart d'un fichier vide (efface toutes les specs existantes).")
     args = parser.parse_args()
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
+
+    # CHARGE LES SPECS EXISTANTES (mode append par defaut, voir --overwrite)
+    existing_specs: list[dict] = []
+    if output.exists() and not args.overwrite:
+        try:
+            existing_specs = json.load(open(output)).get("specs", [])
+            existing_labels = [s["label"] for s in existing_specs]
+            print(f"Specs existantes chargees : {existing_labels}")
+            print("(Les labels que tu vas recalibrer seront REMPLACES, les autres conserves.")
+            print(" Lance avec --overwrite pour repartir de zero.)")
+            print()
+        except Exception as e:
+            print(f"AVERTISSEMENT : impossible de charger {output} ({e}). On repart de zero.")
+            existing_specs = []
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
@@ -263,19 +290,33 @@ def main():
         print("Aucun echantillon : rien a sauvegarder.")
         return
 
-    specs = []
+    new_specs = []
     for label, patches in sampler.samples.items():
         samples = np.concatenate(patches, axis=0)
         if samples.shape[0] < 20:
             print(f"  AVERTISSEMENT : {label} a {samples.shape[0]} pixels (< 20 recommandes)")
-        specs.append(_build_spec(label, samples))
+        new_specs.append(_build_spec(label, samples))
+
+    # MERGE : on garde les anciennes specs, on remplace celles dont le label
+    # vient d'etre recalibre. C'est ce qui evite que recalibrer UN objet
+    # efface les autres (bug observe le 2026-05-16).
+    new_labels = {s["label"] for s in new_specs}
+    merged = [s for s in existing_specs if s["label"] not in new_labels] + new_specs
+    if existing_specs and not args.overwrite:
+        replaced = [s["label"] for s in new_specs if s["label"] in {e["label"] for e in existing_specs}]
+        added = [s["label"] for s in new_specs if s["label"] not in {e["label"] for e in existing_specs}]
+        if replaced:
+            print(f"\n  Labels REMPLACES : {replaced}")
+        if added:
+            print(f"  Labels AJOUTES   : {added}")
 
     payload = {
         "_doc": "Genere par scripts/calibrate_hsv.py. Voir src/perception/detector.py.",
-        "specs": specs,
+        "specs": merged,
     }
     with open(output, "w") as f:
         json.dump(payload, f, indent=2)
+    specs = merged  # pour l'affichage final
     print()
     print(f"{len(specs)} specs HSV sauvegardees : {output}")
     print()
