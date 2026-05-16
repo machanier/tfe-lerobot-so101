@@ -363,13 +363,23 @@ class HFDetector(ObjectDetector):
         # Post-process : convertit en bboxes (xyxy en pixels), scores, labels.
         # COMPAT transformers 4.x / 5.x : la methode a ete renommee en 5.x.
         # On utilise la nouvelle si dispo (>=5.0), sinon l'ancienne (4.x).
+        # En 5.x, on peut passer text_labels=[...] pour avoir les textes en retour
+        # ; sinon on retombe sur les indices entiers (`labels`).
         target_sizes = self._torch.tensor([(pil.height, pil.width)]).to(self.device)
         if hasattr(self._processor, "post_process_grounded_object_detection"):
-            # transformers >= 5.0 (Maxence a 5.8.1)
-            results = self._processor.post_process_grounded_object_detection(
-                outputs=outputs, target_sizes=target_sizes,
-                threshold=self.score_threshold,
-            )[0]
+            # transformers >= 5.0 (Maxence a 5.8.1).
+            # On tente avec text_labels en kwarg (pas toutes les versions le supportent).
+            try:
+                results = self._processor.post_process_grounded_object_detection(
+                    outputs=outputs, target_sizes=target_sizes,
+                    threshold=self.score_threshold,
+                    text_labels=[self.prompt_labels],
+                )[0]
+            except TypeError:
+                results = self._processor.post_process_grounded_object_detection(
+                    outputs=outputs, target_sizes=target_sizes,
+                    threshold=self.score_threshold,
+                )[0]
         elif hasattr(self._processor, "post_process_object_detection"):
             # transformers 4.x (ancienne API)
             results = self._processor.post_process_object_detection(
@@ -382,14 +392,22 @@ class HFDetector(ObjectDetector):
                 "Version transformers incompatible ?"
             )
 
-        # Compat clef "labels" : en 5.x, peut s'appeler "text_labels" (qui sont
-        # directement les strings) au lieu de "labels" (indices entiers).
-        if "text_labels" in results:
-            labels_field = results["text_labels"]
-            # text_labels contient deja les strings, pas besoin d'indexer self.prompt_labels
+        # Recupere les labels. Trois cas possibles selon version transformers :
+        # 1. results["text_labels"] : liste de strings (5.x avec text_labels passe)
+        # 2. results["labels"] : tensor d'indices entiers (4.x ou 5.x sans text_labels)
+        # 3. results["text_labels"] is None : 5.x avec text_labels non passe -> fallback labels
+        text_labels = results.get("text_labels")
+        if text_labels is not None and len(text_labels) > 0:
+            labels_field = text_labels
             use_text_directly = True
         else:
-            labels_field = results["labels"]
+            labels_field = results.get("labels")
+            if labels_field is None:
+                raise RuntimeError(
+                    f"Pas de labels dans les resultats. Clefs disponibles : "
+                    f"{list(results.keys())}. Version transformers : "
+                    f"vois pip show transformers."
+                )
             use_text_directly = False
 
         detections: list[Detection2D] = []
