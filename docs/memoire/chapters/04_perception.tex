@@ -1,0 +1,331 @@
+\chapter{Perception}
+\label{ch:perception}
+
+Ce chapitre détaille le module de perception, dont l'objectif minimal est :
+\textit{transformer une image multi-caméras en une position 3D de l'objet
+cible dans le repère base du robot}.
+
+\section{Pipeline général}
+\label{sec:perc_pipeline}
+
+\begin{equation}
+  \underbrace{\text{3 images RGB}}_{\text{capteur}}
+  \;\rightarrow\;
+  \underbrace{\text{détections 2D}}_{\text{détecteur}}
+  \;\rightarrow\;
+  \underbrace{\text{positions 3D}}_{\text{triangulation}}
+  \;\rightarrow\;
+  \underbrace{\texttt{Scene}}_{\text{repère base}}
+  \label{eq:perception_pipeline}
+\end{equation}
+
+Le pipeline est implémenté dans \texttt{src/perception/} avec cinq modules :
+\texttt{scene}, \texttt{robot\_state}, \texttt{camera\_io}, \texttt{detector},
+\texttt{pose\_estimator}. Voir l'annexe~\ref{ann:code_structure} pour le
+détail.
+
+\section{Calibration et modèles caméra}
+\label{sec:perc_calibration}
+
+\subsection{Calibration intrinsèque}
+
+La calibration intrinsèque détermine la matrice $K$ (focales $f_x, f_y$ et
+centre optique $c_x, c_y$) ainsi que les coefficients de distorsion d'une
+caméra. Pour les trois caméras du poste, la calibration a été réalisée avec
+le damier $9 \times 6$ asymétrique (carré de 22~mm) et l'algorithme standard
+d'OpenCV (\texttt{cv2.calibrateCamera}, basé sur Zhang 2000~\cite{}).
+
+Résultats (erreur de reprojection moyenne) :
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+Caméra & Erreur de reprojection \\
+\midrule
+\texttt{cam\_0} (stéréo gauche, eye-to-hand) & 0.19 px \\
+\texttt{cam\_1} (stéréo droite, eye-to-hand) & 0.14 px \\
+\texttt{cam\_2} (eye-in-hand) & 0.20 px \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Toutes inférieures à 0.5 px : calibration de qualité.
+
+\subsection{Calibration extrinsèque (\textit{hand-eye})}
+
+La calibration \textit{hand-eye} a été réalisée avec
+\texttt{cv2.calibrateHandEye} (méthode PARK, puis HORAUD pour le solveur
+robuste). Une difficulté majeure a été résolue durant le Sprint 1 :
+
+\paragraph{Décision D2 (damier asymétrique $9 \times 6$).} L'algorithme
+\texttt{cv2.findChessboardCorners} détecte un damier $7 \times 7$ carré dans
+\textbf{4 orientations équivalentes} (rotations $0\textdegree{}, 90\textdegree{}, 180\textdegree{}, 270\textdegree{}$ du
+coin de référence). Le solveur \textit{hand-eye} reçoit alors des poses
+incohérentes entre elles, ce qui fait exploser les résidus. Solution adoptée :
+damier asymétrique $9 \times 6$, qui supprime l'ambiguïté à 4-fold (l'asymétrie
+ne laisse que l'ambiguïté 2-fold, gérée par le solveur robuste).
+
+\paragraph{Décision D3 (solveur \textit{hand-eye} robuste).} Le pipeline
+implémenté dans \texttt{src/calibration/handeye.py} effectue :
+\begin{enumerate}
+  \item Résolution initiale (méthode PARK) sur toutes les poses.
+  \item Identification du cluster majoritaire des transformations
+        $T_{\text{gripper}}^{\text{target}}$ (eye-to-hand) ou
+        $T_{\text{base}}^{\text{target}}$ (eye-in-hand) qui devraient être
+        constantes par construction.
+  \item Réalignement de chaque pose : choix de la correction géométrique
+        (rotation + décalage d'origine du damier) qui rapproche du cluster.
+  \item Rejet itératif des 10\% poses les plus aberrantes, jusqu'à
+        stabilisation ou seuil minimum de 20 poses.
+\end{enumerate}
+
+Résultats finaux :
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Caméra & Translation moy./max & Rotation moy./max \\
+\midrule
+\texttt{cam\_0} (eye-to-hand) & 5.82 / 12.78 mm & 2.12\textdegree{} / 3.39\textdegree{} \\
+\texttt{cam\_1} (eye-to-hand) & 6.80 / 15.04 mm & 1.89\textdegree{} / 2.97\textdegree{} \\
+\texttt{cam\_2} (eye-in-hand) & 2.48 / 4.77 mm  & 0.41\textdegree{} / 0.76\textdegree{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Les résidus \texttt{cam\_0/cam\_1} correspondent au \textbf{plancher de bruit
+du SO-101} ($\sim$5-10 mm de répétabilité d'après la spec constructeur). Ils
+seront compensés par la replanification en boucle fermée (objectif 4 du
+cahier des charges). La cam\_2 (eye-in-hand) atteint une meilleure précision
+car le setup physique est plus rigide (damier fixe sur la scène, pas de
+wobble de collage sur la pince).
+
+\todoF{Ajouter une figure illustrant les poses de calibration capturées.}
+
+\section{Détection 2D : version V1 (HSV)}
+\label{sec:perc_v1}
+
+\subsection{Principe}
+
+Le \texttt{HSVDetector} implémente une détection par seuillage dans l'espace
+HSV. L'espace HSV décorrèle la \textit{teinte} ($H$) de la \textit{luminosité}
+($V$), ce qui le rend plus robuste aux variations d'éclairage que RGB.
+Pipeline par image :
+\begin{enumerate}
+  \item Conversion BGR $\rightarrow$ HSV.
+  \item Pour chaque \texttt{ObjectSpec} : masque \texttt{cv2.inRange} sur la
+        plage HSV calibrée.
+  \item Opérations morphologiques : \textit{opening} (suppression du bruit)
+        puis \textit{closing} (remplissage des trous).
+  \item Extraction des contours (\texttt{cv2.findContours}) puis filtrage par
+        aire.
+  \item Calcul du centroïde par les moments image.
+\end{enumerate}
+
+\subsection{Calibration des plages HSV}
+
+L'utilisateur lance \texttt{scripts/calibrate\_hsv.py} qui ouvre une caméra
+et permet d'\textbf{échantillonner} les pixels par clic souris. Pour chaque
+clic, un patch $7 \times 7$ pixels est extrait et ajouté à un cumul par label.
+À la sauvegarde, des plages statistiques (percentiles 2-98 par défaut) sont
+calculées.
+
+\paragraph{Décision D8 (\textit{color\_mode} pour noir/blanc/gris).} La
+première calibration expérimentale a révélé que noir et blanc ne sont
+\textbf{pas des couleurs en HSV} : pour le noir, $V \approx 0$ rend $H$ et
+$S$ mathématiquement indéterminés ; pour le blanc, $S \approx 0$ rend $H$
+indéterminé. Sans correction, le seuillage par $H$ sur un objet noir donnait
+$H \in [103, 168]$, couvrant simultanément le bleu et le violet $\rightarrow$
+confusions massives.
+
+Solution implémentée : \texttt{HSVRange.color\_mode} prend 4 valeurs
+(\texttt{chromatic}, \texttt{black}, \texttt{white}, \texttt{gray}) qui
+adaptent les bornes utilisées. La détection du mode est automatique dans
+\texttt{calibrate\_hsv.py} via la médiane de $S$ et $V$ des pixels
+échantillonnés.
+
+\subsection{Limites identifiées du V1}
+
+L'évaluation expérimentale a mis en évidence plusieurs \textbf{limites
+fondamentales} du seuillage HSV pur :
+
+\begin{description}
+  \item[\textbf{Confusion couleurs proches}] le cube orange est confondu
+        avec la pince orange du robot (même teinte physique).
+  \item[\textbf{Confusion fond/objet}] le mug blanc est confondu avec le sol
+        blanc de la scène.
+  \item[\textbf{Aucune compréhension de forme}] le HSV ne raisonne que sur
+        des pixels, pas sur l'identité ou la géométrie de l'objet.
+  \item[\textbf{Sensibilité éclairage}] les plages calibrées sous un
+        éclairage donné dérivent quand l'éclairage change.
+\end{description}
+
+Ces limites sont \textbf{irréductibles} par ajustement des seuils. Une
+\textbf{décision D9} pallie partiellement la première en introduisant des
+\textbf{zones d'exclusion} géométriques (cylindre autour de la base robot)
+dans \texttt{configs/scene.json}, filtrant toute détection 3D qui tombe sur
+le robot. Mais les autres limites motivent le passage à un détecteur appris,
+détaillé en section~\ref{sec:perception_v2}.
+
+\section{Détection 2D : version V2 (\textit{open-vocabulary})}
+\label{sec:perception_v2}
+
+\subsection{Choix du modèle : OWL-ViTv2}
+
+Le V2 (\texttt{HFDetector}) utilise le modèle
+\texttt{google/owlv2-base-patch16-ensemble}~\cite{} hébergé sur Hugging Face.
+C'est un \textit{Vision-Language Model} (VLM) qui prend en entrée une image
+et une \textbf{liste de descriptions textuelles}, et renvoie pour chaque
+description les bboxes des régions correspondantes.
+
+\paragraph{Décision D13 (passage anticipé au V2).} Initialement prévu pour le
+Sprint 5 (comparaison finale), le \texttt{HFDetector} a été implémenté dès le
+Sprint 2 car les limites empiriques du V1 ont rendu impossible une validation
+expérimentale fiable du pipeline géométrique sous-jacent. Le V2 fournit dès
+maintenant une perception robuste, permettant de progresser sur les Sprints 3
+et 4.
+
+\paragraph{Cohérence d'écosystème.} Le modèle est servi par la lib
+\texttt{transformers} de Hugging Face, qui est la \emph{même} lib utilisée
+par les politiques d'imitation learning de LeRobot (SmolVLA, ACT, $\pi_0$).
+Pas de fragmentation de dépendances.
+
+\subsection{Descriptions textuelles enrichies}
+
+OWL-ViTv2 raisonne sur la \textbf{similarité visuelle-textuelle}. Les
+descriptions enrichies (couleur + forme + matériau + caractéristique
+distinctive) améliorent significativement la discrimination par rapport à
+des labels minimalistes. Exemples retenus dans
+\texttt{configs/perception/hf\_specs.json} :
+
+\begin{itemize}
+  \item \texttt{"a small bright orange plastic cube"} (au lieu de
+        \texttt{"orange cube"}).
+  \item \texttt{"a metallic robotic arm with a gripper"} (distingue le
+        cube orange du bras du robot par \texttt{plastic} vs \texttt{metallic}).
+  \item \texttt{"a small white ceramic mug with a handle"} (la mention
+        \texttt{handle} aide à séparer le mug du fond blanc).
+\end{itemize}
+
+\subsection{Limites identifiées du V2}
+
+\begin{description}
+  \item[\textbf{Faux positifs sémantiques}] OWL-ViTv2 détecte des objets
+        \textbf{visuellement similaires} aux descriptions, même s'ils ne
+        sont pas l'objet visé. Exemple observé : une gourde en aluminium
+        bleu marine détectée comme \texttt{purple\_cylinder}, un essuie-tout
+        détecté comme \texttt{white\_mug}. C'est une propriété intrinsèque
+        de la détection \textit{open-vocabulary} qui raisonne par
+        similarité, pas par identification d'instance.
+  \item[\textbf{Vitesse}] $\sim$3-5 FPS sur MacBook M4 (MPS), insuffisant
+        pour un asservissement visuel temps réel mais acceptable pour un
+        pick-and-place ponctuel (chapitre~\ref{ch:control_eval}).
+  \item[\textbf{Pas de masque de segmentation}] uniquement des bounding
+        boxes ; l'orientation \texttt{wrist\_roll} du grasp planner est
+        approximée par l'\textit{aspect ratio} de la bbox.
+\end{description}
+
+\section{Reconstruction 3D : triangulation stéréo et PnP}
+\label{sec:perc_3d}
+
+\subsection{Triangulation stéréo}
+
+Pour un objet vu simultanément par \texttt{cam\_0} et \texttt{cam\_1}, le
+\texttt{PoseEstimator} effectue une triangulation linéaire (DLT) via
+\texttt{cv2.triangulatePoints}~\cite[chap.~12]{hartley_multiple_2018} :
+
+\begin{equation}
+  \mathbf{x}_i = \frac{1}{\lambda_i} \, K_i \, [R_i | \mathbf{t}_i] \,
+                 \begin{pmatrix} \mathbf{X} \\ 1 \end{pmatrix}
+\end{equation}
+
+Pour deux caméras, ce système de 4 équations linéaires en 3 inconnues est
+résolu au sens des moindres carrés. Les coordonnées image sont préalablement
+\textit{déformées-inverse} via \texttt{cv2.undistortPoints} pour compenser la
+distorsion radiale et tangentielle.
+
+\paragraph{Validation synthétique.} Le module
+\texttt{src/perception/pose\_estimator.py} contient un self-test qui projette
+20 points 3D aléatoires dans deux caméras synthétiques, triangule, et mesure
+l'erreur. Résultat : \textbf{erreur maximale sub-micrométrique
+(\textless 0.0001 mm)}. La triangulation elle-même est exacte ; toute erreur
+observée en pratique vient de la calibration ($K$, $T_{\text{base}}^{\text{cam}}$)
+ou de la détection 2D.
+
+\subsection{PnP monoculaire (fallback)}
+
+Si l'objet n'est vu que par une seule caméra (occlusion), le
+\texttt{PoseEstimator} tente une estimation par PnP monoculaire via
+\texttt{cv2.solvePnP} (flag \texttt{SOLVEPNP\_IPPE\_SQUARE} pour les objets
+planaires à 4 coins). La taille métrique de l'objet est fournie par
+\texttt{ObjectSpec.meta} (calibrée manuellement).
+
+\paragraph{Limite connue.} Pour 4 points coplanaires alignés avec le plan
+image, l'algorithme IPPE peut sélectionner la branche \textit{flippée} de
+l'ambiguïté planaire~\cite[][\textit{Planar case}]{}. En pratique, le PnP
+monoculaire est utilisé uniquement comme \textit{fallback} ; la validation
+expérimentale repose sur la triangulation stéréo.
+
+\subsection{Filtres post-estimation}
+
+\paragraph{Erreur de reprojection.} Chaque position 3D estimée est
+reprojetée dans les deux caméras et l'erreur pixel est calculée. Au-delà
+d'un seuil (8 px par défaut), la détection est rejetée. C'est un garde-fou
+standard en photogrammétrie.
+
+\paragraph{Zones d'exclusion et bornes workspace.} Le fichier
+\texttt{configs/scene.json} déclare :
+\begin{itemize}
+  \item \textbf{Zones d'exclusion} (décision D9) : cylindre autour de la
+        base robot, box englobant le bras typique. Toute estimation 3D qui
+        tombe dedans est rejetée.
+  \item \textbf{Bornes workspace} : limites $x, y, z$ de la zone utile.
+        Filtre les détections aberrantes sur le fond.
+  \item \textbf{Boîte de dépose} : position fixe pour le placement (utilisée
+        par le module \textit{planning}, chapitre~\ref{ch:planning}).
+\end{itemize}
+
+\section{Synchronisation multi-caméras et architecture USB}
+\label{sec:perc_usb}
+
+\paragraph{Décision D10 (codec MJPG).} L'ouverture simultanée des 3 caméras
+USB en résolution 1920$\times$1080 en codec YUYV (non compressé, $\sim$125
+Mo/s par caméra) saturait la bande passante du contrôleur xHCI ($\sim$375
+Mo/s total, proche de la limite USB 3.0). Solution : forcer le codec
+\texttt{MJPG} (Motion-JPEG) qui compresse l'image dans la caméra avant
+l'envoi USB ($\sim$12 Mo/s par caméra), réduisant la bande passante d'un
+facteur $\sim$10.
+
+\paragraph{Décision D12 (architecture USB physique).} Malgré le codec MJPG,
+la 3\textsuperscript{e} caméra (\texttt{cam\_2}) échouait au \texttt{grab()} sur macOS.
+Solution physique : répartir les caméras sur \textbf{deux hubs USB distincts}
+branchés sur deux ports USB-C différents, exploitant les deux contrôleurs
+xHCI indépendants du MacBook M4. Configuration adoptée :
+\begin{itemize}
+  \item Hub 1 : \texttt{cam\_0} + \texttt{cam\_1} (paire stéréo).
+  \item Hub 2 : \texttt{cam\_2} + microcontrôleur du robot.
+\end{itemize}
+
+\paragraph{Synchronisation logicielle.} Le module \texttt{camera\_io.py}
+utilise la séquence \texttt{grab()} sur les 3 caméras (capture rapide sans
+décodage), puis \texttt{retrieve()} pour le décodage. Le décalage temporel
+entre caméras est ainsi inférieur à 1 frame ($\sim$33 ms à 30 FPS),
+négligeable pour des objets quasi-statiques.
+
+\section{Validation expérimentale}
+\label{sec:perc_validation}
+
+\todoF{À remplir après campagne expérimentale (Sprint 5). Tableau cible :}
+
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+Détecteur & Détections OK & Erreur 3D moyenne & Faux positifs & FPS \\
+\midrule
+HSV V1 & \texttt{??/9} & \texttt{?? mm} & \texttt{??\%} & \texttt{?? FPS} \\
+OWL-ViTv2 V2 & \texttt{??/9} & \texttt{?? mm} & \texttt{??\%} & \texttt{?? FPS} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Procédure : poser un objet à une position mesurée au pied à coulisse (ground
+truth en mm), lancer \texttt{scripts/check\_perception.py}, mesurer l'erreur
+euclidienne par objet, répéter sur N positions différentes.

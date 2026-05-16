@@ -1,0 +1,112 @@
+\chapter{Contrôle et évaluation expérimentale}
+\label{ch:control_eval}
+
+\todoF{Chapitre majoritairement à compléter au fil des Sprints 3-5. Structure
+proposée ci-dessous, avec ce qu'on a déjà acquis.}
+
+\section{Cinématique directe (\textit{forward kinematics})}
+\label{sec:fk}
+
+La cinématique directe calcule la pose de l'effecteur depuis les angles
+articulaires :
+\begin{equation}
+  T_{\text{base}}^{\text{gripper}} = \prod_{i=1}^{n} T_{i-1}^{i}(q_i)
+\end{equation}
+où $T_{i-1}^{i}(q_i)$ est la transformation d'un repère articulaire au
+suivant, paramétrée par l'angle $q_i$.
+
+\paragraph{Implémentation.} Le module
+\texttt{src/calibration/forward\_kinematics.py} parse l'URDF
+\texttt{configs/so101\_new\_calib.urdf} (récupéré du dépôt officiel
+TheRobotStudio/SO-ARM100) avec \texttt{xml.etree.ElementTree} et compose la
+chaîne cinématique en NumPy. La chaîne SO-101 comprend 5 articulations
+rotoïdes actionnées (\texttt{shoulder\_pan}, \texttt{shoulder\_lift},
+\texttt{elbow\_flex}, \texttt{wrist\_flex}, \texttt{wrist\_roll}) plus un
+joint fixe vers le repère \texttt{gripper\_frame\_link}.
+
+\paragraph{Décision D4 (FK en NumPy stdlib).} L'alternative envisagée
+(\textit{placo} + \textit{pinocchio}, stack utilisée par LeRobot) a été
+écartée : trop lourde (bindings C++, met à jour numpy), boîte noire pour la
+rédaction. Réimplémentation en NumPy pur : $\sim$80 lignes, auto-testée,
+explicable dans le mémoire. L'URDF reste la \textbf{seule source de vérité
+géométrique}.
+
+\section{Cinématique inverse (\textit{inverse kinematics})}
+\label{sec:ik}
+
+\todoF{À compléter au Sprint 3, brique 3.2. Plan prévu :
+solveur IK numérique via \texttt{scipy.optimize.least\_squares}
+(Levenberg-Marquardt), avec contraintes de plage articulaire. Voir
+\texttt{src/control/ik.py} (à créer).}
+
+\section{Génération de trajectoire}
+\label{sec:trajectory}
+
+\todoF{À compléter au Sprint 3, brique 3.3. Plan prévu : interpolation
+trapézoïdale dans l'espace articulaire entre les 3 poses (approach, grasp,
+retract). Vitesse maximale et accélération maximale paramétrables pour le
+SO-101.}
+
+\section{Module de contrôle moteur}
+\label{sec:motor_control}
+
+\todoF{À compléter au Sprint 3, brique 3.4. Plan prévu : wrapper autour de
+\texttt{FeetechMotorsBus} avec envoi de commandes \texttt{sync\_write
+Goal\_Position} à fréquence régulière, gestion du retry en cas d'erreur
+bus.}
+
+\section{Pipeline intégré}
+\label{sec:pipeline}
+
+\todoF{À compléter au Sprint 3, brique 3.5. Plan prévu : script
+\texttt{src/pipeline.py} qui orchestre :\\
+\textbf{boucle} : capture caméras $\rightarrow$ détection $\rightarrow$
+triangulation 3D $\rightarrow$ grasp planning $\rightarrow$ IK $\rightarrow$
+trajectoire $\rightarrow$ exécution.}
+
+\section{Évaluation expérimentale}
+\label{sec:eval}
+
+Les quatre métriques imposées par le cahier des charges (objectif 6) sont :
+
+\begin{description}
+  \item[\textbf{Taux de réussite de la saisie}] Sur N essais avec un objet
+        donné, fraction des essais où le robot saisit et place correctement
+        l'objet dans la boîte de dépose.
+  \item[\textbf{Nombre de replans}] Nombre de re-planifications déclenchées
+        par la boucle fermée Sprint 4 (détection d'écart significatif entre
+        position estimée et position réelle pendant le mouvement).
+  \item[\textbf{Collisions évitées}] Nombre de fois où la trajectoire
+        contourne un obstacle de la scène.
+  \item[\textbf{Précision de la prise}] Erreur de position de l'effecteur au
+        moment du \textit{grasp}, mesurée \textit{a posteriori} via la
+        cinématique directe sur la pose moteur réelle.
+\end{description}
+
+\subsection{Protocole de mesure}
+
+\todoF{À détailler au Sprint 5. Plan : $\sim$20 essais par configuration
+expérimentale (objet seul, objet entouré, objet partiellement caché),
+$\sim$5 objets cibles, $\sim$3 positions différentes par objet. Total
+$\sim$300 essais. Analyse statistique : moyenne $\pm$ écart-type, intervalle
+de confiance 95\%.}
+
+\subsection{Comparaison V1 (modulaire) vs V2 (imitation learning)}
+
+\todoF{Sprint 5 : enregistrer $\sim$50 démonstrations téléopérées pour 1
+tâche, entraîner SmolVLA via \texttt{lerobot-train}, comparer les 4 métriques
+ci-dessus entre les deux approches sur les \textbf{mêmes scènes}. Tableau
+attendu :}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Métrique & Modulaire (V1) & Modulaire (V2-HF) & Imitation (SmolVLA) \\
+\midrule
+Taux réussite (\%) & \texttt{??} & \texttt{??} & \texttt{??} \\
+Nb replans moyens & \texttt{??} & \texttt{??} & \texttt{??} \\
+Collisions évitées & \texttt{??} & \texttt{??} & \texttt{??} \\
+Précision prise (mm) & \texttt{??} & \texttt{??} & \texttt{??} \\
+\bottomrule
+\end{tabular}
+\end{center}

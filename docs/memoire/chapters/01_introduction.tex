@@ -1,0 +1,110 @@
+\chapter{Introduction}
+\label{ch:introduction}
+
+\section{Contexte}
+\label{sec:contexte}
+
+Les bras robotiques low-cost (ici, le SO-101 de Hugging Face, dérivé du
+SO-ARM100 de TheRobotStudio) sont de plus en plus accessibles, mais restent
+limités dès qu'ils doivent interagir de manière autonome avec des
+environnements réels et encombrés. En particulier, lorsqu'un objet cible est
+entouré d'autres objets, le robot ne peut pas se contenter d'une trajectoire
+prédéfinie ni d'une stratégie de saisie unique~\cite{bohg_data-driven_2014}.
+
+La perception visuelle est alors sujette à des problèmes d'occlusion, de
+points de vue incomplets et d'incertitudes sur la géométrie de l'objet. De
+plus, le chemin le plus court vers l'objet cible n'est pas toujours exploitable
+en raison des risques de collision avec les distracteurs présents dans la
+scène.
+
+\section{Problématique}
+\label{sec:problematique}
+
+La problématique centrale de ce travail s'énonce ainsi : \emph{comment décider
+dynamiquement où regarder et comment saisir un objet dans un environnement
+encombré, en combinant plusieurs sources de perception visuelle, tout en
+garantissant l'évitement d'obstacles et une exécution robuste du mouvement ?}
+
+Ce travail s'inscrit dans une approche \textbf{perception--action}~\cite{ghallab_lanticipation_2015},
+où la difficulté ne réside pas uniquement dans la calibration ou la détection
+de l'objet, mais dans la prise de décision et l'orchestration entre perception,
+planification de trajectoire et contrôle du bras robotique.
+
+\section{Objectifs}
+\label{sec:objectifs}
+
+L'objectif principal de ce travail de fin d'études est de concevoir,
+implémenter et évaluer une architecture permettant à un bras robotique équipé
+de caméras eye-to-hand et eye-in-hand d'interagir de manière autonome avec un
+environnement encombré.
+
+Plus précisément, les objectifs sont :
+\begin{enumerate}
+  \item Concevoir une architecture
+        \textbf{perception--planification--contrôle} combinant les informations
+        issues de plusieurs caméras.
+  \item Proposer une stratégie de \textbf{sélection de points de vue} afin
+        d'améliorer la perception de l'objet cible en présence d'occlusions.
+  \item \textbf{Planifier} des trajectoires de mouvement évitant les obstacles
+        présents dans l'environnement.
+  \item Mettre en œuvre une \textbf{replanification en boucle fermée} basée
+        sur la perception, permettant d'adapter la trajectoire du robot en
+        fonction des informations visuelles mises à jour au cours du mouvement.
+  \item Définir et sélectionner des stratégies de \textbf{saisie} adaptées à
+        la géométrie et à l'accessibilité de l'objet (grasp planning).
+  \item \textbf{Évaluer expérimentalement} le système proposé à l'aide de
+        métriques telles que le taux de réussite de la saisie, le nombre de
+        replans, les collisions évitées et la précision de la prise.
+\end{enumerate}
+
+Dans un premier temps, la prise de décision repose sur des règles heuristiques
+et des critères géométriques (chapitre~\ref{ch:perception} pour la perception,
+chapitre~\ref{ch:planning} pour la planification de saisie). Des approches
+plus avancées, telles que l'apprentissage à partir de démonstrations
+(\textit{imitation learning}, abordé au chapitre~\ref{ch:control_eval}), sont
+envisagées comme extension comparative dans la stack officielle
+LeRobot~\cite{shukor_smolvla_2025}.
+
+\section{Matériel}
+\label{sec:materiel}
+
+Le poste de travail expérimental est constitué (voir
+figure~\ref{fig:setup}~--- \todo{ajouter photo}) :
+
+\begin{itemize}
+  \item \textbf{Robot} : SO-101 (Hugging Face / TheRobotStudio), 6 servomoteurs
+        Feetech STS3215 par bras (leader + follower), gripper à pince parallèle.
+  \item \textbf{Caméras} : 3 caméras USB 1920$\times$1080 à 30~FPS :
+    \begin{itemize}
+      \item \texttt{cam\_0} et \texttt{cam\_1} : configuration
+            \textbf{eye-to-hand stéréo} sur la barrière avant du poste.
+      \item \texttt{cam\_2} : configuration \textbf{eye-in-hand} montée sur
+            l'effecteur du bras.
+    \end{itemize}
+  \item \textbf{Structure 3D} : poste de travail modélisé sous CAO, imprimé en
+        3D, et assemblé définitivement. Inclut un point de dépose fixe (boîte
+        de $15 \times 10 \times 6$ cm).
+  \item \textbf{Machine de développement} : MacBook Pro M4, 24~GB RAM, macOS.
+\end{itemize}
+
+\begin{figure}[hbtp]
+\centering
+\rule{0.6\textwidth}{0.5\textwidth}
+\caption{Vue d'ensemble du poste expérimental SO-101 avec les trois caméras.
+\todoF{Remplacer par une vraie photo du poste.}}
+\label{fig:setup}
+\end{figure}
+
+\section{Plan du mémoire}
+\label{sec:plan}
+
+Le chapitre~\ref{ch:etat_de_lart} dresse l'état de l'art sur la perception
+multi-caméras, la triangulation stéréo, les détecteurs d'objets modernes
+(seuillage classique vs détecteurs open-vocabulary), et les deux grands
+paradigmes contemporains de la manipulation robotique
+(\textit{architecture modulaire} vs \textit{imitation learning end-to-end}).
+Le chapitre~\ref{ch:architecture} présente l'architecture logicielle adoptée.
+Les chapitres~\ref{ch:perception} à \ref{ch:control_eval} détaillent
+l'implémentation des modules de perception, de planification de saisie et de
+contrôle. Le chapitre~\ref{ch:discussion} discute les limites identifiées et
+les pistes d'amélioration. Le chapitre~\ref{ch:conclusion} conclut.

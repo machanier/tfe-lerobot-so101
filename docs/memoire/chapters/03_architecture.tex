@@ -1,0 +1,147 @@
+\chapter{Architecture}
+\label{ch:architecture}
+
+\section{Vue d'ensemble}
+\label{sec:archi_vue}
+
+Le système est structuré en trois modules indépendants reliés par des
+interfaces stables (figure~\ref{fig:archi}~--- \todo{ajouter diagramme}) :
+
+\begin{enumerate}
+  \item \textbf{Perception} (chapitre~\ref{ch:perception}) :
+        capture multi-caméras $\rightarrow$ détection 2D
+        $\rightarrow$ reconstruction 3D dans le repère base du robot.
+  \item \textbf{Planning} (chapitre~\ref{ch:planning}) :
+        position 3D de l'objet $\rightarrow$ pose de pince
+        (approach, grasp, retract) + ouverture/fermeture.
+  \item \textbf{Control} (chapitre~\ref{ch:control_eval}) :
+        pose de pince désirée $\rightarrow$ cinématique inverse (IK)
+        $\rightarrow$ trajectoire articulaire $\rightarrow$ commandes moteur.
+\end{enumerate}
+
+\begin{figure}[hbtp]
+\centering
+\rule{0.8\textwidth}{0.25\textwidth}
+\caption{Architecture logicielle : perception $\rightarrow$ planning
+$\rightarrow$ control, avec replanification en boucle fermée (Sprint 4).
+\todoF{Remplacer par un vrai diagramme (TikZ ou outil externe).}}
+\label{fig:archi}
+\end{figure}
+
+\section{Interfaces stables (\textit{dataclasses})}
+\label{sec:archi_interfaces}
+
+Le découplage entre modules est matérialisé par des structures de données
+typées (\textit{dataclasses} Python) qui définissent le contrat. Modifier la
+signature d'une structure est un changement majeur ; ajouter un champ optionnel
+est rétrocompatible.
+
+\begin{description}
+  \item[\texttt{Frame}] image + matrice intrinsèque $K$ + distorsion +
+        $T_{\text{base}}^{\text{cam}}$ + timestamp.
+  \item[\texttt{Detection2D}] détection brute dans le plan image (label,
+        centre pixel, bounding box, contour optionnel, score).
+  \item[\texttt{ObjectInstance}] objet reconstruit en 3D dans le repère base
+        (position en mètres, orientation optionnelle, dimensions estimées,
+        détections source, score).
+  \item[\texttt{Scene}] état instantané = liste d'\texttt{ObjectInstance}
+        + liste d'obstacles + timestamp. Consommée par le module de planning.
+  \item[\texttt{GraspPose}] séquence \textit{approach} $\rightarrow$
+        \textit{grasp} $\rightarrow$ \textit{retract} (3 matrices SE(3))
+        + ouvertures/fermetures de pince.
+\end{description}
+
+\section{Interfaces abstraites (\textit{Strategy pattern})}
+\label{sec:archi_abc}
+
+Pour permettre la comparaison empirique de différentes approches sur le même
+pipeline, deux interfaces abstraites sont définies :
+
+\begin{description}
+  \item[\texttt{ObjectDetector} (ABC)] avec deux implémentations concrètes :
+        \texttt{HSVDetector} (V1 déterministe) et \texttt{HFDetector} (V2
+        basé sur OWL-ViTv2). Voir chapitre~\ref{ch:perception}.
+  \item[\texttt{GraspStrategy} (ABC)] avec l'implémentation
+        \texttt{TopDownGrasp} (V1). Voir chapitre~\ref{ch:planning}.
+\end{description}
+
+Ce pattern (Gamma \textit{et al.}, \textit{Design Patterns}, 1994) garantit
+que le pipeline reste identique quand on change de détecteur ou de stratégie
+de saisie, permettant des expériences A/B rigoureuses.
+
+\section{Repères et conventions}
+\label{sec:archi_reperes}
+
+\subsection{Repère base du robot}
+
+L'origine du repère \textbf{base} du SO-101 est définie par le fichier URDF
+(\texttt{configs/so101\_new\_calib.urdf}, provenant du dépôt officiel
+TheRobotStudio/SO-ARM100). Elle correspond au centre du pivot du premier
+moteur (\texttt{shoulder\_pan}).
+
+\begin{itemize}
+  \item Axe $X$ : devant le robot (vers les caméras eye-to-hand).
+  \item Axe $Y$ : à gauche, vue d'au-dessus (convention main droite).
+  \item Axe $Z$ : vers le haut.
+  \item Unité : mètres (SI).
+\end{itemize}
+
+Sur le poste expérimental, la surface de la table est mesurée à $Z = -32$ mm
+(voir annexe~\ref{ann:calibration}, section~\ref{ann:repere_mesure}).
+
+\subsection{Convention $T_{A}^{B}$}
+
+On note $T_{A}^{B}$ la pose du repère $B$ exprimée dans $A$ (équivalente à la
+matrice qui transforme un point exprimé dans $B$ vers $A$). Par exemple,
+$T_{\text{base}}^{\text{cam}}$ = pose de la caméra dans le repère base du
+robot. Cette convention est cohérente avec OpenCV
+(\texttt{cv2.calibrateHandEye}) et l'URDF.
+
+\section{Lien hardware--logiciel}
+\label{sec:archi_hw_sw}
+
+La couche d'interface matérielle est minimale et concentrée dans deux
+modules :
+
+\begin{description}
+  \item[\texttt{src/perception/camera\_io.py}] ouvre les 3 caméras via
+        \texttt{cv2.VideoCapture}, force le codec MJPG pour la bande passante
+        USB (voir D10, chapitre~\ref{ch:perception}), gère la synchronisation
+        par \texttt{grab}/\texttt{retrieve}.
+  \item[\texttt{src/perception/robot\_state.py}] communique avec le bus
+        Feetech via \texttt{FeetechMotorsBus} (lib \texttt{lerobot.motors}),
+        avec gestion de retry et fallback en cas de paquet corrompu.
+\end{description}
+
+Tous les autres modules sont \textbf{purement algorithmiques} et peuvent être
+testés sans matériel (tests synthétiques dans \texttt{tests/perception/}).
+
+\section{Mode développement \textit{live} vs \textit{replay}}
+\label{sec:archi_modes}
+
+L'architecture supporte deux modes d'exécution :
+
+\begin{itemize}
+  \item \textbf{Live} : caméras et robot connectés en temps réel.
+  \item \textbf{Replay} : rejeu d'un jeu de données enregistré
+        (\texttt{scripts/record\_perception\_frames.py}) au format
+        \texttt{manifest.json} + images PNG. Permet le développement et le
+        test du pipeline sans matériel, et garantit la
+        \textbf{reproductibilité expérimentale} des résultats du mémoire.
+\end{itemize}
+
+\section{Gestion des dépendances}
+\label{sec:archi_deps}
+
+Les dépendances sont scindées en deux catégories :
+\begin{description}
+  \item[Cœur] \texttt{opencv-python}, \texttt{numpy}, \texttt{lerobot}
+        (motors et datasets). Requis.
+  \item[Extension V2] \texttt{transformers}, \texttt{torch}, \texttt{pillow}.
+        Requis uniquement pour le \texttt{HFDetector} ; le pipeline V1
+        (HSV) fonctionne sans.
+\end{description}
+
+Cette modularité (V2 optionnelle) permet de cloner et d'installer le projet
+en quelques minutes pour la partie classique, et d'ajouter le V2 au besoin
+($\sim$1.5 Go de poids supplémentaires).

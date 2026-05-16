@@ -70,3 +70,21 @@ tfe-lerobot-so101/
 # Snapshots dependances
 # ============================================
 requirements.freeze.txt
+
+# LaTeX build artifacts (docs/memoire)
+docs/memoire/*.aux
+docs/memoire/*.bbl
+docs/memoire/*.bcf
+docs/memoire/*.blg
+docs/memoire/*.fdb_latexmk
+docs/memoire/*.fls
+docs/memoire/*.log
+docs/memoire/*.out
+docs/memoire/*.run.xml
+docs/memoire/*.toc
+docs/memoire/*.tdo
+docs/memoire/*.lof
+docs/memoire/*.lot
+docs/memoire/*.synctex.gz
+docs/memoire/chapters/*.aux
+docs/memoire/main.pdf

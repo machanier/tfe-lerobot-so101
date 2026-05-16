@@ -1,0 +1,47 @@
+\chapter{Détails de calibration}
+\label{ann:calibration}
+
+\section{Structure du code}
+\label{ann:code_structure}
+
+\todoF{Ajouter un arbre détaillé du dépôt avec brève description par fichier.
+Source d'inspiration : \texttt{docs/PROJECT\_STATUS.md} section "Structure du
+repo".}
+
+\section{Repère base : mesure expérimentale}
+\label{ann:repere_mesure}
+
+L'origine du repère base du SO-101 (centre du pivot du \texttt{shoulder\_pan})
+est mesurée à \textbf{+32 mm au-dessus de la surface de la table} sur le
+poste expérimental (mesure au pied à coulisse, 2026-05-16). En conséquence,
+un objet posé sur la table a son \textbf{Z} (centre) à $-32 + h/2$ mm avec
+$h$ la hauteur de l'objet en mm.
+
+Cette mesure doit être refaite si le robot est déplacé ou si la base est
+changée.
+
+\section{Décision D1 : recalage du \texttt{wrist\_roll}}
+\label{ann:d1}
+
+\todoF{Reprendre le contenu de PROJECT\_STATUS.md section D1 (problème de
+la couture 0/4095 de l'encodeur 12 bits sur le wrist\_roll, solution avec
+mesure du vrai centre et recalcul du Homing\_Offset).}
+
+\section{Décision D2 : damier asymétrique 9$\times$6}
+\label{ann:d2}
+
+\todoF{Reprendre PROJECT\_STATUS.md section D2 (4-fold ambiguity du damier
+7$\times$7 carré, solution avec damier asymétrique 9$\times$6).}
+
+\section{Décision D3 : solveur hand-eye robuste}
+\label{ann:d3}
+
+\todoF{Reprendre PROJECT\_STATUS.md section D3 (pipeline solve initial +
+cluster majoritaire + réalignement + rejet outliers).}
+
+\section{Procédure de capture des données extrinsèques}
+\label{ann:capture_extr}
+
+\todoF{Détailler la procédure suivie : nombre de poses (60+ par caméra),
+critère de diversité angulaire ($\geq 30$\textdegree{} entre poses), images annotées
+sauvegardées dans \texttt{outputs/calibration\_images/}.}

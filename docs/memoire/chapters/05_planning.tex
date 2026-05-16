@@ -1,0 +1,146 @@
+\chapter{Planification de saisie}
+\label{ch:planning}
+
+\section{Définition du problème}
+\label{sec:plan_pb}
+
+Étant donné une \texttt{ObjectInstance} fournie par le module de
+perception (chapitre~\ref{ch:perception}), le \textit{grasp planning} doit
+déterminer trois poses successives de l'effecteur :
+
+\begin{description}
+  \item[\textit{approach}] pose où la pince est positionnée \emph{au-dessus}
+        de l'objet, prête à descendre, gripper ouvert.
+  \item[\textit{grasp}] pose où la pince est positionnée \emph{sur} l'objet,
+        au moment où le gripper se referme.
+  \item[\textit{retract}] pose où la pince est remontée après la saisie, gripper
+        fermé maintenant l'objet.
+\end{description}
+
+Plus deux paramètres : ouverture maximale de la pince et fermeture pour la
+saisie (en pourcentage de la course du gripper).
+
+Ces 3+2 paramètres constituent une \texttt{GraspPose}
+(\texttt{src/perception/scene.py} pour la structure, plus précisément la
+structure analogue dans \texttt{src/planning/grasp.py}). Cette représentation
+est inspirée du survey de Bohg \textit{et al.}~\cite{bohg_data-driven_2014}.
+
+\section{Stratégie V1 : \textit{top-down grasp}}
+\label{sec:plan_topdown}
+
+\subsection{Justification du choix}
+
+Bohg \textit{et al.}~\cite{bohg_data-driven_2014} distinguent trois familles
+de \textit{grasp planners} (cf section~\ref{sec:eda_grasp}) :
+\textit{heuristic}, \textit{contact-based}, \textit{data-driven}. Pour la V1,
+l'\textbf{approche heuristique \textit{top-down}} est retenue :
+\begin{itemize}
+  \item Conforme au cahier des charges (\textit{règles heuristiques et
+        critères géométriques}).
+  \item Adaptée à 7--8 / 9 objets cibles du TFE (les objets quotidien
+        posables sur table : cube, cylindre, mug, rubik's cube, etc.).
+  \item Déterministe et explicable, donc analysable en cas d'échec.
+  \item Sert de \textbf{baseline reproductible} pour les comparaisons
+        ultérieures avec des méthodes apprises.
+\end{itemize}
+
+\subsection{Construction géométrique}
+
+Pour un objet en position $(x, y, z)$ dans le repère base, la classe
+\texttt{TopDownGrasp} construit :
+
+\begin{align}
+  T_{\text{approach}}  &= T_{\text{base}}^{\text{gripper}}(x, y, z + h_{\text{approach}}, R(\theta)) \\
+  T_{\text{grasp}}     &= T_{\text{base}}^{\text{gripper}}(x, y, z + \delta_{\text{grasp}}, R(\theta)) \\
+  T_{\text{retract}}   &= T_{\text{base}}^{\text{gripper}}(x, y, z + h_{\text{retract}}, R(\theta))
+\end{align}
+
+avec $h_{\text{approach}} = 8$ cm, $h_{\text{retract}} = 10$ cm, et
+$\delta_{\text{grasp}} = 0$ par défaut (le \textit{grasp} se fait sur le
+centroïde).
+
+\subsection{Rotation $R(\theta)$ : pince verticale alignée}
+
+La pince doit pointer vers le bas (axe $Z_{\text{pince}} = -Z_{\text{base}}$)
+avec une orientation horizontale ajustable par l'angle de \textit{yaw}
+$\theta$ (angle \texttt{wrist\_roll}). La matrice $R$ doit avoir
+$\det(R) = +1$ (rotation propre, pas réflexion) :
+
+\begin{equation}
+  R(\theta) = \begin{pmatrix}
+    \cos\theta &  \sin\theta &  0 \\
+    \sin\theta & -\cos\theta &  0 \\
+    0          &  0          & -1
+  \end{pmatrix}
+\end{equation}
+
+Vérification : $R R^T = I_3$ et $\det R = \cos^2\theta + \sin^2\theta = +1$.
+Géométriquement, cette matrice combine une rotation de $\pi$ autour de $X$
+(qui inverse $Z$ et $Y$) avec une rotation de $\theta$ autour du nouvel axe
+$Z$ (\textit{wrist\_roll}).
+
+\subsection{Alignement \textit{wrist\_roll} sur le grand axe de l'objet}
+
+Pour un objet allongé (stylo, rectangle, paquet de mouchoir), la pince doit
+attaquer dans le sens de la \textbf{plus grande dimension} pour avoir une
+prise stable. La fonction \texttt{yaw\_from\_contour} calcule l'angle
+principal d'un contour 2D via les moments centraux d'ordre 2 :
+
+\begin{equation}
+  \theta = \frac{1}{2} \, \arctan\!\left( \frac{2 \, \mu_{11}}{\mu_{20} - \mu_{02}} \right)
+\end{equation}
+
+avec $\mu_{ij}$ les moments centraux du contour (cf documentation
+\texttt{cv2.moments}). Pour les objets quasi-symétriques (cube, disque), un
+test de dégénérescence ($|\mu_{20} - \mu_{02}|$ et $|\mu_{11}|$ tous deux
+petits) renvoie $\theta = 0$ (alignement par défaut).
+
+\subsection{Filtres et garde-fous}
+
+Le \texttt{TopDownGrasp} rejette les objets trop hauts pour une saisie
+verticale (\texttt{max\_object\_height\_m = 0.12} par défaut). Le grand
+gobelet de 13 cm peut atteindre cette limite, motivant l'extension V2
+(\textit{side grasp}).
+
+\section{Stratégie V2 : \textit{side grasp} (extension prévue)}
+\label{sec:plan_v2}
+
+\todoF{Section à compléter au Sprint 4 si on étend la stratégie top-down pour
+les objets hauts. Concrètement : la pince attaque l'objet par le côté
+(axe $Z_{\text{pince}}$ horizontal), avec un \textit{yaw} aligné sur le grand
+axe vertical de l'objet. Justification académique : Bohg 2014, section 3.2.}
+
+\section{Interface avec le module de contrôle}
+\label{sec:plan_interface}
+
+Le \texttt{GraspPose} produit par le \textit{planning} est consommé par le
+module \textit{control} (chapitre~\ref{ch:control_eval}), qui réalise :
+\begin{enumerate}
+  \item Pour chaque pose 4$\times$4 SE(3), inverser la cinématique (IK) pour
+        obtenir les 5 angles articulaires.
+  \item Interpoler les trajectoires entre poses successives.
+  \item Envoyer les commandes moteur via le bus Feetech.
+  \item Gérer l'ouverture/fermeture de la pince.
+\end{enumerate}
+
+\section{Validation et tests}
+\label{sec:plan_validation}
+
+Le module \texttt{src/planning/grasp.py} contient 6 self-tests
+(\texttt{python -m src.planning.grasp}) :
+\begin{enumerate}
+  \item Rotation propre : $\det R = +1$ et orthonormalité.
+  \item \texttt{yaw\_from\_contour} : rectangle horizontal $\rightarrow \theta = 0$,
+        rectangle vertical $\rightarrow \theta = \pm\pi/2$.
+  \item \texttt{TopDownGrasp.plan} : positions $(x, y, z)$ correctement
+        propagées sur les 3 poses.
+  \item Filtre objet trop haut : retourne \texttt{None}.
+  \item Alignement \textit{wrist\_roll} sur contour.
+  \item Classe abstraite \texttt{GraspStrategy} : \texttt{TypeError} si
+        instanciation directe.
+\end{enumerate}
+
+Tous les tests passent.
+
+\todoF{Ajouter une figure illustrant les 3 poses (approach/grasp/retract)
+sur un cube schématique.}

@@ -1,0 +1,163 @@
+\chapter{État de l'art}
+\label{ch:etat_de_lart}
+
+\section{Calibration caméra-robot (\textit{hand-eye})}
+\label{sec:eda_handeye}
+
+La calibration \textit{hand-eye} consiste à déterminer la transformation
+rigide $T_{\text{base}}^{\text{cam}}$ entre le repère d'une caméra et le repère
+de la base d'un robot manipulateur. Le problème classique a été formulé par
+Tsai et Lenz~\cite{tsai_new_1989} sous la forme matricielle
+$\mathbf{A}\mathbf{X} = \mathbf{X}\mathbf{B}$, où $\mathbf{A}$ et
+$\mathbf{B}$ sont des transformations relatives entre poses successives.
+Horaud et Dornaika~\cite{horaud_hand-eye_1995} ont étendu la méthode aux
+quaternions. Plus récemment, Li \textit{et al.}~\cite{li_3d_2025} ont proposé
+une méthode 3D dite \textit{look-at-base-once} pour la robotique collaborative.
+
+Deux configurations sont possibles :
+\begin{description}
+  \item[\textbf{eye-to-hand}] La caméra est fixée dans le monde et observe
+        le robot. On résout pour $T_{\text{base}}^{\text{cam}}$, constante
+        dans le temps.
+  \item[\textbf{eye-in-hand}] La caméra est montée sur l'effecteur. On résout
+        pour $T_{\text{gripper}}^{\text{cam}}$, et l'on compose avec la pose
+        courante de l'effecteur ($T_{\text{base}}^{\text{gripper}}(t)$) pour
+        obtenir $T_{\text{base}}^{\text{cam}}(t)$.
+\end{description}
+
+Dans ce travail, les deux configurations sont utilisées simultanément
+(chapitre~\ref{ch:architecture}).
+
+\section{Triangulation stéréo et géométrie projective}
+\label{sec:eda_triangulation}
+
+Le manuel de référence de Hartley et
+Zisserman~\cite{hartley_multiple_2018} expose la géométrie projective
+sous-jacente à la triangulation multi-vues. Étant donné un point 3D
+$\mathbf{X}$ et deux caméras de matrices de projection $P_1, P_2$, les
+projections image $\mathbf{x}_1, \mathbf{x}_2$ satisfont $\mathbf{x}_i \sim
+P_i \mathbf{X}$. La triangulation inverse ce problème : connaissant
+$\mathbf{x}_1, \mathbf{x}_2$ et $P_1, P_2$, on cherche $\mathbf{X}$
+minimisant l'erreur de reprojection.
+
+L'algorithme \textit{Direct Linear Transform} (DLT)~\cite[chap.~12]{hartley_multiple_2018}
+formule le problème linéairement à partir des équations $\mathbf{x}_i \times
+P_i \mathbf{X} = 0$, donnant un système surdéterminé résolu par décomposition
+en valeurs singulières. C'est cette méthode qui est implémentée dans
+\texttt{cv2.triangulatePoints} d'OpenCV, utilisée au chapitre~\ref{ch:perception}.
+
+\section{Estimation de pose monoculaire (PnP)}
+\label{sec:eda_pnp}
+
+Pour estimer la pose d'un objet rigide depuis une seule caméra, à condition
+que sa géométrie soit connue, on résout le \textit{Perspective-n-Point}
+(PnP)~\cite{}. Lepetit \textit{et al.} ont proposé une formulation efficace
+\textit{EPnP}~\cite{} en $O(n)$, devenue le standard de fait dans OpenCV via
+\texttt{cv2.solvePnP}. Pour les surfaces planaires (4 points coplanaires), la
+solution \textit{IPPE} (Infinitesimal Plane-based Pose Estimation) gère
+l'ambiguïté planaire bien connue, mais avec un risque de \textit{flip} si
+l'objet est quasi parallèle au plan image~\cite[][\textit{Planar case}]{}.
+
+\todoF{Compléter les références bibliographiques Lepetit et IPPE dans biblio.bib.}
+
+\section{Détection d'objets : du seuillage classique aux foundation models}
+\label{sec:eda_detection}
+
+\subsection{Détection par seuillage couleur (méthode classique)}
+
+La segmentation par couleur dans l'espace HSV (\textit{Hue, Saturation, Value})
+est une technique classique présentée dans tout manuel de Computer
+Vision~\cite[chap.~6]{}. Le passage RGB$\to$HSV décorrèle la teinte ($H$) de
+la luminosité ($V$), rendant le seuillage plus robuste aux variations
+d'éclairage. La méthode est \emph{déterministe, rapide et reproductible}, mais
+limitée par sa nature pixel-locale : aucune notion de forme, de contexte ou
+d'identité d'objet n'est encodée.
+
+\subsection{Détection apprise (\textit{closed-vocabulary})}
+
+Les détecteurs entraînés type YOLO, Faster R-CNN ou DETR apprennent à
+détecter une liste fixe de classes (\textit{closed-vocabulary}, ex. 80 classes
+de COCO). Ils nécessitent un \textbf{dataset annoté} (typiquement
+$\sim$50-200 images par classe pour un fine-tuning).
+
+\subsection{Détection \textit{open-vocabulary}}
+
+L'\textit{open-vocabulary detection} permet de détecter des objets décrits par
+une requête textuelle libre, sans réentraînement. Le modèle est un
+\textit{Vision-Language Model} (VLM) pré-entraîné sur des paires
+(image, légende) à très grande échelle. Les architectures de référence sont
+OWL-ViT~\cite{} et son évolution OWL-ViTv2~\cite{}, ainsi que
+Grounding-DINO~\cite{}. Ces modèles permettent de détecter "any object on
+the table" ou "a metallic robotic arm with a gripper" sans dataset spécifique.
+
+C'est ce paradigme qui est adopté en V2 dans ce travail
+(chapitre~\ref{ch:perception}, section~\ref{sec:perception_v2}), via le modèle
+\texttt{google/owlv2-base-patch16-ensemble} hébergé sur Hugging Face.
+
+\todoF{Compléter les citations OWL-ViT, OWL-ViTv2, Grounding-DINO dans biblio.bib
+(actuellement présentes mais sans clés \texttt{cite\{...\}} précises).}
+
+\section{Grasp planning}
+\label{sec:eda_grasp}
+
+Le \textit{grasp planning} consiste à déterminer une pose de pince (position +
+orientation) permettant de saisir un objet de manière stable. Le survey de
+référence est celui de Bohg \textit{et al.}~\cite{bohg_data-driven_2014}, qui
+distingue trois familles :
+\begin{enumerate}
+  \item \textbf{Approches heuristiques} : règles géométriques simples (ex.
+        top-down sur le centroïde) ; rapides à mettre en œuvre, justifiables
+        analytiquement.
+  \item \textbf{Approches \textit{contact-based}} : recherche de paires de
+        points antipodaux sur le maillage 3D de l'objet.
+  \item \textbf{Approches \textit{data-driven}} : apprentissage à partir de
+        démonstrations ou de simulations massives.
+\end{enumerate}
+
+Dans ce travail, l'approche heuristique \textit{top-down} est adoptée pour la
+V1 (chapitre~\ref{ch:planning}), suivant la recommandation du cahier des
+charges (règles heuristiques et critères géométriques).
+
+\section{Planification de trajectoires}
+\label{sec:eda_planning}
+
+L'ouvrage de référence est celui de LaValle~\cite{lavalle_planning_2006},
+\textit{Planning Algorithms}, qui présente les algorithmes classiques :
+RRT, RRT*, PRM, A* sur grilles. Pour un bras à 5 DDL comme le SO-101 dans
+un environnement modéré, des algorithmes locaux (interpolation linéaire dans
+l'espace articulaire avec vérification de collision) suffisent au Sprint 3 ;
+RRT sera envisagé au Sprint 4 pour la replanification en présence d'obstacles.
+
+\section{Imitation learning et politiques apprises}
+\label{sec:eda_il}
+
+L'\textit{imitation learning} (IL) propose une approche \textbf{end-to-end} où
+un réseau de neurones apprend directement la fonction
+$\text{image} + \text{état} \rightarrow \text{action moteur}$ à partir de
+démonstrations téléopérées. Les architectures principales sont :
+\begin{itemize}
+  \item \textbf{ACT} (Action Chunking with Transformers)~\cite{} : prédiction
+        d'une séquence d'actions à chaque pas.
+  \item \textbf{Diffusion Policy}~\cite{chi_visuomotor_nodate} : génération
+        des actions par un modèle de diffusion.
+  \item \textbf{SmolVLA}~\cite{shukor_smolvla_2025} : Vision-Language-Action,
+        accepte une instruction textuelle (\textit{"grab the red cube"}) et
+        produit une trajectoire.
+\end{itemize}
+
+La stack officielle LeRobot~\cite{} (Hugging Face) implémente ces trois
+politiques pour le SO-101 et fournit un dataset officiel de pick-and-place
+(\texttt{lerobot/svla\_so101\_pickplace}, 50 épisodes).
+
+\section{Positionnement de ce travail}
+\label{sec:eda_positionnement}
+
+Ce travail s'inscrit à l'intersection des deux paradigmes contemporains :
+l'\textbf{architecture modulaire classique} (perception $\rightarrow$
+planning $\rightarrow$ contrôle), imposée par le cahier des charges, et
+l'\textbf{imitation learning end-to-end} promu par LeRobot. La contribution
+principale est une \textbf{comparaison empirique} de ces deux paradigmes sur
+le même robot (SO-101), les mêmes objets et les mêmes métriques
+(chapitre~\ref{ch:control_eval}).
+
+\todoF{Compléter cette comparaison empirique après les expériences (Sprint 5).}

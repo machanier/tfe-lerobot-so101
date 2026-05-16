@@ -1,0 +1,141 @@
+\chapter{Discussion}
+\label{ch:discussion}
+
+\section{Synthèse des limites identifiées}
+\label{sec:disc_limites}
+
+Au fil du projet, plusieurs limites ont été identifiées et documentées. Cette
+discipline est essentielle pour un travail scientifique honnête :
+identifier une limite, l'expliquer, proposer une amélioration.
+
+\subsection{Limites de la perception V1 (HSV)}
+
+\begin{itemize}
+  \item Confusion couleur entre objet cible et environnement (cube orange
+        $\leftrightarrow$ pince orange du robot, mug blanc $\leftrightarrow$
+        sol blanc).
+  \item Aucune compréhension de forme ou de contexte.
+  \item Sensibilité aux variations d'éclairage.
+  \item Plages HSV à recalibrer à chaque changement d'éclairage.
+\end{itemize}
+
+\textbf{Solution adoptée} : passage anticipé au V2 (\texttt{HFDetector}) +
+zones d'exclusion géométriques (décisions D9, D13).
+
+\subsection{Limites de la perception V2 (OWL-ViTv2)}
+
+\begin{itemize}
+  \item Faux positifs sémantiques (objets visuellement similaires détectés
+        comme \textit{l'objet cible}).
+  \item Vitesse limitée ($\sim$3-5 FPS sur MacBook M4).
+  \item Pas de masque de segmentation (uniquement bboxes).
+\end{itemize}
+
+\textbf{Solutions possibles} :
+\begin{itemize}
+  \item Descriptions plus précises (taille, matériau, caractéristique
+        distinctive).
+  \item Filtrage par zone de travail (déjà en place).
+  \item Seuil de confiance plus strict (à régler selon les expériences).
+  \item Mode hybride HSV (rapide) + HF (validation périodique).
+  \item Pour le segmentation : ajout de SAM 2 en post-traitement (extension
+        possible).
+\end{itemize}
+
+\subsection{Limites du grasp planner V1 (top-down)}
+
+\todoF{À compléter après expériences. Limites prévisibles : objets hauts
+(grand gobelet) inaccessibles en top-down ; objets fins (stylo) demandent
+une orientation \textit{wrist\_roll} très précise.}
+
+\subsection{Limites de la précision géométrique}
+
+Les résidus \textit{hand-eye} de 5-10 mm pour \texttt{cam\_0/cam\_1}
+correspondent au \textbf{plancher de bruit de répétabilité du SO-101}
+(spec constructeur). Cette imprécision se propage en aval :
+\begin{itemize}
+  \item L'objet est localisé en 3D à $\pm$5-10 mm près.
+  \item Le grasp planner positionne la pince à la même précision.
+  \item La pince a une ouverture typique de 30-40 mm $\rightarrow$ marge de
+        manœuvre acceptable pour les objets non-fins, problématique pour le
+        stylo.
+\end{itemize}
+
+\textbf{Solution prévue Sprint 4} : replanification en boucle fermée. La
+caméra eye-in-hand (\texttt{cam\_2}) confirme la position de l'objet quand
+le bras s'en approche, et corrige la trajectoire si nécessaire.
+
+\section{Choix académiques discutables}
+\label{sec:disc_choix}
+
+\subsection{Pourquoi OWL-ViTv2 plutôt que Grounding-DINO ?}
+
+\todoF{Discussion à approfondir. Synthèse : OWL-ViTv2 est mieux documenté,
+plus standardisé dans la stack HF, plus rapide que Grounding-DINO sur M4.
+Grounding-DINO serait plus précis sur les objets fins.}
+
+\subsection{Pourquoi pas un détecteur fine-tuné YOLO ?}
+
+\todoF{Discussion à approfondir. Synthèse : YOLO fine-tuné aurait demandé
+$\sim$200 images annotées par objet, soit plusieurs jours de travail.
+L'open-vocabulary élimine ce coût mais sacrifie une partie de la précision.
+Compromis raisonnable pour un projet bachelor.}
+
+\subsection{Pourquoi 5 DDL et pas 7 ?}
+
+Le SO-101 est un robot \textbf{sous-actionné} (5 articulations rotoïdes) par
+rapport à l'espace SE(3) de l'effecteur (6 DDL). Conséquence : tous les
+6-uplets (position, orientation) ne sont pas atteignables. Pour la V1
+\textit{top-down}, on contraint l'orientation à un seul DDL libre
+(\texttt{wrist\_roll}), donc 4 DDL contraints par la pose désirée +
+1 DDL libre $\rightarrow$ \textbf{le système est bien posé}.
+
+\section{Comparaison des deux paradigmes (modulaire vs imitation)}
+\label{sec:disc_paradigmes}
+
+\todoF{À compléter après expériences Sprint 5. Pistes :}
+
+\paragraph{Avantages de l'architecture modulaire (notre V1/V2)}
+\begin{itemize}
+  \item Explicabilité : on peut diagnostiquer chaque étape en cas d'échec.
+  \item Modularité : on peut remplacer un module sans toucher au reste
+        (\textit{Strategy pattern}).
+  \item Garanties géométriques : on \textbf{sait} que la pince est à la
+        position calculée par l'IK.
+  \item Évitement d'obstacles \textbf{explicite} : on peut prouver qu'une
+        trajectoire ne traverse pas un obstacle.
+\end{itemize}
+
+\paragraph{Avantages de l'imitation learning (SmolVLA)}
+\begin{itemize}
+  \item Pas de \textit{feature engineering} : le réseau apprend les bonnes
+        représentations.
+  \item Robustesse à des situations non anticipées (si présentes dans le
+        dataset d'apprentissage).
+  \item Code de déploiement minimal : un appel à \texttt{policy.select\_action}.
+\end{itemize}
+
+\paragraph{Inconvénients respectifs}
+\begin{itemize}
+  \item Modulaire : nécessite beaucoup d'ingénierie ; chaque module est un
+        point de défaillance.
+  \item Imitation : boîte noire (difficile à expliquer un échec) ;
+        nécessite un dataset de qualité ; pas de garantie formelle
+        d'évitement de collision.
+\end{itemize}
+
+\section{Pistes d'amélioration}
+\label{sec:disc_pistes}
+
+\todoF{À compléter en fin de projet. Pistes envisageables :}
+\begin{itemize}
+  \item Ajout de SAM 2 (segmentation) pour améliorer le grasp planner.
+  \item Implémenter le \textit{side grasp} (V2 du planning).
+  \item Étendre la replanification (Sprint 4) avec un véritable RRT.
+  \item Active vision : sélectionner le meilleur point de vue en fonction
+        de l'occlusion (objectif 2 du cahier des charges, partiellement
+        couvert).
+  \item Asservissement visuel (\textit{visual servoing}) au sens de
+        Chaumette \& Hutchinson 2006/2007.
+  \item Évaluation sur des scènes plus complexes (encombrement variable).
+\end{itemize}

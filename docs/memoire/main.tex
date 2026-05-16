@@ -1,0 +1,117 @@
+% ================================================================
+% Travail de Fin d'Etudes - Bachelor Informatique UNIGE 2025-2026
+% Saisie d'objets en environnement encombre pour un bras robotique
+% assiste par vision
+%
+% Auteur    : Maxence Chanier
+% Encadrant : Guido Bologna
+%
+% Compilation :
+%   make           (compile main.pdf via latexmk)
+%   make clean     (efface les fichiers intermediaires)
+% ================================================================
+
+\documentclass[11pt,a4paper,oneside]{report}
+
+% --- Encodage et langue
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{csquotes}
+
+% --- Mise en page
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{microtype}
+\usepackage{setspace}
+\onehalfspacing
+
+% --- Maths
+\usepackage{amsmath, amssymb, amsthm}
+
+% --- Figures et tableaux
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{booktabs}        % tableaux propres
+\usepackage{tabularx}
+\usepackage{array}
+
+% --- Code source
+\usepackage{listings}
+\usepackage{xcolor}
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!70!black},
+  commentstyle=\color{green!50!black}\itshape,
+  stringstyle=\color{orange!80!black},
+  numbers=left, numberstyle=\tiny\color{gray},
+  frame=single, framerule=0.4pt, rulecolor=\color{black!30},
+  showstringspaces=false,
+  breaklines=true, breakatwhitespace=true,
+  tabsize=2,
+  language=Python,
+}
+
+% --- Bibliographie (biblatex moderne, backend biber)
+\usepackage[
+  backend=biber,
+  style=numeric,
+  sorting=none,             % ordre d'apparition
+  giveninits=true,
+  maxnames=4, minnames=2,
+]{biblatex}
+\addbibresource{biblio.bib}
+
+% --- TODO (commenter \listoftodos\listoftodos pour cacher la liste)
+\usepackage[colorinlistoftodos,prependcaption,textsize=small]{todonotes}
+
+% --- Liens (a charger en DERNIER)
+\usepackage[
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!70!black,
+  pdftitle={Saisie d'objets en environnement encombre pour bras robotique SO-101},
+  pdfauthor={Maxence Chanier},
+]{hyperref}
+
+% --- Helpers
+\newcommand{\todoF}[1]{\todo[inline,color=red!15]{\textbf{TODO :} #1}}
+
+% ================================================================
+\begin{document}
+
+% Page de titre
+\input{chapters/00_titlepage}
+
+% Resume
+\chapter*{Résumé}
+\input{chapters/00_abstract}
+
+% Remerciements
+\chapter*{Remerciements}
+\input{chapters/00_remerciements}
+
+% Table des matieres
+\tableofcontents
+\listoftodos[Liste des sections à compléter]
+
+% Chapitres
+\input{chapters/01_introduction}
+\input{chapters/02_etat_de_lart}
+\input{chapters/03_architecture}
+\input{chapters/04_perception}
+\input{chapters/05_planning}
+\input{chapters/06_control_evaluation}
+\input{chapters/07_discussion}
+\input{chapters/08_conclusion}
+
+% Bibliographie
+\printbibliography[heading=bibintoc]
+
+% Annexes
+\appendix
+\input{chapters/A1_calibration_details}
+
+\end{document}
