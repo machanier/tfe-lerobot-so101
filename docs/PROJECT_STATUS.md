@@ -163,6 +163,27 @@ Limite connue : ambiguïté planaire pour 4 coins coplanaires alignés au plan
 image (Lepetit et al. 2009, *EPnP*, sec. "Planar case"). Acceptable : la
 validation Sprint 2 repose sur la stéréo.
 
+### D11 — Convention de repère mesurée pour le poste de Maxence (2026-05-16)
+
+**Origine du repère base** : centre du pivot du `shoulder_pan` (premier moteur).
+**Axes** : X devant le robot (vers les caméras), Z vers le haut, Y à gauche (vue d'au-dessus, convention main-droite).
+**Surface de la table** : Z = **-32 mm** (mesuré au pied à coulisse, hauteur de l'origine du shoulder_pan au-dessus de la table).
+**Conséquence** : un objet posé sur la table de hauteur `h` mm a son centre à `Z = -32 + h/2`.
+
+Cette mesure doit être refaite si on déplace le robot ou si on change la base. Documenté ici pour reproductibilité.
+
+### D12 — Architecture USB : 3 caméras sur 2 contrôleurs séparés (2026-05-16)
+
+**Problème** : 3 caméras USB 1080p sur un seul hub partagé saturent la bande passante du contrôleur xHCI, ce qui faisait échouer `cam_2`.
+
+**Solution adoptée par Maxence** : séparer physiquement les caméras sur 2 hubs distincts :
+- Hub 1 : cam_0 + cam_1 (les deux stéréo eye-to-hand).
+- Hub 2 : cam_2 (eye-in-hand) + microcontrôleur du robot.
+
+Chaque hub étant branché sur un port USB-C différent du MacBook, on a 2 contrôleurs xHCI indépendants → bande passante doublée.
+
+C'est une **contrainte physique** à mentionner dans le mémoire (section "matériel"). Sans cette répartition, le pipeline multi-caméras n'est pas exploitable sur un MacBook avec un seul hub.
+
 ### D8 — HSV : distinction `color_mode` chromatic / black / white / gray (Sprint 2)
 
 **Problème découvert (2026-05-16)** : la première calibration HSV de Maxence sur 5 objets a montré que **noir et blanc ne sont pas des couleurs en HSV**. Pour le noir, V≈0 rend H et S indéterminés (mathématiquement) ; pour le blanc, S≈0 rend H indéterminé. Conséquence : le seuillage par H sur un objet noir donnait `H ∈ [103, 168]`, couvrant simultanément le bleu et le violet → confusions massives entre objets sombres.

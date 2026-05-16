@@ -110,20 +110,23 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str, warmup: int = 5):
             print(f"Robot KO ({e}). Bascule en --no-robot.")
             no_robot = True
 
-    with MultiCamera() as mc:
-        rs = (provider.read_live() if not no_robot
-              else provider.from_angles({j: 0.0 for j in
-                                         ["shoulder_pan", "shoulder_lift",
-                                          "elbow_flex", "wrist_flex", "wrist_roll"]}))
-        # Warm-up autoexposure
-        for _ in range(warmup):
-            mc.grab(robot_state=rs)
-            time.sleep(0.1)
-        frames = mc.grab(robot_state=rs)
-        dets = detector.detect_multi(frames)
-        scene = estimator.build_scene(dets, frames)
-
-    provider.disconnect_live()
+    # try/finally CRITIQUE pour liberer le bus en cas d'erreur (sinon le port
+    # USB reste occupe et le prochain lancement echoue avec "Incorrect status packet").
+    try:
+        with MultiCamera() as mc:
+            rs = (provider.read_live() if not no_robot
+                  else provider.from_angles({j: 0.0 for j in
+                                             ["shoulder_pan", "shoulder_lift",
+                                              "elbow_flex", "wrist_flex", "wrist_roll"]}))
+            # Warm-up autoexposure
+            for _ in range(warmup):
+                mc.grab(robot_state=rs)
+                time.sleep(0.1)
+            frames = mc.grab(robot_state=rs)
+            dets = detector.detect_multi(frames)
+            scene = estimator.build_scene(dets, frames)
+    finally:
+        provider.disconnect_live()
     return scene, [s.label for s in specs]
 
 

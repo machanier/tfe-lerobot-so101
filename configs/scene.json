@@ -10,19 +10,27 @@
 
   "exclusion_zones_base_m": [
     {
-      "_doc": "Zone occupee par la base du robot lui-meme. Toute detection 3D tombant dedans est rejetee (anti-confusion robot-orange / cube-orange).",
+      "_doc": "Zone occupee par la base du robot lui-meme + zone d'encombrement quand le bras est replie au repos. Anti-confusion robot-orange / cube-orange. Rayon elargi a 0.15m (rayon physique base + marge pour 1ere articulation).",
       "type": "cylinder",
-      "center_base_m": [0.00, 0.00, 0.00],
-      "radius_m": 0.10,
-      "height_m": 0.35,
+      "center_base_m": [0.00, 0.00, -0.05],
+      "radius_m": 0.15,
+      "height_m": 0.45,
       "label": "robot_base"
+    },
+    {
+      "_doc": "Bras typique replie (boite englobante grossiere). Affine si tu observes des faux positifs sur le bras lui-meme.",
+      "type": "box",
+      "center_base_m": [0.10, 0.00, 0.10],
+      "dimensions_m": [0.20, 0.20, 0.30],
+      "label": "robot_arm_envelope"
     }
   ],
 
   "workspace_bounds_base_m": {
-    "_doc": "Limites du workspace utile (plage atteignable par le SO-101). Detection 3D hors de ces bornes => rejetee. Plus large que strictement necessaire ; ce sont des bornes molles pour rejeter les positions delirantes.",
-    "x_min": -0.10, "x_max":  0.50,
-    "y_min": -0.40, "y_max":  0.40,
-    "z_min": -0.05, "z_max":  0.40
+    "_doc": "Limites du workspace utile (plage atteignable par le SO-101 + zone proche table). Detection 3D hors de ces bornes => rejetee. RESSEREE pour eviter les faux positifs sur le fond.",
+    "x_min":  0.10, "x_max":  0.40,
+    "y_min": -0.20, "y_max":  0.20,
+    "z_min": -0.05, "z_max":  0.20,
+    "_note": "z_min legerement < table (-32mm donc z_table=-0.032m). z_max bas car objets poses sur table (rarement > 20cm de haut)."
   }
 }

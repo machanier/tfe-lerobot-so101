@@ -129,41 +129,50 @@ def run_live(args):
             print(f"Connexion robot KO ({e}). On bascule en mode --no-robot.")
             args.no_robot = True
 
-    with MultiCamera() as mc:
-        print(mc.info())
-        win = "Perception (live)"
-        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-        try:
-            while True:
-                # 1. Etat robot pour cam_2 eye-in-hand
-                if args.no_robot:
-                    rs = provider.from_angles({j: 0.0 for j in
-                                               ["shoulder_pan", "shoulder_lift",
-                                                "elbow_flex", "wrist_flex", "wrist_roll"]})
-                else:
-                    rs = provider.read_live()
-                # 2. Capture
-                frames = mc.grab(robot_state=rs)
-                # 3. Detection
-                dets_by_cam = detector.detect_multi(frames)
-                # 4. Reconstruction 3D
-                scene = estimator.build_scene(dets_by_cam, frames)
-                # 5. Affichage
-                tiles = []
-                for k in mc.cam_keys:
-                    if frames[k] is None:
-                        tiles.append(None)
+    # Garantit la liberation du bus moteur meme si Ctrl+C ou crash dans la
+    # boucle (sinon le port reste en etat occupe et le prochain lancement
+    # echoue avec "Incorrect status packet").
+    try:
+        with MultiCamera() as mc:
+            print(mc.info())
+            win = "Perception (live)"
+            cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+            try:
+                while True:
+                    # 1. Etat robot pour cam_2 eye-in-hand
+                    if args.no_robot:
+                        rs = provider.from_angles({j: 0.0 for j in
+                                                   ["shoulder_pan", "shoulder_lift",
+                                                    "elbow_flex", "wrist_flex", "wrist_roll"]})
                     else:
-                        tiles.append(annotate_frame(frames[k], dets_by_cam[k], scene))
-                cv2.imshow(win, horizontal_tile(tiles))
-                if args.print_each_frame and scene.objects:
-                    print(scene.pretty())
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    break
-        finally:
-            cv2.destroyAllWindows()
-            provider.disconnect_live()
+                        rs = provider.read_live()
+                    # 2. Capture
+                    frames = mc.grab(robot_state=rs)
+                    # 3. Detection
+                    dets_by_cam = detector.detect_multi(frames)
+                    # 4. Reconstruction 3D
+                    scene = estimator.build_scene(dets_by_cam, frames)
+                    # 5. Affichage
+                    tiles = []
+                    for k in mc.cam_keys:
+                        if frames[k] is None:
+                            tiles.append(None)
+                        else:
+                            tiles.append(annotate_frame(frames[k], dets_by_cam[k], scene))
+                    cv2.imshow(win, horizontal_tile(tiles))
+                    if args.print_each_frame and scene.objects:
+                        print(scene.pretty())
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        break
+            except KeyboardInterrupt:
+                print("\nInterrompu par utilisateur. Liberation propre des ressources...")
+            finally:
+                cv2.destroyAllWindows()
+    finally:
+        # CRITIQUE : libere le bus moteur en TOUTES circonstances
+        # (sinon le prochain lancement echouera avec port deja ouvert).
+        provider.disconnect_live()
 
 
 def run_replay(args):
