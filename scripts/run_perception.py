@@ -213,8 +213,14 @@ def run_live(args):
                     cv2.imshow(win, horizontal_tile(tiles))
                     if args.print_each_frame and scene.objects:
                         print(scene.pretty())
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord("q"):
+                    # waitKey 100ms : permet de capter 'q' meme entre des frames
+                    # lentes (HFDetector prend 3-5s par frame sur M4). Sinon
+                    # waitKey(1) n'attend que 1ms pendant lesquelles l'OS doit
+                    # detecter la touche -> souvent rate.
+                    # En boucle classique HSV (10 FPS = 100ms/frame), 100ms
+                    # ne change rien au framerate (on attend deja la frame).
+                    key = cv2.waitKey(100) & 0xFF
+                    if key == ord("q") or key == 27:  # 'q' ou ESC
                         break
             except KeyboardInterrupt:
                 print("\nInterrompu par utilisateur. Liberation propre des ressources...")
