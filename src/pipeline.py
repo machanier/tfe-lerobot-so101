@@ -83,6 +83,7 @@ class PipelineConfig:
     dry_run: bool = False               # True : pas d'envoi moteur, juste log
     closed_loop: bool = True            # Sprint 4 : raffinement cam_2 avant grasp
     closed_loop_max_correction_mm: float = 80.0  # rejette correction > 8 cm (sanity)
+    display: bool = False               # Affiche les frames camera (cv2.imshow) aux moments cles
 
 
 # ============================================================
@@ -250,6 +251,11 @@ class PickAndPlacePipeline:
             print(scene.pretty())
             print()
 
+            # === DISPLAY OPTIONNEL : montre les 3 frames avec detections ===
+            if self.config.display:
+                self._show_perception_snapshot(frames, dets_by_cam, scene,
+                                                title="Perception initiale (Sprint 2)")
+
             # ============================================================
             # 3. Trouve l'objet cible
             # ============================================================
@@ -326,7 +332,11 @@ class PickAndPlacePipeline:
                     detector=self._detector,
                     multi_camera=mc,
                     robot_state=rs_at_approach,
-                    z_height_above_object_m=0.08,
+                    # IMPORTANT : on passe la hauteur ATTENDUE de l'objet
+                    # (= Z de la pose grasp triangulée) pour que la formule
+                    # de conversion pixel->m utilise la VRAIE distance
+                    # cam_2 -> objet, pas une valeur en dur.
+                    target_z_base_m=float(grasp_pose.T_base_gripper_grasp[2, 3]),
                     label_mapping=self._label_mapping,
                 )
                 print(f"   {refinement.message}")
@@ -394,6 +404,62 @@ class PickAndPlacePipeline:
                     controller.disconnect()
                 except Exception:
                     pass
+
+    def _show_perception_snapshot(self, frames, dets_by_cam, scene, title=""):
+        """Affiche les 3 frames camera avec detections, sauvegarde aussi
+        dans outputs/perception/. Appuie ENTREE pour fermer.
+        """
+        import cv2
+        from datetime import datetime
+
+        # Helper : annote une frame avec ses detections + reprojections de scene
+        from src.perception.pose_estimator import _projection_matrix
+        import numpy as np
+
+        def annotate(frame, dets):
+            if frame is None:
+                return np.zeros((540, 960, 3), dtype=np.uint8)
+            img = frame.image.copy()
+            for d in dets:
+                if d.bbox:
+                    x0, y0, x1, y1 = (int(v) for v in d.bbox)
+                    cv2.rectangle(img, (x0, y0), (x1, y1), (0, 200, 0), 2)
+                cx, cy = int(d.center_px[0]), int(d.center_px[1])
+                cv2.circle(img, (cx, cy), 5, (0, 255, 0), -1)
+                cv2.putText(img, f"{d.label} ({d.score:.2f})", (cx + 8, cy - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            # Reprojection des objets 3D
+            P = _projection_matrix(frame.K, frame.T_base_cam)
+            for obj in scene.objects:
+                X = np.hstack([obj.position_base_m, 1.0])
+                uvw = P @ X
+                if uvw[2] > 0:
+                    u, v = uvw[0]/uvw[2], uvw[1]/uvw[2]
+                    cv2.circle(img, (int(u), int(v)), 8, (0, 0, 255), 2)
+            return cv2.resize(img, (640, 360))
+
+        tiles = []
+        for k in ("cam_0", "cam_1", "cam_2"):
+            tiles.append(annotate(frames.get(k), dets_by_cam.get(k, [])))
+        mosaic = np.hstack(tiles)
+        cv2.putText(mosaic, title, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        # Sauvegarde
+        out_dir = REPO / "outputs" / "perception"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / f"pipeline_snapshot_{stamp}.png"
+        cv2.imwrite(str(out_path), mosaic)
+        print(f"   [display] snapshot sauve : {out_path}")
+        # Affichage
+        cv2.imshow("Pipeline perception", mosaic)
+        print(f"   [display] {title} affiche. Appuie ENTREE dans la console pour continuer.")
+        try:
+            cv2.waitKey(500)
+            input()
+        except (EOFError, KeyboardInterrupt):
+            pass
+        cv2.destroyAllWindows()
 
     def _safe_stop_with_torque(self, controller):
         """En cas d'exception ou Ctrl+C : MAINTIENT le torque pour eviter

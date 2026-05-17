@@ -103,8 +103,10 @@ def refine_grasp_with_cam2(
     detector: ObjectDetector,
     multi_camera: MultiCamera,
     robot_state: RobotState,
+    target_z_base_m: Optional[float] = None,
     z_height_above_object_m: float = 0.08,
     label_mapping: Optional[dict] = None,
+    verbose: bool = True,
 ) -> RefinementResult:
     """Raffine la pose de saisie via cam_2 (eye-in-hand).
 
@@ -181,12 +183,24 @@ def refine_grasp_with_cam2(
     # Conversion pixels -> metres dans le plan table (approximation simple)
     # Pour une camera pinhole regardant a la verticale a distance Z :
     #     Δm = Δu_px * Z / fx
+    # IMPORTANT : Z = HAUTEUR REELLE de cam_2 au-dessus de l'objet.
+    # On la calcule depuis la pose actuelle de cam_2 (T_base_cam2) et la
+    # hauteur connue de l'objet (target_z_base_m).
     K = frame_c2.K
     fx = K[0, 0]
     fy = K[1, 1]
-    Z = z_height_above_object_m
-    dx_cam_m = du_px * Z / fx   # decalage X dans le repere CAMERA (m)
-    dy_cam_m = dv_px * Z / fy   # decalage Y dans le repere CAMERA (m)
+    T_base_cam2 = frame_c2.T_base_cam
+    z_cam2_base = float(T_base_cam2[2, 3])  # hauteur cam_2 dans repere base
+    if target_z_base_m is not None:
+        Z = max(0.03, z_cam2_base - target_z_base_m)
+    else:
+        Z = z_height_above_object_m
+    dx_cam_m = du_px * Z / fx
+    dy_cam_m = dv_px * Z / fy
+    if verbose:
+        print(f"   [closed_loop] cam_2 a Z_base={z_cam2_base*1000:.1f}mm, "
+              f"objet attendu a Z_base={(target_z_base_m or 0)*1000:.1f}mm, "
+              f"distance reelle Z={Z*1000:.1f}mm (utilisee pour conversion px->m)")
 
     # Conversion repere camera -> repere base.
     # Le decalage en repere camera correspond a un vecteur (Δx_cam, Δy_cam, 0)
