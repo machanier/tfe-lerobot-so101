@@ -64,8 +64,14 @@ class MotorController:
 
     # ----- connexion / deconnexion ----------------------------------------
 
-    def connect(self, port: str):
-        """Ouvre le bus Feetech."""
+    def connect(self, port: str, max_retries: int = 3):
+        """Ouvre le bus Feetech (avec retry en cas de paquet corrompu au demarrage).
+
+        Cas typique : "Failed to write 'Lock' on id_=1 [Incorrect status packet]"
+        au tout debut. Cause : lancements consecutifs trop rapproches qui
+        n'ont pas laisse le temps au bus serie de se liberer. Solution :
+        retry avec un petit delai.
+        """
         try:
             from lerobot.motors import Motor, MotorNormMode
             from lerobot.motors.feetech import FeetechMotorsBus
@@ -82,10 +88,35 @@ class MotorController:
             "wrist_roll":    Motor(5, "sts3215", MotorNormMode.DEGREES),
             "gripper":       Motor(6, "sts3215", MotorNormMode.RANGE_0_100),
         }
-        bus = FeetechMotorsBus(port=port, motors=motors, calibration=None)
-        bus.connect()
-        self._bus = bus
-        self._torque_enabled = False
+
+        import time
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                bus = FeetechMotorsBus(port=port, motors=motors, calibration=None)
+                bus.connect()
+                self._bus = bus
+                self._torque_enabled = False
+                if attempt > 0:
+                    print(f"[motor_controller] Connexion reussie au {attempt + 1}eme essai.")
+                return
+            except (ConnectionError, RuntimeError) as e:
+                last_err = e
+                if attempt < max_retries - 1:
+                    print(f"[motor_controller] Connexion {attempt + 1} echouee "
+                          f"({type(e).__name__}), retry dans 1s...")
+                    # Pause + tentative de cleanup partiel
+                    try:
+                        bus.disconnect()
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
+        # Tous les retries epuises
+        raise ConnectionError(
+            f"Impossible de connecter le bus moteur apres {max_retries} essais. "
+            f"Cause possible : robot non alimente, port USB instable, ou "
+            f"autre process tenant le bus. Erreur originale : {last_err}"
+        ) from last_err
 
     def disconnect(self):
         """Libere le bus moteur. Recommande : disable_torque avant."""
