@@ -64,7 +64,7 @@ class MotorController:
 
     # ----- connexion / deconnexion ----------------------------------------
 
-    def connect(self, port: str, max_retries: int = 3):
+    def connect(self, port: str, max_retries: int = 5):
         """Ouvre le bus Feetech (avec retry en cas de paquet corrompu au demarrage).
 
         Cas typique : "Failed to write 'Lock' on id_=1 [Incorrect status packet]"
@@ -103,19 +103,27 @@ class MotorController:
             except (ConnectionError, RuntimeError) as e:
                 last_err = e
                 if attempt < max_retries - 1:
-                    print(f"[motor_controller] Connexion {attempt + 1} echouee "
-                          f"({type(e).__name__}), retry dans 1s...")
-                    # Pause + tentative de cleanup partiel
+                    # Delai progressif : 0.5s, 1s, 2s, 4s, ...
+                    delay = 0.5 * (2 ** attempt)
+                    print(f"[motor_controller] Connexion {attempt + 1}/{max_retries} "
+                          f"echouee ({type(e).__name__}), retry dans {delay:.1f}s...")
+                    # Pause + cleanup partiel
                     try:
                         bus.disconnect()
                     except Exception:
                         pass
-                    time.sleep(1.0)
+                    time.sleep(delay)
         # Tous les retries epuises
         raise ConnectionError(
             f"Impossible de connecter le bus moteur apres {max_retries} essais. "
-            f"Cause possible : robot non alimente, port USB instable, ou "
-            f"autre process tenant le bus. Erreur originale : {last_err}"
+            f"Causes a verifier dans l'ordre :\n"
+            f"  1. ROBOT FOLLOWER ALIMENTE ? (verifier l'interrupteur et la LED).\n"
+            f"  2. CABLE USB du follower bien branche (peut-etre debrancher/rebrancher) ?\n"
+            f"  3. AUTRE PROCESS (python ou lerobot-teleoperate) tient le port ? Verifier avec :\n"
+            f"     lsof | grep usbmodem\n"
+            f"  4. Tous les MOTEURS detectes ? Tester :\n"
+            f"     python scripts/check_motor_calibration.py\n"
+            f"Erreur originale : {last_err}"
         ) from last_err
 
     def disconnect(self):
