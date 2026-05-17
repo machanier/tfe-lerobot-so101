@@ -199,29 +199,33 @@ class PickAndPlacePipeline:
                         else:
                             print(f"     {cam_key} : 0 detection")
                 scene = self._estimator.build_scene(dets_by_cam, frames)
-                # === DEBUG : si scene vide alors qu'on avait des dets, on
-                # informe ce qui a ete rejete ===
+                # === DEBUG : si scene vide alors qu'on avait des dets ===
                 if not scene.objects and any(dets_by_cam.get(k) for k in dets_by_cam):
                     print()
                     print("   [DIAGNOSTIC] Detections 2D presentes mais aucun objet 3D :")
+                    # Affiche la raison de rejet par label (memorisee dans
+                    # PoseEstimator._last_rejections)
+                    rejections = getattr(self._estimator, "_last_rejections", {})
+                    if rejections:
+                        for label, reason in rejections.items():
+                            print(f"     {label:<22} : {reason}")
                     # Re-essai sans filtres scene pour voir ce qui aurait passe sinon
-                    from src.perception.pose_estimator import PoseEstimator
+                    from src.perception.pose_estimator import (
+                        PoseEstimator, PoseEstimatorConfig)
+                    cfg_loose = PoseEstimatorConfig(max_reproj_error_px=200.0)
                     est_no_filter = PoseEstimator(
+                        config=cfg_loose,
                         specs_by_label=self._specs_meta,
                         load_scene_config=False,
                     )
                     scene_raw = est_no_filter.build_scene(dets_by_cam, frames)
                     if scene_raw.objects:
-                        print("   Sans filtres scene.json, on aurait :")
+                        print("   Avec seuils relaches (reproj 200 px, sans scene.json) :")
                         for o in scene_raw.objects:
                             p = o.position_base_m * 1000
-                            print(f"     {o.label:<22} pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) mm")
-                        print("   -> rejete par exclusion_zones ou workspace_bounds")
-                        print("      Verifie configs/scene.json si necessaire.")
-                    else:
-                        print("   Aucun objet 3D meme sans filtres : triangulation echoue")
-                        print("      Causes possibles : objet vu par UNE seule camera, erreur "
-                              "reprojection > 8 px, ou descriptions HF mal corellees entre cam_0 et cam_1.")
+                            err = o.meta.get("reproj_error_px", -1)
+                            print(f"     {o.label:<22} pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) mm  "
+                                  f"reproj_err={err:.1f} px")
             print(scene.pretty())
             print()
 

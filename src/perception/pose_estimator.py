@@ -248,7 +248,11 @@ class PoseEstimatorConfig:
     """
 
     stereo_keys: tuple[str, str] = ("cam_0", "cam_1")
-    max_reproj_error_px: float = 8.0
+    # Seuil reprojection : 25 px = plancher de bruit du SO-101.
+    # Calcul : erreur hand-eye ~7mm a 500mm de distance, focale 1225 px ->
+    # erreur reprojette ~ 7*1225/500 = 17 px. Marge 1.5x = ~25 px.
+    # Initialement 8 px etait trop strict et rejetait toute triangulation reelle.
+    max_reproj_error_px: float = 25.0
     max_z_base_m: float = 0.40
     min_z_base_m: float = -0.05
     enable_mono_pnp_fallback: bool = True
@@ -318,12 +322,19 @@ class PoseEstimator:
     def build_scene(self,
                     detections_by_cam: dict[str, list[Detection2D]],
                     frames: dict[str, Optional[Frame]]) -> Scene:
-        """Construit une Scene a partir de detections + frames synchronisees."""
-        # Groupe par label
+        """Construit une Scene a partir de detections + frames synchronisees.
+
+        Si plusieurs detections du meme label sont presentes dans une meme
+        camera (cas typique de OWL-ViTv2 qui donne plusieurs bboxes overlapping),
+        on garde la PLUS CONFIANTE (score max).
+        """
+        # Groupe par label, en gardant la meilleure detection par (label, cam)
         by_label: dict[str, dict[str, Detection2D]] = {}
         for cam_key, dets in detections_by_cam.items():
             for d in dets:
-                by_label.setdefault(d.label, {})[cam_key] = d
+                existing = by_label.setdefault(d.label, {}).get(cam_key)
+                if existing is None or d.score > existing.score:
+                    by_label[d.label][cam_key] = d
 
         objects: list[ObjectInstance] = []
         timestamps = [f.timestamp for f in frames.values() if f is not None]
@@ -347,19 +358,35 @@ class PoseEstimator:
         f_L = frames.get(kL)
         f_R = frames.get(kR)
 
+        # Diagnostic : stocke la raison du rejet (utile pour _last_rejections)
+        reject_reason = None
+
         # 1) STEREO si dispo
         if det_L is not None and det_R is not None and f_L is not None and f_R is not None:
             try:
                 X = triangulate_stereo(det_L, det_R, f_L, f_R)
-            except Exception:
+            except Exception as e:
                 X = None
-            if X is not None and self._in_workspace(X):
+                reject_reason = f"triangulation exception: {e}"
+            if X is not None:
+                in_ws = self._in_workspace(X)
                 err_L = reproject_error(X, det_L, f_L)
                 err_R = reproject_error(X, det_R, f_R)
                 err = 0.5 * (err_L + err_R)
-                if err <= self.config.max_reproj_error_px:
+                pos_mm = X * 1000
+                if not in_ws:
+                    reject_reason = (
+                        f"stereo OK (reproj {err:.1f}px) MAIS position hors workspace "
+                        f"({pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f}) mm"
+                    )
+                elif err > self.config.max_reproj_error_px:
+                    reject_reason = (
+                        f"stereo OK (pos {pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f} mm) "
+                        f"MAIS reproj_err={err:.1f}px > seuil {self.config.max_reproj_error_px}px"
+                    )
+                else:
                     score = float(min(det_L.score, det_R.score) *
-                                  np.exp(-err / 4.0))
+                                  np.exp(-err / 8.0))
                     return ObjectInstance(
                         label=label,
                         position_base_m=X,
@@ -371,6 +398,14 @@ class PoseEstimator:
                             "reproj_error_per_cam_px": {kL: err_L, kR: err_R},
                         },
                     )
+        elif det_L is None or det_R is None:
+            present = [k for k in (kL, kR) if per_cam.get(k) is not None]
+            reject_reason = f"detection presente seulement dans {present}, pas de stereo possible"
+
+        # Memorise pour diagnostic externe
+        self._last_rejections = getattr(self, "_last_rejections", {})
+        if reject_reason:
+            self._last_rejections[label] = reject_reason
 
         # 2) Fallback PnP monoculaire (priorite eye-in-hand cam_2)
         if self.config.enable_mono_pnp_fallback:
