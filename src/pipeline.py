@@ -186,16 +186,25 @@ class PickAndPlacePipeline:
                         for d in dets:
                             if d.label in self._label_mapping:
                                 d.label = self._label_mapping[d.label]
-                # === DEBUG : detections brutes par camera ===
+                # === DEBUG : detections brutes par camera (TOUTES) ===
                 print("   Detections brutes par camera :")
                 for cam_key in ("cam_0", "cam_1", "cam_2"):
                     if cam_key in dets_by_cam:
                         dets = dets_by_cam[cam_key]
                         if dets:
-                            labels = ", ".join(
-                                f"{d.label}(s={d.score:.2f})" for d in dets[:5]
-                            )
-                            print(f"     {cam_key} : {len(dets)} detections -> {labels}")
+                            # Tri par score decroissant + affichage bbox pour
+                            # identifier visuellement les faux positifs (taille
+                            # tres differente entre cam_0 et cam_1 = suspect)
+                            dets_sorted = sorted(dets, key=lambda d: -d.score)
+                            print(f"     {cam_key} : {len(dets)} detections")
+                            for d in dets_sorted:
+                                bbox_size = ""
+                                if d.bbox:
+                                    w = d.bbox[2] - d.bbox[0]
+                                    h = d.bbox[3] - d.bbox[1]
+                                    bbox_size = f"  bbox={int(w)}x{int(h)}px"
+                                print(f"        {d.label:<22} s={d.score:.2f}"
+                                      f"  center=({int(d.center_px[0])},{int(d.center_px[1])}){bbox_size}")
                         else:
                             print(f"     {cam_key} : 0 detection")
                 scene = self._estimator.build_scene(dets_by_cam, frames)

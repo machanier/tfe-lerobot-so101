@@ -1,8 +1,8 @@
 {
   "_doc": "Configuration HFDetector (OWL-ViTv2, Hugging Face). Les 'labels' sont des descriptions textuelles EN ANGLAIS passees au modele. OWL-ViTv2 marche mieux avec des descriptions enrichies (couleur + forme + taille + materiau) qu'avec des labels minimalistes. Voir D13 dans PROJECT_STATUS.md.",
   "model_name": "google/owlv2-base-patch16-ensemble",
-  "score_threshold": 0.15,
-  "_score_threshold_doc": "Seuil de confiance minimum. 0.10 = tres permissif (beaucoup de faux positifs). 0.15-0.20 = equilibre. 0.30 = strict (rate des objets). Ajuste apres tes premiers tests live.",
+  "score_threshold": 0.25,
+  "_score_threshold_doc": "Seuil de confiance minimum. 0.10 = tres permissif (beaucoup de faux positifs). 0.15-0.20 = equilibre. 0.25-0.30 = strict (mais elimine la confusion robot/cube orange). Augmente de 0.15 a 0.25 le 2026-05-17 : avec 0.15, OWL-ViTv2 catalogue parfois le bras orange du robot comme 'orange_cube' (score ~0.20), causant des triangulations bidon entre robot (cam_0) et vrai cube (cam_1) qui donnent une position 3D entre les deux objets. Le 0.25 limite ces confusions.",
   "labels": [
     "a small bright orange plastic cube",
     "a blue rectangular plastic box",
