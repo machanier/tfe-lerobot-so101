@@ -309,12 +309,44 @@ class PickAndPlacePipeline:
             # avec cam_2, puis on EXECUTE la suite avec correction.
             # Sinon : trajectoire complete d'un coup.
             # ============================================================
+            # Helper : callback display live qui rafraichit cv2.imshow
+            # pendant l'execution moteur (toutes les ~30 frames de traj).
+            def make_live_callback():
+                if not self.config.display:
+                    return None
+                import cv2
+                def on_step(i, trajectory):
+                    # Lit la pose courante du robot pour mettre a jour T_base_cam2
+                    try:
+                        rs = self._provider.read_live()
+                    except Exception:
+                        return
+                    frames = mc.grab(robot_state=rs)
+                    dets = self._detector.detect_multi(frames)
+                    if self._label_mapping:
+                        for cam_dets in dets.values():
+                            for d in cam_dets:
+                                if d.label in self._label_mapping:
+                                    d.label = self._label_mapping[d.label]
+                    # Mosaic des 3 cams (sans reprojection scene pour aller vite)
+                    import numpy as np
+                    tiles = [self._annotate_frame(frames.get(k), dets.get(k, []), None)
+                             for k in ("cam_0", "cam_1", "cam_2")]
+                    mosaic = np.hstack(tiles)
+                    cv2.putText(mosaic, f"LIVE exec frame {i}/{len(trajectory)}",
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                                (0, 255, 255), 2, cv2.LINE_AA)
+                    cv2.imshow("Pipeline perception", mosaic)
+                    cv2.waitKey(1)
+                return on_step
+
             if self.config.closed_loop and not self.config.dry_run:
                 # --- Phase 1 : trajectoire courant -> approach ---
                 print(">> Phase 1 : courant -> approach (boucle fermee Sprint 4)")
                 traj_phase1 = self._build_phase1_trajectory(q_current, r_app)
                 print(f"   {len(traj_phase1)} points, duree {traj_phase1.duration_s:.1f}s")
-                controller.execute_trajectory(traj_phase1, verbose=True)
+                controller.execute_trajectory(traj_phase1, verbose=True,
+                                              on_step=make_live_callback())
                 print()
 
                 # --- Raffinement cam_2 ---
@@ -357,15 +389,19 @@ class PickAndPlacePipeline:
                 print()
 
                 # --- Phase 2 : trajectoire approach -> grasp -> retract -> drop ---
-                print(">> Phase 2 : descente + saisie + depot")
+                print(">> Phase 2 : descente + saisie + depot + retour position rest")
                 q_at_approach = rs_at_approach.joint_angles_rad
                 traj_phase2 = self._build_phase2_trajectory(
                     q_at_approach,
                     [r_app, r_grp, r_ret, r_drop_above, r_drop_release],
                 )
                 print(f"   {len(traj_phase2)} points, duree {traj_phase2.duration_s:.1f}s")
-                controller.execute_trajectory(traj_phase2, verbose=True)
-                print(">> Termine.")
+                controller.execute_trajectory(traj_phase2, verbose=True,
+                                              on_step=make_live_callback())
+                print(">> Termine. Robot revenu en position rest (config zero).")
+                if self.config.display:
+                    import cv2
+                    cv2.destroyAllWindows()
 
             else:
                 # Mode sans boucle fermee OU dry-run : trajectoire complete
@@ -379,9 +415,13 @@ class PickAndPlacePipeline:
                 if self.config.dry_run:
                     print(">> DRY RUN : pas d'execution sur le robot.")
                 else:
-                    print(">> Execution sur le robot...")
-                    controller.execute_trajectory(traj, verbose=True)
-                    print(">> Termine.")
+                    print(">> Execution sur le robot (jusqu'a retour position rest)...")
+                    controller.execute_trajectory(traj, verbose=True,
+                                                  on_step=make_live_callback())
+                    print(">> Termine. Robot revenu en position rest (config zero).")
+                    if self.config.display:
+                        import cv2
+                        cv2.destroyAllWindows()
 
         except KeyboardInterrupt:
             print("\nInterrompu par utilisateur.")
@@ -405,30 +445,24 @@ class PickAndPlacePipeline:
                 except Exception:
                     pass
 
-    def _show_perception_snapshot(self, frames, dets_by_cam, scene, title=""):
-        """Affiche les 3 frames camera avec detections, sauvegarde aussi
-        dans outputs/perception/. Appuie ENTREE pour fermer.
-        """
+    def _annotate_frame(self, frame, dets, scene):
+        """Helper : annote une frame avec detections + reprojections 3D."""
         import cv2
-        from datetime import datetime
-
-        # Helper : annote une frame avec ses detections + reprojections de scene
-        from src.perception.pose_estimator import _projection_matrix
         import numpy as np
-
-        def annotate(frame, dets):
-            if frame is None:
-                return np.zeros((540, 960, 3), dtype=np.uint8)
-            img = frame.image.copy()
-            for d in dets:
-                if d.bbox:
-                    x0, y0, x1, y1 = (int(v) for v in d.bbox)
-                    cv2.rectangle(img, (x0, y0), (x1, y1), (0, 200, 0), 2)
-                cx, cy = int(d.center_px[0]), int(d.center_px[1])
-                cv2.circle(img, (cx, cy), 5, (0, 255, 0), -1)
-                cv2.putText(img, f"{d.label} ({d.score:.2f})", (cx + 8, cy - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
-            # Reprojection des objets 3D
+        from src.perception.pose_estimator import _projection_matrix
+        if frame is None:
+            return np.zeros((360, 640, 3), dtype=np.uint8)
+        img = frame.image.copy()
+        for d in dets:
+            if d.bbox:
+                x0, y0, x1, y1 = (int(v) for v in d.bbox)
+                cv2.rectangle(img, (x0, y0), (x1, y1), (0, 200, 0), 2)
+            cx, cy = int(d.center_px[0]), int(d.center_px[1])
+            cv2.circle(img, (cx, cy), 5, (0, 255, 0), -1)
+            cv2.putText(img, f"{d.label} ({d.score:.2f})", (cx + 8, cy - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+        # Reprojection des objets 3D estimes (rouge)
+        if scene is not None:
             P = _projection_matrix(frame.K, frame.T_base_cam)
             for obj in scene.objects:
                 X = np.hstack([obj.position_base_m, 1.0])
@@ -436,14 +470,24 @@ class PickAndPlacePipeline:
                 if uvw[2] > 0:
                     u, v = uvw[0]/uvw[2], uvw[1]/uvw[2]
                     cv2.circle(img, (int(u), int(v)), 8, (0, 0, 255), 2)
-            return cv2.resize(img, (640, 360))
+        return cv2.resize(img, (640, 360))
+
+    def _show_perception_snapshot(self, frames, dets_by_cam, scene, title=""):
+        """Affiche les 3 frames camera avec detections, sauvegarde aussi
+        dans outputs/perception/. Non-bloquant : utilise cv2.waitKey(1500) au
+        lieu de input().
+        """
+        import cv2
+        import numpy as np
+        from datetime import datetime
 
         tiles = []
         for k in ("cam_0", "cam_1", "cam_2"):
-            tiles.append(annotate(frames.get(k), dets_by_cam.get(k, [])))
+            tiles.append(self._annotate_frame(frames.get(k), dets_by_cam.get(k, []), scene))
         mosaic = np.hstack(tiles)
         cv2.putText(mosaic, title, (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+
         # Sauvegarde
         out_dir = REPO / "outputs" / "perception"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -451,15 +495,25 @@ class PickAndPlacePipeline:
         out_path = out_dir / f"pipeline_snapshot_{stamp}.png"
         cv2.imwrite(str(out_path), mosaic)
         print(f"   [display] snapshot sauve : {out_path}")
-        # Affichage
+
+        # Affichage NON BLOQUANT : 1.5 sec puis on continue
         cv2.imshow("Pipeline perception", mosaic)
-        print(f"   [display] {title} affiche. Appuie ENTREE dans la console pour continuer.")
-        try:
-            cv2.waitKey(500)
-            input()
-        except (EOFError, KeyboardInterrupt):
-            pass
-        cv2.destroyAllWindows()
+        cv2.waitKey(1500)   # 1.5s = visualisation suffisante
+        # La fenetre reste ouverte ; sera mise a jour ou fermee plus tard
+
+    def _live_display_during_execution(self, mc, robot_state_provider,
+                                        every_n_frames: int = 30):
+        """Generateur de callback : a appeler periodiquement pendant
+        execute_trajectory pour rafraichir l'affichage des cameras.
+
+        Utilise comme : passer ce callable a controller.execute_trajectory
+        si on veut un display live. Sinon ne fait rien.
+        """
+        # Pour l'instant on n'integre pas dans execute_trajectory (trop
+        # invasif). On laisse l'utilisateur lancer pick_and_place puis
+        # voir le snapshot initial + le robot bouge a vue d'oeil.
+        # TODO : ajouter un thread separe qui rafraichit la fenetre.
+        pass
 
     def _safe_stop_with_torque(self, controller):
         """En cas d'exception ou Ctrl+C : MAINTIENT le torque pour eviter

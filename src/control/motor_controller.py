@@ -256,7 +256,8 @@ class MotorController:
 
     def execute_trajectory(self, trajectory: JointTrajectory,
                            dt_real_s: Optional[float] = None,
-                           verbose: bool = True):
+                           verbose: bool = True,
+                           on_step=None):
         """Suit une JointTrajectory en respectant les timestamps.
 
         Args:
@@ -264,6 +265,10 @@ class MotorController:
             dt_real_s  : si fourni, force ce dt entre commandes (override
                          les timestamps). Sinon respecte les timestamps.
             verbose    : log la progression.
+            on_step    : callable(i, trajectory) optionnel, appele a chaque
+                         pas. Sert au display live des cameras pendant
+                         l'execution. Doit retourner < 5 ms pour ne pas
+                         ralentir la trajectoire.
         """
         self._require_bus()
         if not self._torque_enabled:
@@ -281,6 +286,13 @@ class MotorController:
             if verbose and i % max(1, len(trajectory) // 5) == 0:
                 pct = 100 * i // max(1, len(trajectory) - 1)
                 print(f"  [traj] {pct:3d}% ({i+1}/{len(trajectory)})")
+
+            # Callback display live (rafraichi toutes les ~30 frames)
+            if on_step is not None and i % 30 == 0:
+                try:
+                    on_step(i, trajectory)
+                except Exception as e:
+                    print(f"[motor_controller] WARN : on_step a leve : {e}")
 
             # Attendre le prochain timestamp
             if i < len(trajectory) - 1:

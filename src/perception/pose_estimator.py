@@ -248,11 +248,13 @@ class PoseEstimatorConfig:
     """
 
     stereo_keys: tuple[str, str] = ("cam_0", "cam_1")
-    # Seuil reprojection : 25 px = plancher de bruit du SO-101.
-    # Calcul : erreur hand-eye ~7mm a 500mm de distance, focale 1225 px ->
-    # erreur reprojette ~ 7*1225/500 = 17 px. Marge 1.5x = ~25 px.
-    # Initialement 8 px etait trop strict et rejetait toute triangulation reelle.
-    max_reproj_error_px: float = 25.0
+    # Seuil reprojection : 40 px = plancher de bruit reel observe sur SO-101.
+    # Calcul theorique : 7mm * 1225 / 500 = 17 px, marge 1.5x = 25 px.
+    # MAIS Maxence observe 27 px en pratique avec HF qui a des bboxes parfois
+    # imprecises (cube detecte avec score 0.5+ mais centre legerement decale).
+    # On monte donc le seuil a 40 px pour ne pas rejeter ces detections valides.
+    # Au-dela de 40 px c'est clairement une mauvaise correspondance stereo.
+    max_reproj_error_px: float = 40.0
     max_z_base_m: float = 0.40
     min_z_base_m: float = -0.05
     enable_mono_pnp_fallback: bool = True
