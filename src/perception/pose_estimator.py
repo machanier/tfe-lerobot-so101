@@ -579,9 +579,10 @@ if __name__ == "__main__":
         in_robot = np.array([0.02, 0.0, 0.10])
         assert not e_with_scene._in_workspace(in_robot), \
             f"point ({in_robot}) sur la base robot devrait etre rejete par exclusion zone"
-        # un point clairement devant le robot, hors zones d'envelope (cube typique
-        # a 30 cm devant la base, sur la table)
-        in_front = np.array([0.30, 0.0, -0.017])
+        # Un point clairement devant le robot (cube typique 30cm devant
+        # base_link, pose sur table donc Z=+15mm = mi-hauteur d'un cube 30mm
+        # avec table a Z=0, cf docs/REPERE_BASE.md)
+        in_front = np.array([0.30, 0.0, 0.015])
         assert e_with_scene._in_workspace(in_front), \
             f"point ({in_front}) devant le robot devrait etre accepte"
         print(f"  [OK] Zones d'exclusion (scene.json) : "

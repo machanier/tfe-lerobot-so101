@@ -224,14 +224,27 @@ SE(3). Certaines orientations exotiques ne sont pas exactement atteignables ;
 l'IK retourne la meilleure approximation. Pour le top-down (4 contraintes
 positionnelles + 1 yaw), le système est bien posé.
 
-### D11 — Convention de repère mesurée pour le poste de Maxence (2026-05-16)
+### D11 — Convention de repère (CORRIGÉE le 2026-05-17, voir docs/REPERE_BASE.md)
 
-**Origine du repère base** : centre du pivot du `shoulder_pan` (premier moteur).
-**Axes** : X devant le robot (vers les caméras), Z vers le haut, Y à gauche (vue d'au-dessus, convention main-droite).
-**Surface de la table** : Z = **-32 mm** (mesuré au pied à coulisse, hauteur de l'origine du shoulder_pan au-dessus de la table).
-**Conséquence** : un objet posé sur la table de hauteur `h` mm a son centre à `Z = -32 + h/2`.
+**IMPORTANT** : la version initiale de D11 (2026-05-16) était INCORRECTE.
+Elle disait "origine = centre du shoulder_pan motor, table à Z=-32 mm".
+La lecture rigoureuse de l'URDF montre que :
 
-Cette mesure doit être refaite si on déplace le robot ou si on change la base. Documenté ici pour reproductibilité.
+- **Origine du repère base** (= `base_link` de l'URDF) : centre géométrique
+  de la **plaque mécanique inférieure** du robot, posée sur la table.
+- **Centre du shoulder_pan motor** : à (X=+38.8, Y=0, Z=+62.4) mm depuis
+  base_link (lu dans l'URDF : `<joint name="shoulder_pan"><origin xyz="0.0388353 0 0.0624"/>`).
+- **Axes** : X devant le robot, Y à gauche (vue d'au-dessus), Z vers le haut.
+- **Niveau de la table** : Z ≈ 0 mm (la plaque de base repose sur la table).
+- **Conséquence** : un objet posé sur la table de hauteur `h` mm a son centre
+  à `Z = +h/2` (PAS `-32 + h/2` comme écrit précédemment).
+
+Validation expérimentale : en configuration zéro (tous moteurs à 0°), la
+FK calcule la pince à `(+391.4, 0, +226.5)` mm depuis base_link. Mesurable
+au mètre pour vérifier la cohérence repère théorique / repère physique.
+
+Voir `docs/REPERE_BASE.md` pour la documentation complète avec schémas et
+procédure de vérification.
 
 ### D13 — HFDetector activé en V2 : OWL-ViTv2 (Sprint 2, 2026-05-16)
 

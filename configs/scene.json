@@ -10,27 +10,27 @@
 
   "exclusion_zones_base_m": [
     {
-      "_doc": "Zone occupee par la base du robot lui-meme + zone d'encombrement quand le bras est replie au repos. Anti-confusion robot-orange / cube-orange. Rayon elargi a 0.15m (rayon physique base + marge pour 1ere articulation).",
+      "_doc": "Zone occupee par la base du robot lui-meme + zone d'encombrement quand le bras est replie au repos. Anti-confusion robot-orange / cube-orange. base_link = centre plaque de base, table a Z=0. La base + le shoulder_pan + le debut du bras montent jusqu'a ~Z=+0.20m.",
       "type": "cylinder",
-      "center_base_m": [0.00, 0.00, -0.05],
-      "radius_m": 0.15,
-      "height_m": 0.45,
+      "center_base_m": [0.00, 0.00, 0.00],
+      "radius_m": 0.10,
+      "height_m": 0.25,
       "label": "robot_base"
     },
     {
       "_doc": "Bras typique replie (boite englobante grossiere). Affine si tu observes des faux positifs sur le bras lui-meme.",
       "type": "box",
-      "center_base_m": [0.10, 0.00, 0.10],
+      "center_base_m": [0.10, 0.00, 0.15],
       "dimensions_m": [0.20, 0.20, 0.30],
       "label": "robot_arm_envelope"
     }
   ],
 
   "workspace_bounds_base_m": {
-    "_doc": "Limites du workspace utile (plage atteignable par le SO-101 + zone proche table). Detection 3D hors de ces bornes => rejetee. RESSEREE pour eviter les faux positifs sur le fond.",
-    "x_min":  0.10, "x_max":  0.40,
-    "y_min": -0.20, "y_max":  0.20,
-    "z_min": -0.05, "z_max":  0.20,
-    "_note": "z_min legerement < table (-32mm donc z_table=-0.032m). z_max bas car objets poses sur table (rarement > 20cm de haut)."
+    "_doc": "Limites du workspace utile (plage atteignable par le SO-101 + zone proche table). Detection 3D hors de ces bornes => rejetee. Table a Z=0 (base_link au niveau de la table). Cube de 30mm pose : centre a Z=+0.015. Plus haut acceptable jusqu'a 20cm (gobelet).",
+    "x_min":  0.10, "x_max":  0.45,
+    "y_min": -0.25, "y_max":  0.25,
+    "z_min":  0.00, "z_max":  0.25,
+    "_note": "z_min=0 car objets poses sur table. z_max=0.25 pour autoriser objets hauts jusqu'a 25cm (limite raisonnable workspace SO-101)."
   }
 }
