@@ -84,6 +84,10 @@ class PipelineConfig:
     closed_loop: bool = True            # Sprint 4 : raffinement cam_2 avant grasp
     closed_loop_max_correction_mm: float = 80.0  # rejette correction > 8 cm (sanity)
     display: bool = False               # Affiche les frames camera (cv2.imshow) aux moments cles
+    # Pose intermediaire "safe" entre drop_release et rest : evite que le bras
+    # passe par une trajectoire articulaire qui le ferait s'ecraser. Configuration :
+    # bras releve haut, centre. Atteignable depuis presque n'importe ou.
+    safe_intermediate_angles_rad: Optional[dict] = None  # par defaut shoulder_lift=-0.5
 
 
 # ============================================================
@@ -587,6 +591,19 @@ class PickAndPlacePipeline:
         def dur(q1, q2):
             return estimate_duration_safe(q1, q2, max_velocity_rad_s=c.max_velocity_rad_s)
 
+        # Pose intermediaire "safe" : bras releve haut, centre.
+        # Sert de point de passage SECURITAIRE entre drop_release et rest
+        # pour eviter que la trajectoire articulaire passe par une config
+        # ou le bras se cogne contre le robot lui-meme.
+        q_safe = c.safe_intermediate_angles_rad or {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": -0.6,   # epaule legerement relevee (bras en haut)
+            "elbow_flex": 1.0,        # coude bien plie (bras compact)
+            "wrist_flex": 0.0,
+            "wrist_roll": 0.0,
+        }
+        q_rest = {j: 0.0 for j in ARM_JOINTS}
+
         segs = [
             # 1. q_at_approach -> approach corrige (petit deplacement si correction)
             quintic_trajectory(q_at_approach, q_app, duration_s=dur(q_at_approach, q_app),
@@ -597,21 +614,24 @@ class PickAndPlacePipeline:
             # 3. STATIQUE : ferme la pince
             quintic_trajectory(q_grp, q_grp, duration_s=max(c.pause_grasp_s, 0.5),
                                 gripper_start=gp_o, gripper_end=gp_c),
-            # 4. grasp -> retract (pince fermee)
+            # 4. grasp -> retract (pince fermee, bras remonte avec l'objet)
             quintic_trajectory(q_grp, q_ret, duration_s=dur(q_grp, q_ret),
                                 gripper_start=gp_c, gripper_end=gp_c),
-            # 5. retract -> drop_above
+            # 5. retract -> drop_above (deplace au-dessus de la boite)
             quintic_trajectory(q_ret, q_drop, duration_s=dur(q_ret, q_drop),
                                 gripper_start=gp_c, gripper_end=gp_c),
-            # 6. drop_above -> drop_release
+            # 6. drop_above -> drop_release (descend dans la boite)
             quintic_trajectory(q_drop, q_rel, duration_s=dur(q_drop, q_rel),
                                 gripper_start=gp_c, gripper_end=gp_c),
             # 7. STATIQUE : relache (ouvre la pince)
             quintic_trajectory(q_rel, q_rel, duration_s=max(c.pause_release_s, 0.3),
                                 gripper_start=gp_c, gripper_end=gp_o),
-            # 8. drop_release -> rest (config zero)
-            quintic_trajectory(q_rel, {j: 0.0 for j in ARM_JOINTS},
-                                duration_s=dur(q_rel, {j: 0.0 for j in ARM_JOINTS}),
+            # 8. drop_release -> SAFE intermediaire (releve le bras AVANT
+            #    le retour a rest, pour eviter de traverser la zone du cube).
+            quintic_trajectory(q_rel, q_safe, duration_s=dur(q_rel, q_safe),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            # 9. SAFE -> rest (config zero) : descente lisse depuis la pose haute
+            quintic_trajectory(q_safe, q_rest, duration_s=dur(q_safe, q_rest),
                                 gripper_start=gp_o, gripper_end=gp_o),
         ]
         return chain_trajectories(segs)
@@ -640,31 +660,32 @@ class PickAndPlacePipeline:
         def dur(q1, q2):
             return estimate_duration_safe(q1, q2, max_velocity_rad_s=c.max_velocity_rad_s)
 
+        # Pose safe intermediaire (idem _build_phase2_trajectory)
+        q_safe = c.safe_intermediate_angles_rad or {
+            "shoulder_pan": 0.0, "shoulder_lift": -0.6, "elbow_flex": 1.0,
+            "wrist_flex": 0.0, "wrist_roll": 0.0,
+        }
+        q_rest = {j: 0.0 for j in ARM_JOINTS}
+
         segs = [
-            # 1. courant -> approach (pince ouverte)
             quintic_trajectory(q_current, q_app, duration_s=dur(q_current, q_app),
                                 gripper_start=gp_o, gripper_end=gp_o),
-            # 2. approach -> grasp (pince ouverte encore)
             quintic_trajectory(q_app, q_grp, duration_s=dur(q_app, q_grp),
                                 gripper_start=gp_o, gripper_end=gp_o),
-            # 3. STATIQUE : ferme la pince (positions identiques, gripper change)
             quintic_trajectory(q_grp, q_grp, duration_s=max(c.pause_grasp_s, 0.5),
                                 gripper_start=gp_o, gripper_end=gp_c),
-            # 4. grasp -> retract (pince fermee, objet saisi)
             quintic_trajectory(q_grp, q_ret, duration_s=dur(q_grp, q_ret),
                                 gripper_start=gp_c, gripper_end=gp_c),
-            # 5. retract -> drop_above
             quintic_trajectory(q_ret, q_drop, duration_s=dur(q_ret, q_drop),
                                 gripper_start=gp_c, gripper_end=gp_c),
-            # 6. drop_above -> drop_release
             quintic_trajectory(q_drop, q_rel, duration_s=dur(q_drop, q_rel),
                                 gripper_start=gp_c, gripper_end=gp_c),
-            # 7. STATIQUE : relache (ouvre la pince)
             quintic_trajectory(q_rel, q_rel, duration_s=max(c.pause_release_s, 0.3),
                                 gripper_start=gp_c, gripper_end=gp_o),
-            # 8. drop_release -> rest (config zero)
-            quintic_trajectory(q_rel, {j: 0.0 for j in ARM_JOINTS},
-                                duration_s=dur(q_rel, {j: 0.0 for j in ARM_JOINTS}),
+            # Safe intermediate AVANT rest (evite ecrasement)
+            quintic_trajectory(q_rel, q_safe, duration_s=dur(q_rel, q_safe),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            quintic_trajectory(q_safe, q_rest, duration_s=dur(q_safe, q_rest),
                                 gripper_start=gp_o, gripper_end=gp_o),
         ]
         return chain_trajectories(segs)

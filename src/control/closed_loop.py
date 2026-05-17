@@ -180,37 +180,73 @@ def refine_grasp_with_cam2(
     du_px = u - u_center  # positif = objet a droite dans l'image
     dv_px = v - v_center  # positif = objet en bas dans l'image
 
-    # Conversion pixels -> metres dans le plan table (approximation simple)
-    # Pour une camera pinhole regardant a la verticale a distance Z :
-    #     Δm = Δu_px * Z / fx
-    # IMPORTANT : Z = HAUTEUR REELLE de cam_2 au-dessus de l'objet.
-    # On la calcule depuis la pose actuelle de cam_2 (T_base_cam2) et la
-    # hauteur connue de l'objet (target_z_base_m).
+    # VRAIE PROJECTION INVERSE par intersection rayon-plan.
+    # La formule simplifiee Δm = Δpx × Z / fx supposait cam_2 a la verticale,
+    # ce qui n'est PAS le cas en pose approach (inclinaison ~15deg). Resultat :
+    # correction sous-estimee (~50% de la vraie correction).
+    #
+    # Algorithme rigoureux :
+    #   1. Pixel (u, v) → rayon en repere camera : d_cam = K^-1 @ [u, v, 1]
+    #   2. Rayon en repere base : d_base = R_base_cam @ d_cam
+    #   3. Origine du rayon en repere base : o_base = T_base_cam[:3, 3]
+    #   4. Intersection avec plan z = target_z_base :
+    #        t = (target_z_base - o_base[2]) / d_base[2]
+    #        intersection = o_base + t * d_base
+    #   5. Position 3D detectee de l'objet dans repere base.
     K = frame_c2.K
-    fx = K[0, 0]
-    fy = K[1, 1]
-    T_base_cam2 = frame_c2.T_base_cam
-    z_cam2_base = float(T_base_cam2[2, 3])  # hauteur cam_2 dans repere base
-    if target_z_base_m is not None:
-        Z = max(0.03, z_cam2_base - target_z_base_m)
-    else:
-        Z = z_height_above_object_m
-    dx_cam_m = du_px * Z / fx
-    dy_cam_m = dv_px * Z / fy
-    if verbose:
-        print(f"   [closed_loop] cam_2 a Z_base={z_cam2_base*1000:.1f}mm, "
-              f"objet attendu a Z_base={(target_z_base_m or 0)*1000:.1f}mm, "
-              f"distance reelle Z={Z*1000:.1f}mm (utilisee pour conversion px->m)")
-
-    # Conversion repere camera -> repere base.
-    # Le decalage en repere camera correspond a un vecteur (Δx_cam, Δy_cam, 0)
-    # qu'il faut tourner avec R_base_cam pour avoir le delta en base.
     T_base_cam2 = frame_c2.T_base_cam
     R_base_cam2 = T_base_cam2[:3, :3]
-    delta_cam = np.array([dx_cam_m, dy_cam_m, 0.0])
-    delta_base = R_base_cam2 @ delta_cam
+    o_base = T_base_cam2[:3, 3]
+    z_cam2_base = float(o_base[2])
+
+    target_z = target_z_base_m if target_z_base_m is not None else 0.0
+
+    # Rayon dans le repere camera : d_cam (3,)
+    K_inv = np.linalg.inv(K)
+    d_cam = K_inv @ np.array([u, v, 1.0])
+    # Rayon dans le repere base
+    d_base = R_base_cam2 @ d_cam
+    # Intersection avec plan Z = target_z
+    if abs(d_base[2]) < 1e-6:
+        # Rayon horizontal, pas d'intersection
+        return RefinementResult(
+            delta_base_m=np.zeros(3),
+            delta_pixels=(du_px, dv_px),
+            confidence=float(det.score),
+            detection=det,
+            target_label=target_label,
+            method="ray_plane_intersection",
+            message="Rayon trop horizontal, pas d'intersection avec plan objet",
+        )
+    t = (target_z - o_base[2]) / d_base[2]
+    obj_pos_base = o_base + t * d_base  # position 3D detectee de l'objet en repere base
+
+    # Position de l'objet ATTENDUE (= la pose grasp triangulee initialement)
+    # On la deduit de la pose approach + offset Z connu. Plus simple :
+    # la position attendue de l'objet est directement (0, 0, target_z) decalee
+    # de la position xy de cam_2. On utilise la projection inverse du CENTRE
+    # de l'image pour avoir la position visee initialement.
+    d_cam_center = K_inv @ np.array([w / 2.0, h / 2.0, 1.0])
+    d_base_center = R_base_cam2 @ d_cam_center
+    t_center = (target_z - o_base[2]) / d_base_center[2]
+    expected_pos_base = o_base + t_center * d_base_center  # ou cam_2 vise actuellement
+
+    # Correction = position reelle - position visee
+    delta_base = obj_pos_base - expected_pos_base
     # On NE touche pas a Z_base (la hauteur reste celle calculee par stereo)
     delta_base[2] = 0.0
+    # On a notre vraie correction ray-plane
+    dx_cam_m, dy_cam_m = float(delta_base[0]), float(delta_base[1])  # pour info debug
+
+    if verbose:
+        print(f"   [closed_loop] cam_2 a Z_base={z_cam2_base*1000:.1f}mm, "
+              f"objet attendu Z={target_z*1000:.1f}mm")
+        print(f"   [closed_loop] cam_2 vise actuellement : "
+              f"({expected_pos_base[0]*1000:+.1f}, {expected_pos_base[1]*1000:+.1f}, "
+              f"{expected_pos_base[2]*1000:+.1f}) mm")
+        print(f"   [closed_loop] objet detecte par cam_2 a : "
+              f"({obj_pos_base[0]*1000:+.1f}, {obj_pos_base[1]*1000:+.1f}, "
+              f"{obj_pos_base[2]*1000:+.1f}) mm")
 
     return RefinementResult(
         delta_base_m=delta_base,
@@ -218,10 +254,11 @@ def refine_grasp_with_cam2(
         confidence=float(det.score),
         detection=det,
         target_label=target_label,
-        method="image_centering",
+        method="ray_plane_intersection",
         message=(f"Correction Δbase=({delta_base[0]*1000:+.1f}, "
                  f"{delta_base[1]*1000:+.1f}, 0) mm  "
-                 f"(decalage image Δu={du_px:+.0f}px Δv={dv_px:+.0f}px)"),
+                 f"(pixel Δu={du_px:+.0f}px Δv={dv_px:+.0f}px, "
+                 f"projection ray-plane)"),
     )
 
 
