@@ -177,75 +177,76 @@ class PickAndPlacePipeline:
                 print("   Bascule en mode --dry-run.")
                 self.config.dry_run = True
 
+        # IMPORTANT : la MultiCamera DOIT rester ouverte pendant TOUT le
+        # pipeline car Sprint 4 (closed_loop) a besoin de cam_2 APRES la
+        # phase 1 d'execution. Sinon le 'with MultiCamera() as mc' se ferme
+        # apres la perception initiale et le refinement crash avec
+        # "MultiCamera n'est pas ouvert".
         try:
+            mc = MultiCamera()
+            mc.open()
+
             # ============================================================
-            # 2. Perception (UNE seule capture)
+            # 2. Perception (UNE seule capture initiale)
             # ============================================================
             print(">> Perception en cours...")
-            with MultiCamera() as mc:
-                rs = (self._provider.read_live() if not self.config.dry_run
-                      else self._provider.from_angles({j: 0.0 for j in ARM_JOINTS}))
-                # Warmup pour stabiliser autoexposure
-                for _ in range(3):
-                    mc.grab(robot_state=rs)
-                    time.sleep(0.1)
-                frames = mc.grab(robot_state=rs)
-                dets_by_cam = self._detector.detect_multi(frames)
-                # Si HF avec mapping : renomme les labels
-                if self._label_mapping:
-                    for cam_key, dets in dets_by_cam.items():
-                        for d in dets:
-                            if d.label in self._label_mapping:
-                                d.label = self._label_mapping[d.label]
-                # === DEBUG : detections brutes par camera (TOUTES) ===
-                print("   Detections brutes par camera :")
-                for cam_key in ("cam_0", "cam_1", "cam_2"):
-                    if cam_key in dets_by_cam:
-                        dets = dets_by_cam[cam_key]
-                        if dets:
-                            # Tri par score decroissant + affichage bbox pour
-                            # identifier visuellement les faux positifs (taille
-                            # tres differente entre cam_0 et cam_1 = suspect)
-                            dets_sorted = sorted(dets, key=lambda d: -d.score)
-                            print(f"     {cam_key} : {len(dets)} detections")
-                            for d in dets_sorted:
-                                bbox_size = ""
-                                if d.bbox:
-                                    w = d.bbox[2] - d.bbox[0]
-                                    h = d.bbox[3] - d.bbox[1]
-                                    bbox_size = f"  bbox={int(w)}x{int(h)}px"
-                                print(f"        {d.label:<22} s={d.score:.2f}"
-                                      f"  center=({int(d.center_px[0])},{int(d.center_px[1])}){bbox_size}")
-                        else:
-                            print(f"     {cam_key} : 0 detection")
-                scene = self._estimator.build_scene(dets_by_cam, frames)
-                # === DEBUG : si scene vide alors qu'on avait des dets ===
-                if not scene.objects and any(dets_by_cam.get(k) for k in dets_by_cam):
-                    print()
-                    print("   [DIAGNOSTIC] Detections 2D presentes mais aucun objet 3D :")
-                    # Affiche la raison de rejet par label (memorisee dans
-                    # PoseEstimator._last_rejections)
-                    rejections = getattr(self._estimator, "_last_rejections", {})
-                    if rejections:
-                        for label, reason in rejections.items():
-                            print(f"     {label:<22} : {reason}")
-                    # Re-essai sans filtres scene pour voir ce qui aurait passe sinon
-                    from src.perception.pose_estimator import (
-                        PoseEstimator, PoseEstimatorConfig)
-                    cfg_loose = PoseEstimatorConfig(max_reproj_error_px=200.0)
-                    est_no_filter = PoseEstimator(
-                        config=cfg_loose,
-                        specs_by_label=self._specs_meta,
-                        load_scene_config=False,
-                    )
-                    scene_raw = est_no_filter.build_scene(dets_by_cam, frames)
-                    if scene_raw.objects:
-                        print("   Avec seuils relaches (reproj 200 px, sans scene.json) :")
-                        for o in scene_raw.objects:
-                            p = o.position_base_m * 1000
-                            err = o.meta.get("reproj_error_px", -1)
-                            print(f"     {o.label:<22} pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) mm  "
-                                  f"reproj_err={err:.1f} px")
+            rs = (self._provider.read_live() if not self.config.dry_run
+                  else self._provider.from_angles({j: 0.0 for j in ARM_JOINTS}))
+            # Warmup pour stabiliser autoexposure
+            for _ in range(3):
+                mc.grab(robot_state=rs)
+                time.sleep(0.1)
+            frames = mc.grab(robot_state=rs)
+            dets_by_cam = self._detector.detect_multi(frames)
+            # Si HF avec mapping : renomme les labels
+            if self._label_mapping:
+                for cam_key, dets in dets_by_cam.items():
+                    for d in dets:
+                        if d.label in self._label_mapping:
+                            d.label = self._label_mapping[d.label]
+            # === DEBUG : detections brutes par camera (TOUTES) ===
+            print("   Detections brutes par camera :")
+            for cam_key in ("cam_0", "cam_1", "cam_2"):
+                if cam_key in dets_by_cam:
+                    dets = dets_by_cam[cam_key]
+                    if dets:
+                        dets_sorted = sorted(dets, key=lambda d: -d.score)
+                        print(f"     {cam_key} : {len(dets)} detections")
+                        for d in dets_sorted:
+                            bbox_size = ""
+                            if d.bbox:
+                                w = d.bbox[2] - d.bbox[0]
+                                h = d.bbox[3] - d.bbox[1]
+                                bbox_size = f"  bbox={int(w)}x{int(h)}px"
+                            print(f"        {d.label:<22} s={d.score:.2f}"
+                                  f"  center=({int(d.center_px[0])},{int(d.center_px[1])}){bbox_size}")
+                    else:
+                        print(f"     {cam_key} : 0 detection")
+            scene = self._estimator.build_scene(dets_by_cam, frames)
+            # === DEBUG : si scene vide alors qu'on avait des dets ===
+            if not scene.objects and any(dets_by_cam.get(k) for k in dets_by_cam):
+                print()
+                print("   [DIAGNOSTIC] Detections 2D presentes mais aucun objet 3D :")
+                rejections = getattr(self._estimator, "_last_rejections", {})
+                if rejections:
+                    for label, reason in rejections.items():
+                        print(f"     {label:<22} : {reason}")
+                from src.perception.pose_estimator import (
+                    PoseEstimator, PoseEstimatorConfig)
+                cfg_loose = PoseEstimatorConfig(max_reproj_error_px=200.0)
+                est_no_filter = PoseEstimator(
+                    config=cfg_loose,
+                    specs_by_label=self._specs_meta,
+                    load_scene_config=False,
+                )
+                scene_raw = est_no_filter.build_scene(dets_by_cam, frames)
+                if scene_raw.objects:
+                    print("   Avec seuils relaches (reproj 200 px, sans scene.json) :")
+                    for o in scene_raw.objects:
+                        p = o.position_base_m * 1000
+                        err = o.meta.get("reproj_error_px", -1)
+                        print(f"     {o.label:<22} pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) mm  "
+                              f"reproj_err={err:.1f} px")
             print(scene.pretty())
             print()
 
@@ -374,7 +375,16 @@ class PickAndPlacePipeline:
 
         except KeyboardInterrupt:
             print("\nInterrompu par utilisateur.")
+            self._safe_stop_with_torque(controller)
+        except Exception as e:
+            print(f"\n!! EXCEPTION pendant le pipeline : {type(e).__name__}: {e}")
+            self._safe_stop_with_torque(controller)
+            raise
         finally:
+            try:
+                mc.close()
+            except Exception:
+                pass
             try:
                 self._provider.disconnect_live()
             except Exception:
@@ -384,6 +394,36 @@ class PickAndPlacePipeline:
                     controller.disconnect()
                 except Exception:
                     pass
+
+    def _safe_stop_with_torque(self, controller):
+        """En cas d'exception ou Ctrl+C : MAINTIENT le torque pour eviter
+        que le bras tombe sous son poids. Demande a l'utilisateur de
+        placer le bras en securite manuellement.
+
+        Sans cette procedure, le `finally` appellerait disconnect() qui
+        coupe le torque -> le bras tombe.
+        """
+        if controller is None or controller._bus is None:
+            return
+        if not controller._torque_enabled:
+            return
+        print()
+        print("=" * 70)
+        print(" SECURITE : torque MAINTENU pour eviter que le bras tombe.")
+        print(" 1. Soutiens manuellement le bras avec ta main libre.")
+        print(" 2. Appuie sur ENTREE quand tu maintiens le bras et qu'il")
+        print("    est en securite (pas suspendu en l'air).")
+        print(" 3. Le torque sera ALORS coupe.")
+        print("=" * 70)
+        try:
+            input("Pret a couper le torque ? Appuie ENTREE : ")
+        except (EOFError, KeyboardInterrupt):
+            pass
+        try:
+            controller.disable_torque()
+            print("Torque coupe. Tu peux relacher le bras.")
+        except Exception as e:
+            print(f"[WARN] Echec disable_torque : {e}. Coupe l'alim manuellement.")
 
     # ----- helpers --------------------------------------------------------
 
