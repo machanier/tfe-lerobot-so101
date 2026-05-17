@@ -1,0 +1,20 @@
+{
+  "_doc": "Compensation systematique du biais de calibration mesure empiriquement par Maxence (3 mesures Y differentes, biais moyen +27.8mm +-4.5mm). Ces valeurs sont SOUSTRAITES a chaque position triangulee. Si tu changes la calibration hand-eye, remesure et ajuste ici.",
+  "_methode_calibration": [
+    "1. Pose le cube a 3 positions Y differentes (e.g. Y=0, +50, -50 mm).",
+    "2. Pour chaque position, lance check_perception et note la difference Y_detecte - Y_reel.",
+    "3. Calcule la moyenne de ces 3 differences = biais Y.",
+    "4. Idem pour X et Z (optionnel).",
+    "5. Mets les valeurs ici (en mm)."
+  ],
+  "dx_mm": 0,
+  "dy_mm": 28,
+  "dz_mm": 0,
+  "_caracterisation_experimentale_maxence_2026_05_17": {
+    "cube_a_Y_+100mm": "detecte Y=+121.5 -> biais +21.5",
+    "cube_a_Y_-20mm": "detecte Y=+10.5  -> biais +30.5",
+    "cube_a_Y_-40mm": "detecte Y=-8.5   -> biais +31.5",
+    "moyenne_biais_Y": "+27.8 mm (ecart-type 4.5)",
+    "explication": "addition des residus hand-eye (~6-7mm par cam) amplifiee par baseline stereo majoritairement en Y"
+  }
+}

@@ -248,6 +248,12 @@ class PoseEstimatorConfig:
     """
 
     stereo_keys: tuple[str, str] = ("cam_0", "cam_1")
+    # Compensation SYSTEMATIQUE du biais de calibration mesure
+    # empiriquement (e.g. biais Y +28mm sur le poste de Maxence).
+    # Chargee depuis configs/perception/bias_correction.json si present.
+    # Soustraite a CHAQUE position triangulee : pos_corrigee = pos - bias.
+    # Permet d'avoir une correction PERMANENTE sans modifier gt_test.json.
+    bias_correction_m: Optional[object] = None  # ndarray (3,) ou None
     # Seuil reprojection : 40 px = plancher de bruit reel observe sur SO-101.
     # Calcul theorique : 7mm * 1225 / 500 = 17 px, marge 1.5x = 25 px.
     # MAIS Maxence observe 27 px en pratique avec HF qui a des bboxes parfois
@@ -300,6 +306,9 @@ class PoseEstimator:
         self._workspace_bounds: Optional[dict] = None
         if load_scene_config:
             self._load_scene_config(self.config.scene_config_path)
+        # Compensation systematique du biais (cf D11+experimentation Maxence)
+        self._bias_m: Optional[np.ndarray] = None
+        self._load_bias_correction()
 
     def _load_scene_config(self, path):
         """Charge configs/scene.json si present. Defaut : pas de zones."""
@@ -318,6 +327,30 @@ class PoseEstimator:
         data = json.load(open(path))
         self._exclusion_zones = data.get("exclusion_zones_base_m", []) or []
         self._workspace_bounds = data.get("workspace_bounds_base_m")
+
+    def _load_bias_correction(self):
+        """Charge la compensation systematique depuis
+        configs/perception/bias_correction.json si present.
+        Format : {"dx_mm": ..., "dy_mm": ..., "dz_mm": ...}
+        La valeur sera SOUSTRAITE a chaque position triangulee.
+        """
+        import json
+        from pathlib import Path
+        # Priorite : config.bias_correction_m si fourni explicitement
+        if self.config.bias_correction_m is not None:
+            self._bias_m = np.asarray(self.config.bias_correction_m, dtype=float).reshape(3)
+            return
+        # Sinon, fichier dans configs/perception/
+        bias_path = Path(__file__).resolve().parents[2] / "configs" / "perception" / "bias_correction.json"
+        if not bias_path.exists():
+            self._bias_m = None
+            return
+        data = json.load(open(bias_path))
+        self._bias_m = np.array([
+            float(data.get("dx_mm", 0)) / 1000.0,
+            float(data.get("dy_mm", 0)) / 1000.0,
+            float(data.get("dz_mm", 0)) / 1000.0,
+        ])
 
     # ----- API ------------------------------------------------------------
 
@@ -371,6 +404,11 @@ class PoseEstimator:
                 X = None
                 reject_reason = f"triangulation exception: {e}"
             if X is not None:
+                # COMPENSATION SYSTEMATIQUE : applique le biais empirique
+                # (e.g. -28mm en Y sur le poste de Maxence). Calibrable
+                # via configs/perception/bias_correction.json.
+                if self._bias_m is not None:
+                    X = X - self._bias_m
                 in_ws = self._in_workspace(X)
                 err_L = reproject_error(X, det_L, f_L)
                 err_R = reproject_error(X, det_R, f_R)

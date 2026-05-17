@@ -84,10 +84,26 @@ class PipelineConfig:
     closed_loop: bool = True            # Sprint 4 : raffinement cam_2 avant grasp
     closed_loop_max_correction_mm: float = 80.0  # rejette correction > 8 cm (sanity)
     display: bool = False               # Affiche les frames camera (cv2.imshow) aux moments cles
-    # Pose intermediaire "safe" entre drop_release et rest : evite que le bras
-    # passe par une trajectoire articulaire qui le ferait s'ecraser. Configuration :
-    # bras releve haut, centre. Atteignable depuis presque n'importe ou.
-    safe_intermediate_angles_rad: Optional[dict] = None  # par defaut shoulder_lift=-0.5
+
+    # Pose intermediaire "safe" entre drop_release et home (utile pour
+    # eviter que le bras traverse la zone de l'objet pendant le retour).
+    safe_intermediate_angles_rad: Optional[dict] = None
+
+    # Pose "home" finale = position de repos STABLE du robot.
+    # Defaut : bras replie au-dessus de lui-meme, pince horizontale (pas
+    # tendu vers l'avant comme config zero qui donne l'impression de
+    # "tomber"). Maxence peut la customiser via PipelineConfig.
+    home_angles_rad: Optional[dict] = None
+
+    # Vitesse RALENTIE pour la transition finale (home), pour eviter
+    # l'impression de chute. Defaut : 0.3 rad/s (vs 0.5 par defaut).
+    home_max_velocity_rad_s: float = 0.3
+
+    # Compensation SYSTEMATIQUE des biais de calibration mesures
+    # empiriquement (cf D11 : biais Y ~+28mm sur ce poste). Sera soustraite
+    # a toutes les positions detectees par la stereo.
+    # = np.array([dx, dy, dz]) en metres. None = pas de compensation.
+    systematic_bias_correction_m: Optional[object] = None  # ndarray (3,)
 
 
 # ============================================================
@@ -592,17 +608,28 @@ class PickAndPlacePipeline:
             return estimate_duration_safe(q1, q2, max_velocity_rad_s=c.max_velocity_rad_s)
 
         # Pose intermediaire "safe" : bras releve haut, centre.
-        # Sert de point de passage SECURITAIRE entre drop_release et rest
-        # pour eviter que la trajectoire articulaire passe par une config
-        # ou le bras se cogne contre le robot lui-meme.
         q_safe = c.safe_intermediate_angles_rad or {
             "shoulder_pan": 0.0,
-            "shoulder_lift": -0.6,   # epaule legerement relevee (bras en haut)
-            "elbow_flex": 1.0,        # coude bien plie (bras compact)
+            "shoulder_lift": -0.6,
+            "elbow_flex": 1.0,
             "wrist_flex": 0.0,
             "wrist_roll": 0.0,
         }
-        q_rest = {j: 0.0 for j in ARM_JOINTS}
+        # Pose "home" finale STABLE : bras replie au-dessus de lui-meme,
+        # pas la config zero qui est tendue horizontale (donne l'impression
+        # de tomber depuis la pose safe).
+        q_home = c.home_angles_rad or {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": -0.3,
+            "elbow_flex": 1.0,
+            "wrist_flex": -0.7,    # poignet replie pour pince vers le bas
+            "wrist_roll": 0.0,
+        }
+        # Vitesse RALENTIE pour la transition vers home (anti-chute visuel)
+        dur_home = estimate_duration_safe(
+            q_safe, q_home,
+            max_velocity_rad_s=min(c.home_max_velocity_rad_s, c.max_velocity_rad_s),
+        )
 
         segs = [
             # 1. q_at_approach -> approach corrige (petit deplacement si correction)
@@ -627,11 +654,11 @@ class PickAndPlacePipeline:
             quintic_trajectory(q_rel, q_rel, duration_s=max(c.pause_release_s, 0.3),
                                 gripper_start=gp_c, gripper_end=gp_o),
             # 8. drop_release -> SAFE intermediaire (releve le bras AVANT
-            #    le retour a rest, pour eviter de traverser la zone du cube).
+            #    le retour a home, pour eviter de traverser la zone du cube).
             quintic_trajectory(q_rel, q_safe, duration_s=dur(q_rel, q_safe),
                                 gripper_start=gp_o, gripper_end=gp_o),
-            # 9. SAFE -> rest (config zero) : descente lisse depuis la pose haute
-            quintic_trajectory(q_safe, q_rest, duration_s=dur(q_safe, q_rest),
+            # 9. SAFE -> HOME : transition RALENTIE pour atterrissage doux.
+            quintic_trajectory(q_safe, q_home, duration_s=dur_home,
                                 gripper_start=gp_o, gripper_end=gp_o),
         ]
         return chain_trajectories(segs)
@@ -685,7 +712,8 @@ class PickAndPlacePipeline:
             # Safe intermediate AVANT rest (evite ecrasement)
             quintic_trajectory(q_rel, q_safe, duration_s=dur(q_rel, q_safe),
                                 gripper_start=gp_o, gripper_end=gp_o),
-            quintic_trajectory(q_safe, q_rest, duration_s=dur(q_safe, q_rest),
+            # Transition finale vers home : RALENTIE pour atterrissage doux
+            quintic_trajectory(q_safe, q_home, duration_s=dur_home,
                                 gripper_start=gp_o, gripper_end=gp_o),
         ]
         return chain_trajectories(segs)
