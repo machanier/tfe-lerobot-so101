@@ -53,6 +53,9 @@ def main():
                         help="Fermeture pince pour grasper (0-100, 5 = presque ferme)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Pas d'envoi moteur, juste log les angles calcules")
+    parser.add_argument("--no-closed-loop", action="store_true",
+                        help="Desactive le raffinement Sprint 4 par cam_2 "
+                             "(stereo seule, moins precis ~30mm). Defaut : actif.")
     args = parser.parse_args()
 
     config = PipelineConfig(
@@ -62,6 +65,7 @@ def main():
         max_velocity_rad_s=args.max_velocity,
         grip_close_pct=args.grip_close,
         dry_run=args.dry_run,
+        closed_loop=(not args.no_closed_loop),
     )
 
     pipeline = PickAndPlacePipeline(config)

@@ -197,6 +197,59 @@ python scripts/pick_and_place.py --target orange_cube --dry-run    # test sans h
 
 **Critère de succès** (cf cahier des charges objectif 6) : à mesurer expérimentalement (Sprint 3.6). Cible : taux de réussite ≥ 70% sur 20 essais avec cube orange isolé.
 
+### D16 — Sprint 4 : boucle fermée avec cam_2 (2026-05-17)
+
+**Problème mesuré expérimentalement** : la triangulation stéréo (Sprint 2)
+souffre d'un biais Y constant de **~28 mm** sur le poste de Maxence (3
+mesures à Y différents : biais +21.5, +30.5, +31.5 mm, moyenne 27.8 ±
+4.5). Origine : addition géométrique des résidus hand-eye (~6-7 mm par
+caméra) amplifiée par la baseline stéréo majoritairement en Y.
+
+**Solution Sprint 4** : raffinement par cam_2 (eye-in-hand, résidu hand-eye
+~2.5 mm seulement, distance objet ~8 cm) avant la descente finale.
+
+**Pipeline modifié** :
+```
+courant -> approach (stereo biaisée)
+        -> [cam_2 capture + correction Δ]
+        -> grasp corrigé (descente)
+        -> retract -> drop -> rest
+```
+
+**Implémentation** :
+- `src/control/closed_loop.py` : `refine_grasp_with_cam2()` qui détecte
+  l'objet dans cam_2, calcule le décalage pixel par rapport au centre
+  image, convertit en mètres dans le repère base via la projection inverse
+  pinhole (`Δm = Δpx × Z / fx`).
+- `src/pipeline.py` : split de la trajectoire en 2 phases. Le raffinement
+  est entre les deux.
+- Garde-fous : confiance détection < 0.1 → pas de correction. Correction
+  > 80 mm (seuil sanity) → pas de correction (probable faux positif).
+
+**Justification académique** :
+- Référence : Chaumette & Hutchinson 2006 *Visual Servoing Control Part I*
+  (Image-Based Visual Servoing, version simplifiée).
+- Référence : Flandin et al. 2000 *Eye-in-hand / eye-to-hand cooperation*.
+- Réponse directe à l'**objectif 4** du cahier des charges (replanification
+  en boucle fermée basée sur la perception).
+
+**Limites V1 (à documenter)** :
+- Approche "centrage image" simplifiée. Pas de PnP mono rigoureux (V2
+  possible).
+- Pas de correction Z (la triangulation stéréo gère l'altitude correctement).
+- Hypothèse : objet planaire sur la table (pas d'objets très inclinés).
+- Suppose que cam_2 est calibrée pour viser à peu près à la verticale
+  quand le bras est en pose approach.
+
+**Utilisation** :
+```bash
+python scripts/pick_and_place.py --target orange_cube --detector hf
+# Active la boucle fermee par defaut (Sprint 4).
+
+python scripts/pick_and_place.py --target orange_cube --detector hf --no-closed-loop
+# Mode Sprint 3 seul (stereo sans correction), pour comparaison memoire.
+```
+
 ### D14 — IK numérique en pure NumPy (Sprint 3 brique 3.2, 2026-05-16)
 
 **Problème** : convertir une pose cartésienne `T_base_gripper` (matrice 4×4 SE(3))

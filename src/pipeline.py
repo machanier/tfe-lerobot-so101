@@ -81,6 +81,8 @@ class PipelineConfig:
     pause_grasp_s: float = 1.0          # attente apres fermeture pince
     pause_release_s: float = 0.5
     dry_run: bool = False               # True : pas d'envoi moteur, juste log
+    closed_loop: bool = True            # Sprint 4 : raffinement cam_2 avant grasp
+    closed_loop_max_correction_mm: float = 80.0  # rejette correction > 8 cm (sanity)
 
 
 # ============================================================
@@ -295,25 +297,80 @@ class PickAndPlacePipeline:
             print()
 
             # ============================================================
-            # 6. Generation trajectoire complete
+            # 6. Generation trajectoire + execution
+            # Si closed_loop : on EXECUTE jusqu'a approach, puis on raffine
+            # avec cam_2, puis on EXECUTE la suite avec correction.
+            # Sinon : trajectoire complete d'un coup.
             # ============================================================
-            print(">> Generation trajectoire...")
-            traj = self._build_full_trajectory(
-                q_current,
-                [r_app, r_grp, r_ret, r_drop_above, r_drop_release],
-            )
-            print(f"   {len(traj)} points, duree {traj.duration_s:.1f}s")
-            print()
+            if self.config.closed_loop and not self.config.dry_run:
+                # --- Phase 1 : trajectoire courant -> approach ---
+                print(">> Phase 1 : courant -> approach (boucle fermee Sprint 4)")
+                traj_phase1 = self._build_phase1_trajectory(q_current, r_app)
+                print(f"   {len(traj_phase1)} points, duree {traj_phase1.duration_s:.1f}s")
+                controller.execute_trajectory(traj_phase1, verbose=True)
+                print()
 
-            # ============================================================
-            # 7. Execution
-            # ============================================================
-            if self.config.dry_run:
-                print(">> DRY RUN : pas d'execution sur le robot.")
-            else:
-                print(">> Execution sur le robot...")
-                controller.execute_trajectory(traj, verbose=True)
+                # --- Raffinement cam_2 ---
+                print(">> Raffinement cam_2 (eye-in-hand)...")
+                from src.control.closed_loop import (
+                    apply_correction_to_grasp_pose,
+                    refine_grasp_with_cam2,
+                )
+                # Re-lit l'etat robot (on est arrive a approach, qui peut differer
+                # un peu de la cible IK a cause de la precision des moteurs)
+                rs_at_approach = self._provider.read_live()
+                # IMPORTANT : la MultiCamera est encore ouverte (cf 'with mc' plus haut)
+                refinement = refine_grasp_with_cam2(
+                    target_label=self.config.target_label,
+                    detector=self._detector,
+                    multi_camera=mc,
+                    robot_state=rs_at_approach,
+                    z_height_above_object_m=0.08,
+                    label_mapping=self._label_mapping,
+                )
+                print(f"   {refinement.message}")
+                if refinement.confidence < 0.1:
+                    print("   [WARN] confiance faible, correction NON appliquee "
+                          "(grasp utilise la pose stereo seule)")
+                elif refinement.delta_norm_mm > self.config.closed_loop_max_correction_mm:
+                    print(f"   [WARN] correction {refinement.delta_norm_mm:.1f} mm > seuil "
+                          f"{self.config.closed_loop_max_correction_mm} mm. "
+                          "Suspect, on NE corrige PAS (peut etre fausse detection).")
+                else:
+                    apply_correction_to_grasp_pose(grasp_pose, refinement.delta_base_m)
+                    print(f"   Correction appliquee (norme {refinement.delta_norm_mm:.1f} mm)")
+                    # Refaire l'IK pour les poses corrigees
+                    r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
+                        grasp_pose, q_init=rs_at_approach.joint_angles_rad)
+                    print(f"   IK re-resolue avec poses corrigees.")
+                print()
+
+                # --- Phase 2 : trajectoire approach -> grasp -> retract -> drop ---
+                print(">> Phase 2 : descente + saisie + depot")
+                q_at_approach = rs_at_approach.joint_angles_rad
+                traj_phase2 = self._build_phase2_trajectory(
+                    q_at_approach,
+                    [r_app, r_grp, r_ret, r_drop_above, r_drop_release],
+                )
+                print(f"   {len(traj_phase2)} points, duree {traj_phase2.duration_s:.1f}s")
+                controller.execute_trajectory(traj_phase2, verbose=True)
                 print(">> Termine.")
+
+            else:
+                # Mode sans boucle fermee OU dry-run : trajectoire complete
+                print(">> Generation trajectoire complete (sans boucle fermee)...")
+                traj = self._build_full_trajectory(
+                    q_current,
+                    [r_app, r_grp, r_ret, r_drop_above, r_drop_release],
+                )
+                print(f"   {len(traj)} points, duree {traj.duration_s:.1f}s")
+                print()
+                if self.config.dry_run:
+                    print(">> DRY RUN : pas d'execution sur le robot.")
+                else:
+                    print(">> Execution sur le robot...")
+                    controller.execute_trajectory(traj, verbose=True)
+                    print(">> Termine.")
 
         except KeyboardInterrupt:
             print("\nInterrompu par utilisateur.")
@@ -329,6 +386,75 @@ class PickAndPlacePipeline:
                     pass
 
     # ----- helpers --------------------------------------------------------
+
+    def _build_phase1_trajectory(self,
+                                  q_current: dict[str, float],
+                                  ik_approach: IKResult
+                                  ) -> JointTrajectory:
+        """Sprint 4 boucle fermee : trajectoire courant -> approach uniquement.
+
+        Pince ouverte. Apres l'execution, on raffine avec cam_2 puis on
+        genere la phase 2 (approach corrige -> grasp -> ...).
+        """
+        c = self.config
+        q_app = ik_approach.joint_angles_rad
+        return quintic_trajectory(
+            q_current, q_app,
+            duration_s=estimate_duration_safe(q_current, q_app,
+                                               max_velocity_rad_s=c.max_velocity_rad_s),
+            gripper_start=c.grip_open_pct, gripper_end=c.grip_open_pct,
+        )
+
+    def _build_phase2_trajectory(self,
+                                  q_at_approach: dict[str, float],
+                                  ik_results: list[IKResult]
+                                  ) -> JointTrajectory:
+        """Sprint 4 phase 2 : approach -> grasp -> retract -> drop_above
+        -> drop_release -> rest.
+
+        Identique a _build_full_trajectory mais part de q_at_approach
+        (pas q_current) et n'inclut pas le premier segment.
+        """
+        q_app  = ik_results[0].joint_angles_rad
+        q_grp  = ik_results[1].joint_angles_rad
+        q_ret  = ik_results[2].joint_angles_rad
+        q_drop = ik_results[3].joint_angles_rad
+        q_rel  = ik_results[4].joint_angles_rad
+        c = self.config
+        gp_o = c.grip_open_pct
+        gp_c = c.grip_close_pct
+
+        def dur(q1, q2):
+            return estimate_duration_safe(q1, q2, max_velocity_rad_s=c.max_velocity_rad_s)
+
+        segs = [
+            # 1. q_at_approach -> approach corrige (petit deplacement si correction)
+            quintic_trajectory(q_at_approach, q_app, duration_s=dur(q_at_approach, q_app),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            # 2. approach -> grasp
+            quintic_trajectory(q_app, q_grp, duration_s=dur(q_app, q_grp),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            # 3. STATIQUE : ferme la pince
+            quintic_trajectory(q_grp, q_grp, duration_s=max(c.pause_grasp_s, 0.5),
+                                gripper_start=gp_o, gripper_end=gp_c),
+            # 4. grasp -> retract (pince fermee)
+            quintic_trajectory(q_grp, q_ret, duration_s=dur(q_grp, q_ret),
+                                gripper_start=gp_c, gripper_end=gp_c),
+            # 5. retract -> drop_above
+            quintic_trajectory(q_ret, q_drop, duration_s=dur(q_ret, q_drop),
+                                gripper_start=gp_c, gripper_end=gp_c),
+            # 6. drop_above -> drop_release
+            quintic_trajectory(q_drop, q_rel, duration_s=dur(q_drop, q_rel),
+                                gripper_start=gp_c, gripper_end=gp_c),
+            # 7. STATIQUE : relache (ouvre la pince)
+            quintic_trajectory(q_rel, q_rel, duration_s=max(c.pause_release_s, 0.3),
+                                gripper_start=gp_c, gripper_end=gp_o),
+            # 8. drop_release -> rest (config zero)
+            quintic_trajectory(q_rel, {j: 0.0 for j in ARM_JOINTS},
+                                duration_s=dur(q_rel, {j: 0.0 for j in ARM_JOINTS}),
+                                gripper_start=gp_o, gripper_end=gp_o),
+        ]
+        return chain_trajectories(segs)
 
     def _build_full_trajectory(self,
                                 q_current: dict[str, float],
