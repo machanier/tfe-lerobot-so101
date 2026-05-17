@@ -226,15 +226,34 @@ class TopDownGrasp(GraspStrategy):
         if z_top_estime > self.max_object_height_m:
             return None
 
-        # Yaw : aligne pince sur grand axe contour s'il existe
+        # Yaw : aligne pince sur grand axe contour s'il existe.
+        # NOTE IMPORTANTE : yaw_from_contour renvoie un angle dans le repere
+        # IMAGE de la camera source (axe Y vers le bas). Pour l'utiliser
+        # comme rotation autour de Z_base, on doit le PROJETER dans le repere
+        # base via la pose T_base_cam de la camera. Sinon l'alignement
+        # wrist_roll est aleatoire selon de quelle camera vient la detection.
+        # Pour V1 simple : on documente cette limite et on garde yaw=0 par
+        # defaut (la projection rigoureuse demanderait la normale du plan
+        # objet, hors scope V1). Si la perception ne fournit qu'un cube/disque,
+        # yaw=0 est optimal de toute facon.
         yaw = 0.0
         if self.align_wrist_roll and obj.source_detections:
-            # Prend la 1ere detection qui a un contour (seuil min coherent
-            # avec yaw_from_contour qui accepte >= 3 points)
+            # Cherche un contour non degenere
             for det in obj.source_detections:
                 if det.contour is not None and len(det.contour) >= 3:
-                    yaw = yaw_from_contour(det.contour)
-                    break
+                    yaw_image = yaw_from_contour(det.contour)
+                    # Limite V1 : on prend le yaw image tel quel, en supposant
+                    # que les cameras sont alignees avec le repere base
+                    # (X_cam projete sur le plan table ~ X_base). C'est
+                    # approximativement le cas pour cam_0/cam_1 eye-to-hand
+                    # sur la barriere avant, mais pas garanti.
+                    # Pour cam_2 eye-in-hand : on ne devrait PAS utiliser ce
+                    # yaw (orientation cam_2 depend de la pose courante du
+                    # robot). On filtre donc cam_2.
+                    if det.cam_key in ("cam_0", "cam_1"):
+                        yaw = yaw_image
+                        break
+                    # cam_2 : skip, on laisse yaw=0
         R = _rotation_top_down(yaw)
 
         # 3 poses : approach, grasp, retract (tous a la meme (x, y), z varie)

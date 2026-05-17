@@ -100,6 +100,9 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
                    hf_specs_path: Optional[str] = None,
                    warmup: int = 5):
     """Acquiert une scene 3D avec la chaine complete (HSV ou HF detector)."""
+    # `known_labels` : liste des labels que le detecteur PEUT detecter (utile
+    # pour le mode --interactive et le retour de la fonction). En HF, ce sont
+    # les valeurs du mapping (ou les prompts si pas de mapping).
     if detector_kind == "hsv":
         if Path(specs_path).exists():
             specs = load_hsv_specs(Path(specs_path))
@@ -108,6 +111,7 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
             print("  (specs HSV par defaut - resultats indicatifs)")
         detector = HSVDetector(specs)
         specs_meta = {s.label: s.meta for s in specs}
+        known_labels = [s.label for s in specs]
     elif detector_kind == "hf":
         if hf_specs_path and Path(hf_specs_path).exists():
             cfg = load_hf_specs(Path(hf_specs_path))
@@ -133,6 +137,8 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
                 return dets
             detector.detect = detect_with_mapping
         specs_meta = {}
+        # known_labels = labels internes (apres mapping) ou prompts si pas de mapping
+        known_labels = (list(mapping.values()) if mapping else list(labels))
     else:
         raise ValueError(f"detector_kind inconnu: {detector_kind}")
     estimator = PoseEstimator(specs_by_label=specs_meta)
@@ -162,7 +168,7 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
             scene = estimator.build_scene(dets, frames)
     finally:
         provider.disconnect_live()
-    return scene, [s.label for s in specs]
+    return scene, known_labels
 
 
 def evaluate(scene, ground_truth):

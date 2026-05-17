@@ -147,13 +147,21 @@ class IKSolver:
             # Conversion plage raw -> radians.
             # LeRobot motors_bus.py:858 : angle_deg = (raw - mid) * 360 / 4095
             # donc 1 count = 360/4095 deg = 2*pi/4095 rad
+            #
+            # MARGE DE SECURITE : on retire 3 deg = 0.052 rad de chaque cote.
+            # Eviter d'envoyer aux butees physiques pour 2 raisons :
+            #   1. Le motor_controller a un seuil interne strict, et un
+            #      angle pile sur la butee + arrondi flottant peut declencher
+            #      un depassement de quelques counts.
+            #   2. Les servos s'usent plus vite si on les pousse aux butees.
+            SAFETY_MARGIN_RAD = np.radians(3.0)
             for j in self.joints:
                 if j in calib:
                     c = calib[j]
                     span_rad = (c["range_max"] - c["range_min"]) * 2.0 * np.pi / 4095.0
-                    # Centre sur 0, demi-amplitude = span/2
                     half = span_rad / 2.0
-                    self.joint_limits[j] = (-half, +half)
+                    half_safe = max(0.0, half - SAFETY_MARGIN_RAD)
+                    self.joint_limits[j] = (-half_safe, +half_safe)
 
         # Defaut si pas de calibration : +/- pi
         for j in self.joints:

@@ -166,7 +166,14 @@ def quintic_trajectory(q_start: dict[str, float],
 
 
 def chain_trajectories(trajectories: Iterable[JointTrajectory]) -> JointTrajectory:
-    """Concatene plusieurs trajectoires bout a bout (les timestamps sont decales)."""
+    """Concatene plusieurs trajectoires bout a bout (les timestamps sont decales).
+
+    Robustesse : si certains segments ont velocities/gripper_pct et d'autres
+    pas, on PADDE les segments manquants avec des zeros (positions ou
+    velocities=0, gripper conserve la valeur courante). Sans ce padding,
+    `np.concatenate` produirait des shapes incoherents et `__post_init__`
+    leverait.
+    """
     trajs = list(trajectories)
     if not trajs:
         raise ValueError("Aucune trajectoire a chainer.")
@@ -174,22 +181,37 @@ def chain_trajectories(trajectories: Iterable[JointTrajectory]) -> JointTrajecto
     for t in trajs[1:]:
         if t.joint_names != joint_names:
             raise ValueError("Toutes les trajectoires doivent avoir le meme ordre des joints.")
+
+    has_velocities = any(t.velocities is not None for t in trajs)
+    has_gripper = any(t.gripper_pct is not None for t in trajs)
+
     ts_list = []; pos_list = []; vel_list = []; grip_list = []
     offset = 0.0
+    last_gripper = 100.0  # ouverture par defaut si pas connue
     for t in trajs:
         ts_list.append(t.timestamps + offset)
         pos_list.append(t.positions)
-        if t.velocities is not None:
-            vel_list.append(t.velocities)
-        if t.gripper_pct is not None:
-            grip_list.append(t.gripper_pct)
+        if has_velocities:
+            if t.velocities is not None:
+                vel_list.append(t.velocities)
+            else:
+                # Pad : velocities = 0 partout
+                vel_list.append(np.zeros_like(t.positions))
+        if has_gripper:
+            if t.gripper_pct is not None:
+                grip_list.append(t.gripper_pct)
+                last_gripper = float(t.gripper_pct[-1])
+            else:
+                # Pad : maintient le dernier gripper connu
+                grip_list.append(np.full(len(t.timestamps), last_gripper))
         offset += t.duration_s
+
     return JointTrajectory(
         joint_names=joint_names,
         timestamps=np.concatenate(ts_list),
         positions=np.concatenate(pos_list, axis=0),
-        velocities=np.concatenate(vel_list, axis=0) if vel_list else None,
-        gripper_pct=np.concatenate(grip_list) if grip_list else None,
+        velocities=np.concatenate(vel_list, axis=0) if has_velocities else None,
+        gripper_pct=np.concatenate(grip_list) if has_gripper else None,
         meta={"profile": "chained", "n_segments": len(trajs)},
     )
 

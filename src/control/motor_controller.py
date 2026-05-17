@@ -142,23 +142,59 @@ class MotorController:
             # Inversion drive_mode
             if c["drive_mode"]:
                 angle_deg = -angle_deg
-            # raw = center + delta_deg * (4095 / 360)
-            raw = center + angle_deg * STS3215_MAX_RESOLUTION / 360.0
-            # Wrap dans 0-4095 (l'encodeur est circulaire)
-            raw = int(round(raw)) % ENCODER_FULL
-            # Verification : raw doit etre dans la plage calibree
+            # raw_continu = center + delta_deg * (4095 / 360)  (peut sortir [0, 4095])
+            raw_continu = center + angle_deg * STS3215_MAX_RESOLUTION / 360.0
+            raw_wrapped = int(round(raw_continu)) % ENCODER_FULL
+
             r_min, r_max = c["range_min"], c["range_max"]
-            if not (r_min <= raw <= r_max):
-                # Tente de wrap dans la plage
-                raw_wrap = (raw - r_min) % ENCODER_FULL + r_min
-                if r_min <= raw_wrap <= r_max:
-                    raw = raw_wrap
+            TOL_COUNTS = 50  # ~4.4 deg
+
+            # CAS 1 : plage normale (r_min < r_max, ne traverse pas 0/4095)
+            # On verifie sur le delta wrappe pour rester correct.
+            # CAS 2 : plage qui traverse la couture (r_min > r_max, exemple
+            # wrist_roll deroule). Dans ce cas, "dans la plage" = raw >= r_min
+            # OU raw <= r_max. C'est ce que LeRobot fait.
+            if r_min <= r_max:
+                # Plage normale
+                in_range = (r_min <= raw_wrapped <= r_max)
+            else:
+                # Plage qui traverse 0/4095 (wraparound)
+                in_range = (raw_wrapped >= r_min or raw_wrapped <= r_max)
+
+            if in_range:
+                out[j] = raw_wrapped
+                continue
+
+            # Hors plage : essaie de clip avec tolerance
+            if r_min <= r_max:
+                # Plage normale : distance a la borne la plus proche
+                if raw_wrapped < r_min:
+                    excess = r_min - raw_wrapped
+                    target = r_min
                 else:
-                    raise ValueError(
-                        f"Angle {angle_deg:.1f}deg pour {j} hors plage "
-                        f"calibree [{r_min}, {r_max}] (raw={raw})"
-                    )
-            out[j] = raw
+                    excess = raw_wrapped - r_max
+                    target = r_max
+            else:
+                # Plage wraparound : distance "circulaire" a la borne
+                # la plus proche, peut wrap via 0/4095
+                d_to_min = min((raw_wrapped - r_min) % ENCODER_FULL,
+                               (r_min - raw_wrapped) % ENCODER_FULL)
+                d_to_max = min((raw_wrapped - r_max) % ENCODER_FULL,
+                               (r_max - raw_wrapped) % ENCODER_FULL)
+                if d_to_min < d_to_max:
+                    excess = d_to_min; target = r_min
+                else:
+                    excess = d_to_max; target = r_max
+
+            if excess <= TOL_COUNTS:
+                # Erreur d'arrondi acceptable : clip silencieusement
+                out[j] = target
+            else:
+                excess_deg = excess * 360 / STS3215_MAX_RESOLUTION
+                print(f"[motor_controller] WARN : {j} angle {angle_deg:+.1f}deg "
+                      f"hors plage de {excess_deg:.1f}deg, clip a la butee.",
+                      file=__import__('sys').stderr)
+                out[j] = target
 
         if gripper_pct is not None:
             cg = self.calib["gripper"]

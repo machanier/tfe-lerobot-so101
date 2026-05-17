@@ -160,11 +160,20 @@ class PickAndPlacePipeline:
         # ============================================================
         # 1. Connexion
         # ============================================================
-        controller = MotorController()
-        if not self.config.dry_run:
-            self._provider.connect_live(self.config.motor_port)
-            controller.connect(self.config.motor_port)
-            controller.enable_torque()
+        # IMPORTANT : initialiser controller AVANT le try, sinon le finally
+        # referencera un nom non defini si MotorController() leve.
+        controller = None
+        try:
+            controller = MotorController()
+            if not self.config.dry_run:
+                self._provider.connect_live(self.config.motor_port)
+                controller.connect(self.config.motor_port)
+                controller.enable_torque()
+        except Exception as e:
+            print(f"!! Connexion robot/moteur impossible : {e}")
+            if not self.config.dry_run:
+                print("   Bascule en mode --dry-run.")
+                self.config.dry_run = True
 
         try:
             # ============================================================
@@ -313,10 +322,11 @@ class PickAndPlacePipeline:
                 self._provider.disconnect_live()
             except Exception:
                 pass
-            try:
-                controller.disconnect()
-            except Exception:
-                pass
+            if controller is not None:
+                try:
+                    controller.disconnect()
+                except Exception:
+                    pass
 
     # ----- helpers --------------------------------------------------------
 
