@@ -623,9 +623,13 @@ class PickAndPlacePipeline:
                     label_mapping=self._label_mapping,
                 )
                 print(f"   Refinement #2 : {refinement2.message}")
-                # Seuil plus strict pour le 2e refinement (~3cm max) : si
-                # l'objet a vraiment beaucoup bouge c'est suspect, on s'abstient.
-                if refinement2.confidence > 0.1 and refinement2.delta_norm_mm < 30:
+                # Seuil 60mm pour le 2e refinement : permet de detecter qu'un
+                # objet a vraiment bouge (Maxence le pousse a la main pendant
+                # l'approche). Avant le seuil etait 30mm, ce qui ignorait
+                # les deplacements moyens de l'objet -> le robot saisissait
+                # dans le vide. 60mm = on accepte les vrais deplacements,
+                # on rejette uniquement les detections clairement fausses.
+                if refinement2.confidence > 0.1 and refinement2.delta_norm_mm < 60:
                     apply_correction_to_grasp_pose(grasp_pose,
                                                     refinement2.delta_base_m)
                     print(f"   Correction #2 appliquee "
@@ -637,9 +641,9 @@ class PickAndPlacePipeline:
                     r_ret = self._ik.solve(
                         grasp_pose.T_base_gripper_retract,
                         q_init=r_grp.joint_angles_rad)
-                elif refinement2.delta_norm_mm >= 30:
+                elif refinement2.delta_norm_mm >= 60:
                     print(f"   [WARN] correction #2 = {refinement2.delta_norm_mm:.1f}mm "
-                          f"> 30mm, suspect, ignoree")
+                          f"> 60mm, suspect (vrai deplacement ou fausse detection), ignoree")
                 else:
                     print(f"   [INFO] objet stable depuis refinement #1 (pas de re-correction)")
                 print()
@@ -888,14 +892,6 @@ class PickAndPlacePipeline:
         def dur(q1, q2):
             return estimate_duration_safe(q1, q2, max_velocity_rad_s=c.max_velocity_rad_s)
 
-        # Pose intermediaire "safe" : bras releve haut, centre.
-        q_safe = c.safe_intermediate_angles_rad or {
-            "shoulder_pan": 0.0,
-            "shoulder_lift": -0.6,
-            "elbow_flex": 1.0,
-            "wrist_flex": 0.0,
-            "wrist_roll": 0.0,
-        }
         # Pose "home" finale STABLE : priorite au parametre fourni (= pose de
         # depart session typiquement), fallback sur config, fallback sur
         # pose hardcodee "bras replie".
@@ -905,6 +901,18 @@ class PickAndPlacePipeline:
             "elbow_flex": 1.0,
             "wrist_flex": -0.7,    # poignet replie pour pince vers le bas
             "wrist_roll": 0.0,
+        }
+        # Pose intermediaire "safe" : bras releve haut, centre.
+        # IMPORTANT : on HERITE wrist_roll et wrist_flex de q_home pour eviter
+        # une rotation parasite finale (q_safe -> q_home). Sans ca, si
+        # q_session_start a wrist_roll=0.5 et q_safe hardcode wrist_roll=0,
+        # le poignet faisait 0.5 -> 0 (safe) -> 0.5 (home), inutile et bizarre.
+        q_safe = c.safe_intermediate_angles_rad or {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": -0.6,
+            "elbow_flex": 1.0,
+            "wrist_flex": q_home.get("wrist_flex", 0.0),
+            "wrist_roll": q_home.get("wrist_roll", 0.0),
         }
         # Vitesse RALENTIE pour la transition vers home (anti-chute visuel)
         dur_home = estimate_duration_safe(
@@ -987,11 +995,6 @@ class PickAndPlacePipeline:
         def dur(q1, q2):
             return estimate_duration_safe(q1, q2, max_velocity_rad_s=c.max_velocity_rad_s)
 
-        # Pose safe intermediaire (idem _build_phase2_trajectory)
-        q_safe = c.safe_intermediate_angles_rad or {
-            "shoulder_pan": 0.0, "shoulder_lift": -0.6, "elbow_flex": 1.0,
-            "wrist_flex": 0.0, "wrist_roll": 0.0,
-        }
         # Pose finale : parametre fourni > config > defaut hardcode.
         # FIX (etait q_rest=config_zero precedemment, ce qui en plus pouvait
         # crasher sur q_home/dur_home non definis -- NameError).
@@ -1001,6 +1004,13 @@ class PickAndPlacePipeline:
             "elbow_flex": 1.0,
             "wrist_flex": -0.7,
             "wrist_roll": 0.0,
+        }
+        # Pose safe intermediaire : on HERITE wrist_roll/wrist_flex de q_home
+        # pour eviter une rotation parasite finale (cf _build_phase2_trajectory).
+        q_safe = c.safe_intermediate_angles_rad or {
+            "shoulder_pan": 0.0, "shoulder_lift": -0.6, "elbow_flex": 1.0,
+            "wrist_flex": q_home.get("wrist_flex", 0.0),
+            "wrist_roll": q_home.get("wrist_roll", 0.0),
         }
         dur_home = estimate_duration_safe(
             q_safe, q_home,
