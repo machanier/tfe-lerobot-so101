@@ -138,6 +138,23 @@ class PipelineConfig:
     # = np.array([dx, dy, dz]) en metres. None = pas de compensation.
     systematic_bias_correction_m: Optional[object] = None  # ndarray (3,)
 
+    # ---------- P1 : feedback de saisie + retry ----------
+    # Apres la fermeture pince (consigne = grip_close_pct), on lit la position
+    # REELLE du gripper. Si la pince a bute sur un objet, elle ne pourra pas
+    # atteindre la consigne et restera ouverte d'au moins X%. Si la pince
+    # atteint (presque) la consigne, c'est qu'elle s'est fermee dans le vide
+    # = saisie ratee.
+    # Marge en pourcentage au-dessus de grip_close_pct pour conclure "saisi".
+    # Ex : grip_close_pct=5, grasp_success_threshold_pct=15 -> on conclut OK
+    # si la pince reelle reste >= 5 + 15 = 20% apres fermeture.
+    # Pour un cube 30mm, la pince s'arrete typiquement vers 30-40% -> marge OK.
+    grasp_success_threshold_pct: float = 15.0
+    # Nombre max de RETRY apres echec (0 = pas de retry, 1 = 1 essai + 1 retry).
+    max_grasp_retries: int = 1
+    # Pause apres fermeture pince avant de LIRE la position (laisser le servo
+    # se stabiliser sur l'objet). 0.3s est conservatif.
+    grasp_settle_pause_s: float = 0.3
+
 
 # ============================================================
 # Orchestrateur principal
@@ -623,17 +640,28 @@ class PickAndPlacePipeline:
                     label_mapping=self._label_mapping,
                 )
                 print(f"   Refinement #2 : {refinement2.message}")
-                # Seuil 60mm pour le 2e refinement : permet de detecter qu'un
-                # objet a vraiment bouge (Maxence le pousse a la main pendant
-                # l'approche). Avant le seuil etait 30mm, ce qui ignorait
-                # les deplacements moyens de l'objet -> le robot saisissait
-                # dans le vide. 60mm = on accepte les vrais deplacements,
-                # on rejette uniquement les detections clairement fausses.
-                if refinement2.confidence > 0.1 and refinement2.delta_norm_mm < 60:
+                # Seuil DYNAMIQUE selon confiance HF (P2) :
+                #   - score >= 0.5 (tres confiant) -> seuil 100mm
+                #   - score >= 0.3 (confiance moyenne) -> seuil 80mm
+                #   - sinon -> seuil 60mm (filet de securite)
+                # Avant : seuil fixe 60mm rejetait les vrais deplacements >60mm
+                # de l'objet pousse par Maxence pendant l'approche. Quand la
+                # cam_2 HF voit bien l'objet (score eleve), on peut faire
+                # confiance a une correction plus grande. Reference :
+                # confidence-weighted estimation, Chaumette & Hutchinson 2006.
+                score = refinement2.confidence
+                if score >= 0.5:
+                    seuil_mm = 100.0
+                elif score >= 0.3:
+                    seuil_mm = 80.0
+                else:
+                    seuil_mm = 60.0
+                if refinement2.confidence > 0.1 and refinement2.delta_norm_mm < seuil_mm:
                     apply_correction_to_grasp_pose(grasp_pose,
                                                     refinement2.delta_base_m)
                     print(f"   Correction #2 appliquee "
-                          f"(norme {refinement2.delta_norm_mm:.1f} mm)")
+                          f"(norme {refinement2.delta_norm_mm:.1f} mm, "
+                          f"seuil={seuil_mm:.0f}mm @ score {score:.2f})")
                     # Re-IK grasp et retract uniquement (approach deja passe)
                     r_grp = self._ik.solve(
                         grasp_pose.T_base_gripper_grasp,
@@ -641,31 +669,163 @@ class PickAndPlacePipeline:
                     r_ret = self._ik.solve(
                         grasp_pose.T_base_gripper_retract,
                         q_init=r_grp.joint_angles_rad)
-                elif refinement2.delta_norm_mm >= 60:
+                elif refinement2.delta_norm_mm >= seuil_mm:
                     print(f"   [WARN] correction #2 = {refinement2.delta_norm_mm:.1f}mm "
-                          f"> 60mm, suspect (vrai deplacement ou fausse detection), ignoree")
+                          f"> seuil {seuil_mm:.0f}mm (score {score:.2f}), ignoree")
                 else:
                     print(f"   [INFO] objet stable depuis refinement #1 (pas de re-correction)")
                 print()
 
-                # --- Phase 2 : trajectoire intermediate -> grasp -> retract -> drop ---
-                # (au lieu de approach -> grasp : on est deja a intermediate)
-                print(f">> Phase 2 : descente + saisie + depot + retour ({home_origin})")
+                # --- Phase 2 : BOUCLE de tentatives de saisie avec FEEDBACK (P1) ---
+                # Au lieu d'executer une trajectoire monolithique, on procede en
+                # 3 etapes par tentative :
+                #   1. SOUS-TRAJ : intermediate -> approach -> grasp -> ferme pince
+                #   2. CHECK : lecture position reelle gripper
+                #        - si position >> consigne -> pince a bute sur l'objet = SAISIE OK
+                #        - sinon -> SAISIE RATEE (pince ferme dans le vide)
+                #   3. Si OK -> sous-traj finish (retract + drop + home)
+                #      Si rate ET retry possible -> remontee + refinement + boucle
+                #      Si rate ET tous retries epuises -> abort vers home sans depose
+                print(f">> Phase 2 : tentative(s) de saisie avec feedback pince + depot + retour ({home_origin})")
                 q_at_intermediate = rs_at_intermediate.joint_angles_rad
-                # gripper_open_pct vient du grasp_pose : adapte a la bbox de
-                # l'objet (A3 : ouverture pince adaptative). Ex : cube 30mm
-                # -> ~84%, gros objet -> 100%, petit objet -> 30% min.
-                # On passe r_intermediate a la place de r_app : le 1er segment
-                # de la trajectoire devient quasi-statique (on est deja la).
-                traj_phase2 = self._build_phase2_trajectory(
-                    q_at_intermediate,
-                    [r_intermediate, r_grp, r_ret, r_drop_above, r_drop_release],
-                    q_home=q_home_final,
-                    gripper_open_pct=grasp_pose.gripper_open_pct,
-                )
-                print(f"   {len(traj_phase2)} points, duree {traj_phase2.duration_s:.1f}s")
-                controller.execute_trajectory(traj_phase2, verbose=True,
+
+                # Log structure pour campagne experimentale (P4)
+                grasp_attempts_log = []
+                grasp_succeeded = False
+                q_start_attempt = q_at_intermediate  # depart de la 1ere descente
+
+                attempt = 0
+                while attempt <= self.config.max_grasp_retries:
+                    attempt += 1
+                    print()
+                    print(f">> --- Tentative #{attempt}/{self.config.max_grasp_retries + 1} ---")
+
+                    # Sous-traj : descente vers grasp + fermeture pince statique
+                    traj_grasp = self._build_grasp_attempt_traj(
+                        q_start_attempt,
+                        r_app.joint_angles_rad,
+                        r_grp.joint_angles_rad,
+                        grip_open_pct=grasp_pose.gripper_open_pct,
+                        grip_close_pct=self.config.grip_close_pct,
+                    )
+                    print(f"   Descente + fermeture : {len(traj_grasp)} points, "
+                          f"duree {traj_grasp.duration_s:.1f}s")
+                    controller.execute_trajectory(traj_grasp, verbose=True,
+                                                  on_step=live_callback)
+
+                    # CHECK pince : laisse le servo se stabiliser puis lit la
+                    # position reelle. Si la pince a bute sur l'objet, elle est
+                    # restee ouverte d'au moins grasp_success_threshold_pct.
+                    time.sleep(self.config.grasp_settle_pause_s)
+                    gripper_now = controller.read_gripper_pct()
+                    margin = gripper_now - self.config.grip_close_pct
+                    success = margin > self.config.grasp_success_threshold_pct
+                    grasp_attempts_log.append({
+                        "attempt": attempt,
+                        "gripper_pct": gripper_now,
+                        "consigne_pct": self.config.grip_close_pct,
+                        "marge_pct": margin,
+                        "seuil_pct": self.config.grasp_success_threshold_pct,
+                        "success": success,
+                    })
+                    tag = "SAISIE OK" if success else "SAISIE RATEE"
+                    print(f"   [check pince] consigne={self.config.grip_close_pct:.0f}%, "
+                          f"reel={gripper_now:.1f}%, marge={margin:+.1f}%, "
+                          f"seuil={self.config.grasp_success_threshold_pct:.0f}%  -->  {tag}")
+
+                    if success:
+                        grasp_succeeded = True
+                        break
+
+                    # Echec : retry possible ?
+                    if attempt > self.config.max_grasp_retries:
+                        print(f"   >> ABANDON apres {attempt} tentative(s) (max retries atteint).")
+                        break
+
+                    print(f"   >> RETRY : remontee + refinement cam_2 + redescente")
+
+                    # 1. Remontee a approach AVEC pince ouverte (libere ce qu'on aurait pu saisir partiellement)
+                    rs_at_grasp = self._provider.read_live()
+                    traj_lift = self._build_retry_lift_traj(
+                        rs_at_grasp.joint_angles_rad,
+                        r_app.joint_angles_rad,
+                        grip_open_pct=grasp_pose.gripper_open_pct,
+                    )
+                    print(f"   Remontee a approach : {len(traj_lift)} points, "
+                          f"duree {traj_lift.duration_s:.1f}s")
+                    controller.execute_trajectory(traj_lift, verbose=False,
+                                                  on_step=live_callback)
+
+                    # 2. Refinement cam_2 (l'objet peut avoir bouge a cause du contact rate)
+                    rs_after_lift = self._provider.read_live()
+                    print(f"   Refinement cam_2 retry...")
+                    refinement_retry = refine_grasp_with_cam2(
+                        target_label=self.config.target_label,
+                        detector=self._detector,
+                        multi_camera=mc,
+                        robot_state=rs_after_lift,
+                        target_z_base_m=float(grasp_pose.T_base_gripper_grasp[2, 3]),
+                        label_mapping=self._label_mapping,
+                    )
+                    print(f"   {refinement_retry.message}")
+                    # Seuil dynamique selon score (meme logique P2)
+                    score_r = refinement_retry.confidence
+                    if score_r >= 0.5:
+                        seuil_r_mm = 100.0
+                    elif score_r >= 0.3:
+                        seuil_r_mm = 80.0
+                    else:
+                        seuil_r_mm = 60.0
+                    if score_r > 0.1 and refinement_retry.delta_norm_mm < seuil_r_mm:
+                        apply_correction_to_grasp_pose(grasp_pose, refinement_retry.delta_base_m)
+                        print(f"   Correction retry appliquee "
+                              f"(norme {refinement_retry.delta_norm_mm:.1f}mm, "
+                              f"seuil={seuil_r_mm:.0f}mm @ score {score_r:.2f})")
+                        r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
+                            grasp_pose, q_init=rs_after_lift.joint_angles_rad)
+                    elif refinement_retry.delta_norm_mm >= seuil_r_mm:
+                        print(f"   [WARN] correction retry = {refinement_retry.delta_norm_mm:.1f}mm "
+                              f"> seuil {seuil_r_mm:.0f}mm (score {score_r:.2f}), ignoree")
+
+                    # Le point de depart de la prochaine descente = position courante
+                    q_start_attempt = rs_after_lift.joint_angles_rad
+                    # (la boucle reprend : descente + fermeture + check)
+
+                print()
+
+                # --- Apres la boucle : depose si succes, retour direct si echec ---
+                rs_after_grasp = self._provider.read_live()
+                if grasp_succeeded:
+                    print(f">> SAISIE REUSSIE en {attempt} tentative(s). "
+                          f"Depose dans la boite + retour {home_origin}.")
+                    traj_finish = self._build_finish_after_grasp_traj(
+                        q_grp=rs_after_grasp.joint_angles_rad,
+                        q_ret=r_ret.joint_angles_rad,
+                        q_drop=r_drop_above.joint_angles_rad,
+                        q_rel=r_drop_release.joint_angles_rad,
+                        q_home=q_home_final,
+                        grip_close_pct=self.config.grip_close_pct,
+                        grip_open_pct=grasp_pose.gripper_open_pct,
+                    )
+                else:
+                    print(f">> ECHEC apres {attempt} tentative(s). "
+                          f"Retour {home_origin} sans depose.")
+                    traj_finish = self._build_abort_to_home_traj(
+                        q_grp=rs_after_grasp.joint_angles_rad,
+                        q_ret=r_ret.joint_angles_rad,
+                        q_home=q_home_final,
+                        grip_open_pct=grasp_pose.gripper_open_pct,
+                    )
+                print(f"   {len(traj_finish)} points, duree {traj_finish.duration_s:.1f}s")
+                controller.execute_trajectory(traj_finish, verbose=True,
                                               on_step=live_callback)
+
+                # Log structure final pour la campagne (P4)
+                self._grasp_attempts_log = grasp_attempts_log
+                self._grasp_final_success = grasp_succeeded
+                self._grasp_total_attempts = attempt
+                self._print_grasp_summary(grasp_attempts_log, grasp_succeeded, attempt)
+
                 print(f">> Termine. Robot revenu a la {home_origin}.")
                 if self.config.display:
                     import cv2
@@ -1049,3 +1209,183 @@ class PickAndPlacePipeline:
                                 gripper_end=c.home_gripper_pct),
         ]
         return chain_trajectories(segs)
+
+    # ============================================================
+    # P1 : Helpers SOUS-TRAJECTOIRES (pour boucle de tentatives + retry)
+    # On split la phase 2 historique en sous-trajectoires individuelles,
+    # appellees explicitement depuis run() avec un CHECK pince entre
+    # la fermeture et le transport. Les helpers _build_phase2_trajectory
+    # et _build_full_trajectory restent en place (utilises pour le mode
+    # --no-closed-loop et comme fallback).
+    # ============================================================
+
+    def _build_grasp_attempt_traj(
+        self, q_from: dict[str, float], q_app: dict[str, float],
+        q_grp: dict[str, float],
+        grip_open_pct: float, grip_close_pct: float,
+    ) -> JointTrajectory:
+        """Sous-traj : q_from -> approach -> grasp -> ferme pince (statique).
+
+        Utilisee pour chaque TENTATIVE de saisie (1er essai + eventuels retries).
+        A la sortie, la pince a recu la commande de fermeture (grip_close_pct)
+        mais sa position REELLE depend de ce qu'elle a rencontre. C'est
+        precisement ce que run() va lire via controller.read_gripper_pct().
+        """
+        c = self.config
+        def dur(q1, q2):
+            return estimate_duration_safe(q1, q2, max_velocity_rad_s=c.max_velocity_rad_s)
+        gp_o, gp_c = grip_open_pct, grip_close_pct
+        segs = [
+            quintic_trajectory(q_from, q_app, duration_s=dur(q_from, q_app),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            quintic_trajectory(q_app, q_grp, duration_s=dur(q_app, q_grp),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            # Fermeture STATIQUE (le bras ne bouge pas, la pince ferme).
+            quintic_trajectory(q_grp, q_grp, duration_s=max(c.pause_grasp_s, 0.5),
+                                gripper_start=gp_o, gripper_end=gp_c),
+        ]
+        return chain_trajectories(segs)
+
+    def _build_retry_lift_traj(
+        self, q_grp: dict[str, float], q_app: dict[str, float],
+        grip_open_pct: float,
+    ) -> JointTrajectory:
+        """Sous-traj : remontee de grasp vers approach AVEC OUVERTURE PINCE.
+
+        Sert au RETRY apres saisie ratee : on libere ce qu'on a (ou pas) saisi
+        puis on remonte a approach pour relancer refinement + descente.
+        """
+        c = self.config
+        return quintic_trajectory(
+            q_grp, q_app,
+            duration_s=estimate_duration_safe(q_grp, q_app,
+                                              max_velocity_rad_s=c.max_velocity_rad_s),
+            gripper_start=grip_open_pct, gripper_end=grip_open_pct,
+        )
+
+    def _build_finish_after_grasp_traj(
+        self, q_grp: dict[str, float], q_ret: dict[str, float],
+        q_drop: dict[str, float], q_rel: dict[str, float],
+        q_home: dict[str, float],
+        grip_close_pct: float, grip_open_pct: float,
+    ) -> JointTrajectory:
+        """Sous-traj SUCCES : grasp -> retract -> drop_above -> drop_release
+        -> (ouvre pince) -> sortie verticale -> safe -> home.
+
+        Pince fermee pendant le transport, ouvre au dessus de la boite, referme
+        progressivement pour le retour home (home_gripper_pct, ~5%).
+        Reprend la logique de _build_phase2_trajectory segments 4-9.
+        """
+        c = self.config
+        def dur(q1, q2):
+            return estimate_duration_safe(q1, q2, max_velocity_rad_s=c.max_velocity_rad_s)
+        gp_c, gp_o = grip_close_pct, grip_open_pct
+        # q_safe = pose intermediaire haute. HERITE wrist_roll/wrist_flex de
+        # q_home pour eviter rotation parasite finale (cf P3).
+        q_safe = c.safe_intermediate_angles_rad or {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": -0.6,
+            "elbow_flex": 1.0,
+            "wrist_flex": q_home.get("wrist_flex", 0.0),
+            "wrist_roll": q_home.get("wrist_roll", 0.0),
+        }
+        dur_home = estimate_duration_safe(
+            q_safe, q_home,
+            max_velocity_rad_s=min(c.home_max_velocity_rad_s, c.max_velocity_rad_s),
+        )
+        segs = [
+            # 1. grasp -> retract (pince fermee, remonte avec objet)
+            quintic_trajectory(q_grp, q_ret, duration_s=dur(q_grp, q_ret),
+                                gripper_start=gp_c, gripper_end=gp_c),
+            # 2. retract -> drop_above
+            quintic_trajectory(q_ret, q_drop, duration_s=dur(q_ret, q_drop),
+                                gripper_start=gp_c, gripper_end=gp_c),
+            # 3. drop_above -> drop_release (descend dans boite)
+            quintic_trajectory(q_drop, q_rel, duration_s=dur(q_drop, q_rel),
+                                gripper_start=gp_c, gripper_end=gp_c),
+            # 4. STATIQUE : relache (ouvre pince)
+            quintic_trajectory(q_rel, q_rel, duration_s=max(c.pause_release_s, 0.3),
+                                gripper_start=gp_c, gripper_end=gp_o),
+            # 5. SORTIE VERTICALE de la boite (drop_release -> drop_above)
+            quintic_trajectory(q_rel, q_drop, duration_s=dur(q_rel, q_drop),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            # 6. drop_above -> SAFE (releve haut, ferme pince progressivement)
+            quintic_trajectory(q_drop, q_safe, duration_s=dur(q_drop, q_safe),
+                                gripper_start=gp_o, gripper_end=c.home_gripper_pct),
+            # 7. SAFE -> HOME (transition ralentie)
+            quintic_trajectory(q_safe, q_home, duration_s=dur_home,
+                                gripper_start=c.home_gripper_pct,
+                                gripper_end=c.home_gripper_pct),
+        ]
+        return chain_trajectories(segs)
+
+    def _build_abort_to_home_traj(
+        self, q_grp: dict[str, float], q_ret: dict[str, float],
+        q_home: dict[str, float], grip_open_pct: float,
+    ) -> JointTrajectory:
+        """Sous-traj ECHEC : grasp -> retract (pince ouverte) -> safe -> home.
+
+        Apres tous les retries epuises sans saisie reussie : on remonte sans
+        rien transporter et on rentre. Pas de visite a la boite (rien a poser).
+        """
+        c = self.config
+        def dur(q1, q2):
+            return estimate_duration_safe(q1, q2, max_velocity_rad_s=c.max_velocity_rad_s)
+        gp_o = grip_open_pct
+        q_safe = c.safe_intermediate_angles_rad or {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": -0.6,
+            "elbow_flex": 1.0,
+            "wrist_flex": q_home.get("wrist_flex", 0.0),
+            "wrist_roll": q_home.get("wrist_roll", 0.0),
+        }
+        dur_home = estimate_duration_safe(
+            q_safe, q_home,
+            max_velocity_rad_s=min(c.home_max_velocity_rad_s, c.max_velocity_rad_s),
+        )
+        segs = [
+            # 1. STATIQUE : pince OUVERTE (relache ce qu'on a partiellement saisi)
+            quintic_trajectory(q_grp, q_grp, duration_s=max(c.pause_release_s, 0.3),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            # 2. grasp -> retract (remonte, pince ouverte)
+            quintic_trajectory(q_grp, q_ret, duration_s=dur(q_grp, q_ret),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            # 3. retract -> safe (referme progressivement vers home_gripper_pct)
+            quintic_trajectory(q_ret, q_safe, duration_s=dur(q_ret, q_safe),
+                                gripper_start=gp_o, gripper_end=c.home_gripper_pct),
+            # 4. safe -> home (ralenti)
+            quintic_trajectory(q_safe, q_home, duration_s=dur_home,
+                                gripper_start=c.home_gripper_pct,
+                                gripper_end=c.home_gripper_pct),
+        ]
+        return chain_trajectories(segs)
+
+    def _print_grasp_summary(self, attempts_log: list[dict],
+                              succeeded: bool, total_attempts: int):
+        """Recap structure des tentatives de saisie (pour campagne P4).
+
+        Imprime un tableau clair en fin de pipeline avec :
+          - position pince reelle a chaque tentative
+          - marge vs seuil de detection
+          - resultat OK/RATE
+          - resultat final REUSSIE / ECHEC
+        Les attributs self._grasp_* sont aussi exposes pour qu'un script
+        externe (scripts/experiment_campaign.py) puisse les lire.
+        """
+        print()
+        print("=" * 70)
+        print(" RECAP SAISIE")
+        print("=" * 70)
+        if not attempts_log:
+            print("  Aucune tentative loggee (bug ?)")
+        for entry in attempts_log:
+            n = entry["attempt"]
+            gp = entry["gripper_pct"]
+            margin = entry["marge_pct"]
+            sc = entry["success"]
+            tag = "OK" if sc else "RATE"
+            print(f"  Tentative #{n} : pince reelle = {gp:>5.1f}%  "
+                  f"(marge {margin:+5.1f}% vs seuil {entry['seuil_pct']:.0f}%)  --> {tag}")
+        final = "REUSSIE" if succeeded else "ECHEC"
+        print(f"  --> Resultat final : {final}  ({total_attempts} tentative(s) total)")
+        print("=" * 70)
