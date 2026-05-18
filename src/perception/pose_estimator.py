@@ -254,13 +254,16 @@ class PoseEstimatorConfig:
     # Soustraite a CHAQUE position triangulee : pos_corrigee = pos - bias.
     # Permet d'avoir une correction PERMANENTE sans modifier gt_test.json.
     bias_correction_m: Optional[object] = None  # ndarray (3,) ou None
-    # Seuil reprojection : 40 px = plancher de bruit reel observe sur SO-101.
-    # Calcul theorique : 7mm * 1225 / 500 = 17 px, marge 1.5x = 25 px.
-    # MAIS Maxence observe 27 px en pratique avec HF qui a des bboxes parfois
-    # imprecises (cube detecte avec score 0.5+ mais centre legerement decale).
-    # On monte donc le seuil a 40 px pour ne pas rejeter ces detections valides.
-    # Au-dela de 40 px c'est clairement une mauvaise correspondance stereo.
-    max_reproj_error_px: float = 40.0
+    # Seuil reprojection : 60 px (a 40 px on rejettait des detections valides
+    # juste au-dessus du seuil, ex: reproj=40.1px -> annulation tout le pipeline).
+    # Historique :
+    #   - 25 px : calcul theorique pur (7mm * 1225 / 500 + marge 1.5x)
+    #   - 40 px : empirique avec HF, ne suffisait pas (cas du cube a Y=165mm
+    #             ou la triangulation est juste au-dessus)
+    #   - 60 px : assez permissif pour les detections HF a la marge, mais
+    #             reste assez strict pour rejeter les mauvaises correspondances
+    #             (qui donnent typiquement reproj > 200 px).
+    max_reproj_error_px: float = 60.0
     max_z_base_m: float = 0.40
     min_z_base_m: float = -0.05
     enable_mono_pnp_fallback: bool = True
