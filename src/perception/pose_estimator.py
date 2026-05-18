@@ -404,15 +404,20 @@ class PoseEstimator:
                 X = None
                 reject_reason = f"triangulation exception: {e}"
             if X is not None:
-                # COMPENSATION SYSTEMATIQUE : applique le biais empirique
-                # (e.g. -28mm en Y sur le poste de Maxence). Calibrable
-                # via configs/perception/bias_correction.json.
-                if self._bias_m is not None:
-                    X = X - self._bias_m
-                in_ws = self._in_workspace(X)
+                # IMPORTANT : reproj_error est calcule sur X NON COMPENSE,
+                # pour valider que la triangulation initiale est coherente
+                # avec les pixels detectes (sinon la compensation creerait
+                # artificiellement un grand reproj_err). La compensation
+                # est appliquee APRES validation, sur la position finale.
                 err_L = reproject_error(X, det_L, f_L)
                 err_R = reproject_error(X, det_R, f_R)
                 err = 0.5 * (err_L + err_R)
+                # COMPENSATION SYSTEMATIQUE : applique le biais empirique
+                # mesure (e.g. -30mm en Y sur le poste de Maxence).
+                # Calibrable via configs/perception/bias_correction.json.
+                if self._bias_m is not None:
+                    X = X - self._bias_m
+                in_ws = self._in_workspace(X)
                 pos_mm = X * 1000
                 if not in_ws:
                     reject_reason = (

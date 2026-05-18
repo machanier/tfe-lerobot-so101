@@ -8,7 +8,7 @@
     "5. Mets les valeurs ici (en mm)."
   ],
   "dx_mm": 0,
-  "dy_mm": 28,
+  "dy_mm": 30,
   "dz_mm": 0,
   "_caracterisation_experimentale_maxence_2026_05_17": {
     "cube_a_Y_+100mm": "detecte Y=+121.5 -> biais +21.5",
