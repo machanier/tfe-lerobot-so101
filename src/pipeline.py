@@ -119,6 +119,19 @@ class PipelineConfig:
     # l'impression de chute. Defaut : 0.3 rad/s (vs 0.5 par defaut).
     home_max_velocity_rad_s: float = 0.3
 
+    # Ouverture pince a la fin (apres retour home). 0 = totalement fermee,
+    # 100 = grand ouvert. Defaut 5 = presque fermee, pour eviter qu'une
+    # pince ouverte accroche un cable / objet de la scene apres execution.
+    home_gripper_pct: float = 5.0
+
+    # Rafraichissement des detections HF en --display live. La detection HF
+    # prend ~3-5s sur M4. Si on detecte a chaque rafraichissement du callback
+    # (toutes les 30 frames de traj), le bras bloque pendant la detection.
+    # Solution : detecter tous les N rafraichissements + cacher les dernieres
+    # detections pour les afficher entre-temps. N=5 -> detection toutes les
+    # ~5s, fluide pendant les intervalles. Mettre N=1 pour HSV (rapide).
+    display_detect_every_n: int = 5
+
     # Compensation SYSTEMATIQUE des biais de calibration mesures
     # empiriquement (cf D11 : biais Y ~+28mm sur ce poste). Sera soustraite
     # a toutes les positions detectees par la stereo.
@@ -146,29 +159,79 @@ class PickAndPlacePipeline:
         self._build_perception()
         self._grasp_strategy = TopDownGrasp()
         self._ik = IKSolver()
-        # IK SPECIFIQUE A LA DEPOSE : on reduit drastiquement le poids de la
-        # rotation (0.01 vs 0.1 par defaut). Justification : pour la depose,
-        # on ouvre la pince et on lache le cube -- l'orientation exacte de la
-        # pince importe peu (elle peut etre inclinee de 10-15deg sans gener).
-        # En revanche la POSITION doit etre precise pour viser la boite.
-        # Avec rot_w=0.1, l'IK choisissait de preserver l'orientation au prix
-        # de ~5-13 cm d'erreur position (cf logs : drop_above approx
-        # trans=47mm rot=0.8deg). Avec rot_w=0.01 : trans<1mm rot~10deg.
-        self._ik_drop = IKSolver(rotation_weight=0.01)
+        # IK SPECIFIQUE A LA DEPOSE : poids de rotation reduit (0.05 vs 0.1
+        # par defaut). Pour la depose on s'en moque que la pince soit pile
+        # verticale (elle ouvre, le cube tombe). On privilegie donc la
+        # position. Compromis 0.05 (vs 0.01 essaye precedemment) : evite que
+        # l'IK accepte des poses tordues a 90deg qui provoquaient des
+        # collisions du bras avec lui-meme. Avec 0.05 : rot < 15deg.
+        self._ik_drop = IKSolver(rotation_weight=0.05)
         self._provider = RobotStateProvider()
 
     def _load_scene(self):
-        """Charge la position de la boite de depose."""
+        """Charge la position de la boite de depose.
+
+        CONVENTION : `center_base_m` est interprete comme le centre du **FOND**
+        de la boite (= sa face posee sur la table). C'est plus naturel a
+        mesurer au metre que le centre du dessus. Le dessus est calcule
+        automatiquement = fond + box_height.
+
+        Calcule deux poses cibles au-dessus de la boite :
+          - drop_above   : 5 cm au-dessus du dessus -> approche avec marge.
+          - drop_release : 2 cm au-dessus du dessus -> point de relachement.
+
+        Emet un avertissement si la position semble incoherente (boite
+        chevauche la base du robot ou hors workspace) -- typique d'un
+        scene.json non mesure.
+        """
         scene_path = self.config.scene_config_path or (REPO / "configs" / "scene.json")
         if not scene_path.exists():
             raise FileNotFoundError(f"scene.json manquant : {scene_path}")
         data = json.load(open(scene_path))
         box = data["drop_box"]
-        self.drop_position = np.array(box["center_base_m"], dtype=np.float64)
-        # Ajout d'une marge en Z pour relacher au-dessus de la boite
-        box_height = float(box["dimensions_m"][2])
-        self.drop_above = self.drop_position + np.array([0.0, 0.0, 0.05 + box_height / 2])
-        self.drop_release = self.drop_position + np.array([0.0, 0.0, 0.02 + box_height / 2])
+        # `center_base_m` = centre du FOND de la boite (convention)
+        bottom_center = np.array(box["center_base_m"], dtype=np.float64)
+        box_h = float(box["dimensions_m"][2])
+        # Dessus de la boite = fond + hauteur
+        top_z = float(bottom_center[2]) + box_h
+        # drop_above : 5 cm au-dessus du dessus, drop_release : 2 cm au-dessus
+        self.drop_position = np.array([bottom_center[0], bottom_center[1], top_z])
+        self.drop_above   = self.drop_position + np.array([0.0, 0.0, 0.05])
+        self.drop_release = self.drop_position + np.array([0.0, 0.0, 0.02])
+
+        # AVERTISSEMENT si position incoherente
+        x, y = float(bottom_center[0]), float(bottom_center[1])
+        dist_to_base = np.hypot(x, y)
+        warnings = []
+        if dist_to_base < 0.12:
+            warnings.append(
+                f"boite tres proche de la base ({dist_to_base*100:.1f} cm) -- "
+                f"chevauche probablement la zone d'exclusion du robot "
+                f"(rayon 10cm). Le bras va se cogner."
+            )
+        ws = data.get("workspace_bounds_base_m", {})
+        if ws:
+            if not (ws.get("x_min", -1) <= x <= ws.get("x_max", 1)):
+                warnings.append(f"X={x:.3f}m hors workspace [{ws.get('x_min')}, {ws.get('x_max')}]")
+            if not (ws.get("y_min", -1) <= y <= ws.get("y_max", 1)):
+                warnings.append(f"Y={y:.3f}m hors workspace [{ws.get('y_min')}, {ws.get('y_max')}]")
+
+        # Log informatif des poses calculees
+        print(f">> Boite de depose chargee depuis {scene_path.name} :")
+        print(f"   center_fond = ({bottom_center[0]*1000:+6.1f}, {bottom_center[1]*1000:+6.1f}, "
+              f"{bottom_center[2]*1000:+6.1f}) mm  (X devant, Y gauche+/droite-, Z table)")
+        print(f"   dimensions  = {box['dimensions_m'][0]*100:.1f} x "
+              f"{box['dimensions_m'][1]*100:.1f} x {box_h*100:.1f} cm")
+        print(f"   dessus boite a Z = {top_z*1000:.1f} mm")
+        print(f"   drop_above   = ({self.drop_above[0]*1000:+6.1f}, "
+              f"{self.drop_above[1]*1000:+6.1f}, {self.drop_above[2]*1000:+6.1f}) mm")
+        print(f"   drop_release = ({self.drop_release[0]*1000:+6.1f}, "
+              f"{self.drop_release[1]*1000:+6.1f}, {self.drop_release[2]*1000:+6.1f}) mm")
+        for w in warnings:
+            print(f"   [WARN scene.json] {w}")
+        if warnings:
+            print(f"   --> Verifie configs/scene.json. Si tu changes la boite de place, "
+                  f"remesure et mets a jour center_base_m.")
 
     def _build_perception(self):
         """Construit detecteur + estimator selon la config."""
@@ -370,26 +433,45 @@ class PickAndPlacePipeline:
             # Helper : callback display live qui rafraichit cv2.imshow
             # pendant l'execution moteur (toutes les ~30 frames de traj).
             #
-            # IMPORTANT : on N'APPELLE PAS le detecteur ici. Avec HF (OWL-ViTv2)
-            # une detection prend ~3-5 sec sur M4 -> le callback bloquerait
-            # chaque rafraichissement et ralentirait la trajectoire d'un
-            # facteur 10x (0.2 fps observe par Maxence). Le display sert juste
-            # a "voir" le bras pendant le mouvement, pas a re-detecter.
+            # STRATEGIE detection :
+            #   - HSV : rapide (~10fps) -> detection a chaque rafraichissement
+            #   - HF  : lent  (~0.3fps) -> detection toutes les N visites du
+            #     callback (par defaut N=5, soit ~5sec). Entre 2 detections on
+            #     REUTILISE les dernieres bboxes (cache). Le display reste
+            #     fluide et tu vois quand meme les detections vertes.
             def make_live_callback():
                 if not self.config.display:
                     return None
                 import cv2
+                # Etat partage entre les invocations
+                cache = {"count": 0, "last_dets": {}}
+                # HSV = rapide => refresh a chaque step. HF = lent => refresh
+                # tous les N steps (config.display_detect_every_n).
+                refresh_every = (1 if self.config.detector_kind == "hsv"
+                                 else max(1, self.config.display_detect_every_n))
                 def on_step(i, trajectory):
-                    # Lit la pose courante du robot pour mettre a jour T_base_cam2
+                    cache["count"] += 1
                     try:
                         rs = self._provider.read_live()
                     except Exception:
                         return
                     frames = mc.grab(robot_state=rs)
-                    # Mosaic des 3 cams : on affiche les frames BRUTES (pas de
-                    # detection) -> rafraichissement quasi-instantane meme en HF.
+                    # Refresh detection occasionnellement
+                    if cache["count"] % refresh_every == 0:
+                        try:
+                            dets = self._detector.detect_multi(frames)
+                            if self._label_mapping:
+                                for cam_dets in dets.values():
+                                    for d in cam_dets:
+                                        if d.label in self._label_mapping:
+                                            d.label = self._label_mapping[d.label]
+                            cache["last_dets"] = dets
+                        except Exception as e:
+                            print(f"[live display] detection error: {e}")
                     import numpy as np
-                    tiles = [self._annotate_frame(frames.get(k), [], None)
+                    tiles = [self._annotate_frame(frames.get(k),
+                                                  cache["last_dets"].get(k, []),
+                                                  None)
                              for k in CAM_DISPLAY_ORDER]
                     mosaic = np.hstack(tiles)
                     cv2.putText(mosaic, f"LIVE exec frame {i}/{len(trajectory)}",
@@ -722,11 +804,15 @@ class PickAndPlacePipeline:
                                 gripper_start=gp_c, gripper_end=gp_o),
             # 8. drop_release -> SAFE intermediaire (releve le bras AVANT
             #    le retour a home, pour eviter de traverser la zone du cube).
+            #    On ferme PROGRESSIVEMENT la pince ici pour eviter qu'elle
+            #    reste grand-ouverte (securite : pas d'accrochage sur cables).
             quintic_trajectory(q_rel, q_safe, duration_s=dur(q_rel, q_safe),
-                                gripper_start=gp_o, gripper_end=gp_o),
+                                gripper_start=gp_o, gripper_end=c.home_gripper_pct),
             # 9. SAFE -> HOME : transition RALENTIE pour atterrissage doux.
+            #    Pince finit a home_gripper_pct (par defaut 5 = presque fermee).
             quintic_trajectory(q_safe, q_home, duration_s=dur_home,
-                                gripper_start=gp_o, gripper_end=gp_o),
+                                gripper_start=c.home_gripper_pct,
+                                gripper_end=c.home_gripper_pct),
         ]
         return chain_trajectories(segs)
 
@@ -795,11 +881,13 @@ class PickAndPlacePipeline:
             quintic_trajectory(q_rel, q_rel, duration_s=max(c.pause_release_s, 0.3),
                                 gripper_start=gp_c, gripper_end=gp_o),
             # Safe intermediate AVANT home (evite que la pince traverse la zone
-            # du cube pendant le retour).
+            # du cube pendant le retour). Pince se referme progressivement.
             quintic_trajectory(q_rel, q_safe, duration_s=dur(q_rel, q_safe),
-                                gripper_start=gp_o, gripper_end=gp_o),
-            # Transition finale vers home : RALENTIE pour atterrissage doux
+                                gripper_start=gp_o, gripper_end=c.home_gripper_pct),
+            # Transition finale vers home : RALENTIE pour atterrissage doux.
+            # Pince finit a home_gripper_pct (defaut 5 = quasi-fermee).
             quintic_trajectory(q_safe, q_home, duration_s=dur_home,
-                                gripper_start=gp_o, gripper_end=gp_o),
+                                gripper_start=c.home_gripper_pct,
+                                gripper_end=c.home_gripper_pct),
         ]
         return chain_trajectories(segs)
