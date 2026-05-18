@@ -2,10 +2,11 @@
   "_doc": "Configuration geometrique du poste de travail (statique). A REMPLIR par Maxence avec des mesures au pied a coulisse depuis la base du robot. Toutes les coordonnees sont en METRES dans le repere BASE du robot.",
 
   "drop_box": {
-    "_doc": "Boite de depose. Fixee au sol, MESUREE UNE FOIS. Sera utilisee : (1) au Sprint 3 comme cible du 'retract' apres saisie ; (2) au Sprint 4 comme obstacle d'evitement.",
+    "_doc": "Boite de depose. Fixee au sol, MESUREE UNE FOIS. Sera utilisee : (1) Sprint 3 comme cible du 'retract' apres saisie ; (2) Sprint 4 comme obstacle d'evitement.",
+    "_convention": "center_base_m = centre du FOND de la boite (face posee sur la table). Le dessus est calcule automatiquement = center_base_m[2] + dimensions_m[2]. Plus naturel a mesurer au metre que le dessus. Repere : X devant le robot, Y a GAUCHE positif (Y a DROITE negatif), Z au-dessus de la table.",
     "center_base_m": [0.00, 0.20, 0.05],
     "dimensions_m": [0.15, 0.10, 0.06],
-    "_TODO_a_mesurer": "DIMENSIONS OK (15cm x 10cm x 6cm donnees par Maxence). RESTE A MESURER : center_base_m = position du centre du dessus de la boite, dans le repere base (X devant, Y a gauche, Z au-dessus de la table)."
+    "_TODO_a_mesurer": "MESURE A FAIRE : pose la boite a sa vraie place, mesure au metre depuis le centre de la plaque de base : X (distance devant le robot) et Y (decalage lateral, gauche+ / droite-). Z = epaisseur du fond (souvent ~5-10mm). Si tu vois 'boite tres proche de la base' dans les logs : tu n'as pas remesure."
   },
 
   "exclusion_zones_base_m": [
