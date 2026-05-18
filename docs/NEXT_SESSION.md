@@ -3,13 +3,42 @@
 Document à lire EN PREMIER quand tu reprends le projet (toi ou un nouvel
 agent Claude Code dans une nouvelle conversation).
 
-## 1. État du projet au 2026-05-18
+## 1. État du projet au 2026-05-18 (session 9)
 
 ✅ **Sprint 1 (Calibration)** : complet. Intrinsèques + hand-eye OK.
 ✅ **Sprint 2 (Perception)** : V1 HSV + V2 OWL-ViTv2 fonctionnels.
 ✅ **Sprint 3 (Planning + Contrôle)** : grasp top-down + IK + trajectoire.
 ✅ **Sprint 4 (Boucle fermée)** : raffinement cam_2 actif.
 ✅ **PREMIÈRE SAISIE RÉUSSIE** le 17 mai 2026 avec `pick_and_place.py`.
+
+### Session 9 (2026-05-18) — fixes UX & dépose
+
+Modifs dans `src/pipeline.py` :
+
+1. **Dépose précise** : ajout d'un `IKSolver` dédié `_ik_drop` avec
+   `rotation_weight=0.01` (vs 0.1 standard) pour les poses
+   `drop_above`/`drop_release`. Justification : pour la dépose on s'en
+   moque que la pince soit pile verticale (elle ouvre, le cube tombe), on
+   veut surtout la position au mm près. Avant : `drop_above approx
+   trans=47mm` (IK sacrifiait la position pour préserver l'orientation —
+   sous-actuation 5/6 DDL). Après : `trans=0.1mm rot=11deg` (position
+   parfaite, inclinaison négligeable pour un drop).
+
+2. **Retour home = position de départ** : nouveau champ
+   `PipelineConfig.home_from_session_start: bool = True` (défaut). Le
+   robot revient EXACTEMENT à la pose dans laquelle il était au lancement
+   du script. Maxence peut placer le robot dans une pose stable +
+   caméra orientée vers la scène, lancer la commande, et le bras y
+   revient. Plus de "robot qui part en cacahuètes" après la pose.
+
+3. **Display fluide en HF** : le callback live n'appelle plus
+   `detect_multi` à chaque rafraîchissement (~3-5s par appel en HF sur M4
+   → bloquait la trajectoire). Il affiche juste les frames brutes →
+   display fluide même avec `--display --detector hf`.
+
+4. **Bug fix `_build_full_trajectory`** : `q_home` et `dur_home` étaient
+   référencés sans être définis (NameError sur `--no-closed-loop` /
+   `--dry-run`). Corrigé : utilise le param `q_home` ou fallback config.
 
 🟡 **À continuer** : amélioration de la robustesse, recalibration HSV,
 évitement obstacles (Sprint 4.5), SmolVLA comparatif (Sprint 5),
