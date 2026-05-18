@@ -37,6 +37,20 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+
+# ============================================================
+# Constantes display
+# ============================================================
+# Ordre des cameras dans le display horizontal. cam_1 a GAUCHE pour respecter
+# la perspective de l'utilisateur derriere le robot : cam_1 est physiquement
+# a gauche du robot vu de face (et donc a droite vu de derriere/par cam_0).
+# cam_2 (eye-in-hand) toujours a droite.
+CAM_DISPLAY_ORDER = ("cam_1", "cam_0", "cam_2")
+
+# Taille de chaque tile dans la mosaic (640x360 = taille originale, 960x540
+# = x1.5). Mosaic finale = 3 * tile_width x tile_height.
+DISPLAY_TILE_SIZE = (960, 540)  # 1.5x la taille originale
+
 from src.calibration.forward_kinematics import ARM_JOINTS
 from src.control.ik import IKResult, IKSolver
 from src.control.motor_controller import MotorController
@@ -89,10 +103,16 @@ class PipelineConfig:
     # eviter que le bras traverse la zone de l'objet pendant le retour).
     safe_intermediate_angles_rad: Optional[dict] = None
 
-    # Pose "home" finale = position de repos STABLE du robot.
-    # Defaut : bras replie au-dessus de lui-meme, pince horizontale (pas
-    # tendu vers l'avant comme config zero qui donne l'impression de
-    # "tomber"). Maxence peut la customiser via PipelineConfig.
+    # STRATEGIE DE RETOUR FINAL :
+    # Si True (defaut) : le robot revient EXACTEMENT a la pose dans laquelle
+    # il etait au lancement du script (capturee dans run()). Pratique :
+    # Maxence place le robot en position stable + camera bien orientee, lance
+    # la commande, et le robot y revient apres la pose.
+    # Si False : utilise la pose fixe `home_angles_rad` ci-dessous.
+    home_from_session_start: bool = True
+
+    # Pose "home" fixe (utilisee uniquement si home_from_session_start=False).
+    # Defaut : bras replie au-dessus de lui-meme, pince vers le bas.
     home_angles_rad: Optional[dict] = None
 
     # Vitesse RALENTIE pour la transition finale (home), pour eviter
@@ -126,6 +146,15 @@ class PickAndPlacePipeline:
         self._build_perception()
         self._grasp_strategy = TopDownGrasp()
         self._ik = IKSolver()
+        # IK SPECIFIQUE A LA DEPOSE : on reduit drastiquement le poids de la
+        # rotation (0.01 vs 0.1 par defaut). Justification : pour la depose,
+        # on ouvre la pince et on lache le cube -- l'orientation exacte de la
+        # pince importe peu (elle peut etre inclinee de 10-15deg sans gener).
+        # En revanche la POSITION doit etre precise pour viser la boite.
+        # Avec rot_w=0.1, l'IK choisissait de preserver l'orientation au prix
+        # de ~5-13 cm d'erreur position (cf logs : drop_above approx
+        # trans=47mm rot=0.8deg). Avec rot_w=0.01 : trans<1mm rot~10deg.
+        self._ik_drop = IKSolver(rotation_weight=0.01)
         self._provider = RobotStateProvider()
 
     def _load_scene(self):
@@ -306,14 +335,23 @@ class PickAndPlacePipeline:
             current_state = (self._provider.read_live() if not self.config.dry_run
                              else self._provider.from_angles({j: 0.0 for j in ARM_JOINTS}))
             q_current = current_state.joint_angles_rad
+            # MEMORISE la pose de depart : c'est notre future "home" si
+            # home_from_session_start=True. Le robot reviendra exactement la.
+            q_session_start = dict(q_current)
 
             r_app, r_grp, r_ret = self._ik.solve_grasp_pose(grasp_pose, q_init=q_current)
-            # IK pour la pose drop_above (pince ouverte, prete a relacher)
+            # IK pour la pose drop_above et drop_release : on utilise l'IK
+            # specialise self._ik_drop qui a un poids rotation reduit (0.01).
+            # Cela permet de privilegier la POSITION (precision au mm pour
+            # viser la boite) au prix d'une orientation pince approximative
+            # (acceptable : la pince ouvre puis le cube tombe -- l'incli-
+            # naison de ~10deg n'empeche pas le drop). Avec l'IK standard,
+            # la pose drop ratait la cible de 5-13 cm (sous-actuation 5/6 DDL).
             from src.planning.grasp import _rotation_top_down, _se3
             T_drop_above = _se3(_rotation_top_down(0.0), self.drop_above)
             T_drop_release = _se3(_rotation_top_down(0.0), self.drop_release)
-            r_drop_above = self._ik.solve(T_drop_above, q_init=r_ret.joint_angles_rad)
-            r_drop_release = self._ik.solve(T_drop_release, q_init=r_drop_above.joint_angles_rad)
+            r_drop_above = self._ik_drop.solve(T_drop_above, q_init=r_ret.joint_angles_rad)
+            r_drop_release = self._ik_drop.solve(T_drop_release, q_init=r_drop_above.joint_angles_rad)
 
             for label, r in [("approach", r_app), ("grasp", r_grp),
                              ("retract", r_ret), ("drop_above", r_drop_above),
@@ -331,6 +369,12 @@ class PickAndPlacePipeline:
             # ============================================================
             # Helper : callback display live qui rafraichit cv2.imshow
             # pendant l'execution moteur (toutes les ~30 frames de traj).
+            #
+            # IMPORTANT : on N'APPELLE PAS le detecteur ici. Avec HF (OWL-ViTv2)
+            # une detection prend ~3-5 sec sur M4 -> le callback bloquerait
+            # chaque rafraichissement et ralentirait la trajectoire d'un
+            # facteur 10x (0.2 fps observe par Maxence). Le display sert juste
+            # a "voir" le bras pendant le mouvement, pas a re-detecter.
             def make_live_callback():
                 if not self.config.display:
                     return None
@@ -342,16 +386,11 @@ class PickAndPlacePipeline:
                     except Exception:
                         return
                     frames = mc.grab(robot_state=rs)
-                    dets = self._detector.detect_multi(frames)
-                    if self._label_mapping:
-                        for cam_dets in dets.values():
-                            for d in cam_dets:
-                                if d.label in self._label_mapping:
-                                    d.label = self._label_mapping[d.label]
-                    # Mosaic des 3 cams (sans reprojection scene pour aller vite)
+                    # Mosaic des 3 cams : on affiche les frames BRUTES (pas de
+                    # detection) -> rafraichissement quasi-instantane meme en HF.
                     import numpy as np
-                    tiles = [self._annotate_frame(frames.get(k), dets.get(k, []), None)
-                             for k in ("cam_0", "cam_1", "cam_2")]
+                    tiles = [self._annotate_frame(frames.get(k), [], None)
+                             for k in CAM_DISPLAY_ORDER]
                     mosaic = np.hstack(tiles)
                     cv2.putText(mosaic, f"LIVE exec frame {i}/{len(trajectory)}",
                                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
@@ -359,6 +398,16 @@ class PickAndPlacePipeline:
                     cv2.imshow("Pipeline perception", mosaic)
                     cv2.waitKey(1)
                 return on_step
+
+            # Determine la pose home finale : soit la pose de depart de la
+            # session (defaut, le robot revient ou Maxence l'avait place), soit
+            # la pose fixe configuree dans home_angles_rad.
+            if self.config.home_from_session_start:
+                q_home_final = q_session_start
+                home_origin = "pose de depart session"
+            else:
+                q_home_final = self.config.home_angles_rad
+                home_origin = "pose fixe (home_angles_rad)"
 
             if self.config.closed_loop and not self.config.dry_run:
                 # --- Phase 1 : trajectoire courant -> approach ---
@@ -409,16 +458,17 @@ class PickAndPlacePipeline:
                 print()
 
                 # --- Phase 2 : trajectoire approach -> grasp -> retract -> drop ---
-                print(">> Phase 2 : descente + saisie + depot + retour position rest")
+                print(f">> Phase 2 : descente + saisie + depot + retour ({home_origin})")
                 q_at_approach = rs_at_approach.joint_angles_rad
                 traj_phase2 = self._build_phase2_trajectory(
                     q_at_approach,
                     [r_app, r_grp, r_ret, r_drop_above, r_drop_release],
+                    q_home=q_home_final,
                 )
                 print(f"   {len(traj_phase2)} points, duree {traj_phase2.duration_s:.1f}s")
                 controller.execute_trajectory(traj_phase2, verbose=True,
                                               on_step=make_live_callback())
-                print(">> Termine. Robot revenu en position rest (config zero).")
+                print(f">> Termine. Robot revenu a la {home_origin}.")
                 if self.config.display:
                     import cv2
                     cv2.destroyAllWindows()
@@ -429,16 +479,17 @@ class PickAndPlacePipeline:
                 traj = self._build_full_trajectory(
                     q_current,
                     [r_app, r_grp, r_ret, r_drop_above, r_drop_release],
+                    q_home=q_home_final,
                 )
                 print(f"   {len(traj)} points, duree {traj.duration_s:.1f}s")
                 print()
                 if self.config.dry_run:
                     print(">> DRY RUN : pas d'execution sur le robot.")
                 else:
-                    print(">> Execution sur le robot (jusqu'a retour position rest)...")
+                    print(f">> Execution sur le robot (jusqu'au retour {home_origin})...")
                     controller.execute_trajectory(traj, verbose=True,
                                                   on_step=make_live_callback())
-                    print(">> Termine. Robot revenu en position rest (config zero).")
+                    print(f">> Termine. Robot revenu a la {home_origin}.")
                     if self.config.display:
                         import cv2
                         cv2.destroyAllWindows()
@@ -466,13 +517,22 @@ class PickAndPlacePipeline:
                     pass
 
     def _annotate_frame(self, frame, dets, scene):
-        """Helper : annote une frame avec detections + reprojections 3D."""
+        """Helper : annote une frame avec detections + reprojections 3D.
+
+        Taille des tuiles fixee par DISPLAY_TILE_SIZE (constante au top du module).
+        """
         import cv2
         import numpy as np
         from src.perception.pose_estimator import _projection_matrix
+        tw, th = DISPLAY_TILE_SIZE
         if frame is None:
-            return np.zeros((360, 640, 3), dtype=np.uint8)
+            return np.zeros((th, tw, 3), dtype=np.uint8)
         img = frame.image.copy()
+        # Bandeau noir avec le nom de la cam (utile vu que l'ordre n'est plus
+        # alphabetique : cam_1 a gauche maintenant).
+        cv2.rectangle(img, (0, 0), (260, 50), (0, 0, 0), -1)
+        cv2.putText(img, frame.cam_key, (10, 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2, cv2.LINE_AA)
         for d in dets:
             if d.bbox:
                 x0, y0, x1, y1 = (int(v) for v in d.bbox)
@@ -490,7 +550,7 @@ class PickAndPlacePipeline:
                 if uvw[2] > 0:
                     u, v = uvw[0]/uvw[2], uvw[1]/uvw[2]
                     cv2.circle(img, (int(u), int(v)), 8, (0, 0, 255), 2)
-        return cv2.resize(img, (640, 360))
+        return cv2.resize(img, (tw, th))
 
     def _show_perception_snapshot(self, frames, dets_by_cam, scene, title=""):
         """Affiche les 3 frames camera avec detections, sauvegarde aussi
@@ -502,7 +562,7 @@ class PickAndPlacePipeline:
         from datetime import datetime
 
         tiles = []
-        for k in ("cam_0", "cam_1", "cam_2"):
+        for k in CAM_DISPLAY_ORDER:
             tiles.append(self._annotate_frame(frames.get(k), dets_by_cam.get(k, []), scene))
         mosaic = np.hstack(tiles)
         cv2.putText(mosaic, title, (10, 30),
@@ -587,13 +647,20 @@ class PickAndPlacePipeline:
 
     def _build_phase2_trajectory(self,
                                   q_at_approach: dict[str, float],
-                                  ik_results: list[IKResult]
+                                  ik_results: list[IKResult],
+                                  q_home: Optional[dict] = None,
                                   ) -> JointTrajectory:
         """Sprint 4 phase 2 : approach -> grasp -> retract -> drop_above
-        -> drop_release -> rest.
+        -> drop_release -> safe -> home.
 
         Identique a _build_full_trajectory mais part de q_at_approach
         (pas q_current) et n'inclut pas le premier segment.
+
+        Args:
+            q_home : pose finale a rejoindre apres la depose. Si None,
+                fallback sur self.config.home_angles_rad ou la pose hardcodee.
+                Typiquement, le pipeline appelle avec q_home=q_session_start
+                pour que le robot retourne ou l'utilisateur l'avait place.
         """
         q_app  = ik_results[0].joint_angles_rad
         q_grp  = ik_results[1].joint_angles_rad
@@ -615,10 +682,10 @@ class PickAndPlacePipeline:
             "wrist_flex": 0.0,
             "wrist_roll": 0.0,
         }
-        # Pose "home" finale STABLE : bras replie au-dessus de lui-meme,
-        # pas la config zero qui est tendue horizontale (donne l'impression
-        # de tomber depuis la pose safe).
-        q_home = c.home_angles_rad or {
+        # Pose "home" finale STABLE : priorite au parametre fourni (= pose de
+        # depart session typiquement), fallback sur config, fallback sur
+        # pose hardcodee "bras replie".
+        q_home = q_home or c.home_angles_rad or {
             "shoulder_pan": 0.0,
             "shoulder_lift": -0.3,
             "elbow_flex": 1.0,
@@ -665,14 +732,19 @@ class PickAndPlacePipeline:
 
     def _build_full_trajectory(self,
                                 q_current: dict[str, float],
-                                ik_results: list[IKResult]
+                                ik_results: list[IKResult],
+                                q_home: Optional[dict] = None,
                                 ) -> JointTrajectory:
         """Concatene les sous-trajectoires : current -> approach -> grasp ->
         (fermer pince) -> retract -> drop_above -> drop_release ->
-        (ouvrir pince) -> rest (config zero).
+        (ouvrir pince) -> safe -> home.
 
         On utilise quintic pour chaque segment (lisse) + pauses pour la
         fermeture/ouverture de pince.
+
+        Args:
+            q_home : pose finale a rejoindre. Si None, fallback sur
+                config.home_angles_rad ou la pose hardcodee.
         """
         q_app  = ik_results[0].joint_angles_rad
         q_grp  = ik_results[1].joint_angles_rad
@@ -692,7 +764,20 @@ class PickAndPlacePipeline:
             "shoulder_pan": 0.0, "shoulder_lift": -0.6, "elbow_flex": 1.0,
             "wrist_flex": 0.0, "wrist_roll": 0.0,
         }
-        q_rest = {j: 0.0 for j in ARM_JOINTS}
+        # Pose finale : parametre fourni > config > defaut hardcode.
+        # FIX (etait q_rest=config_zero precedemment, ce qui en plus pouvait
+        # crasher sur q_home/dur_home non definis -- NameError).
+        q_home = q_home or c.home_angles_rad or {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": -0.3,
+            "elbow_flex": 1.0,
+            "wrist_flex": -0.7,
+            "wrist_roll": 0.0,
+        }
+        dur_home = estimate_duration_safe(
+            q_safe, q_home,
+            max_velocity_rad_s=min(c.home_max_velocity_rad_s, c.max_velocity_rad_s),
+        )
 
         segs = [
             quintic_trajectory(q_current, q_app, duration_s=dur(q_current, q_app),
@@ -709,7 +794,8 @@ class PickAndPlacePipeline:
                                 gripper_start=gp_c, gripper_end=gp_c),
             quintic_trajectory(q_rel, q_rel, duration_s=max(c.pause_release_s, 0.3),
                                 gripper_start=gp_c, gripper_end=gp_o),
-            # Safe intermediate AVANT rest (evite ecrasement)
+            # Safe intermediate AVANT home (evite que la pince traverse la zone
+            # du cube pendant le retour).
             quintic_trajectory(q_rel, q_safe, duration_s=dur(q_rel, q_safe),
                                 gripper_start=gp_o, gripper_end=gp_o),
             # Transition finale vers home : RALENTIE pour atterrissage doux
