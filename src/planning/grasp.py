@@ -299,9 +299,21 @@ class TopDownGrasp(GraspStrategy):
         grasp_xy = np.array([x, y, 0.0]) + np.array([offset_base[0], offset_base[1], 0.0])
         gx, gy = float(grasp_xy[0]), float(grasp_xy[1])
 
+        # === A7 : grasp legerement sous le centre (eviter touche au-dessus) ===
+        # L'IK a typiquement 4-5 mm d'erreur de translation sur le grasp. Si
+        # on vise pile le centre du cube, la pince ferme parfois au-DESSUS
+        # du cube qui glisse au lieu d'etre saisi. En visant a -1/4 hauteur
+        # sous le centre, on garantit que la pince ferme dans la moitie basse
+        # du cube (saisie solide), meme avec l'erreur IK.
+        # Si bbox_3d_m fourni : 1/4 de la hauteur. Sinon : grasp_offset_m.
+        if obj.bbox_3d_m is not None:
+            z_grasp_offset = -obj.bbox_3d_m[2] / 4.0
+        else:
+            z_grasp_offset = self.grasp_offset_m
+
         # 3 poses : approach, grasp, retract (tous a la meme (gx, gy), z varie)
         T_approach = _se3(R, [gx, gy, z + self.approach_height_m])
-        T_grasp    = _se3(R, [gx, gy, z + self.grasp_offset_m])
+        T_grasp    = _se3(R, [gx, gy, z + z_grasp_offset])
         T_retract  = _se3(R, [gx, gy, z + self.retract_height_m])
 
         # === A3 : ouverture pince adaptative selon bbox 3D ===
@@ -374,15 +386,21 @@ if __name__ == "__main__":
         position_base_m=np.array([0.15, 0.0, 0.03]),
         bbox_3d_m=(0.03, 0.03, 0.03),
     )
-    # Test sans decalage smart (grasp_lateral_offset_mm=0) pour valider la
+    # Test sans decalage smart ni decalage Z adaptatif pour valider la
     # logique de base : les 3 poses doivent etre verticalement alignees au
     # cube. Avec le decalage smart (defaut 8mm), le grasp est decale en Y
-    # pour aligner avec la pince fixe -- teste plus bas.
+    # pour aligner avec la pince fixe -- teste plus bas. Idem pour Fix 7
+    # (grasp 1/4 sous centre) : on desactive en passant bbox_3d_m=None
+    # pour ce test puis on teste avec bbox plus bas.
+    obj_no_bbox = ObjectInstance(
+        label="red_cube",
+        position_base_m=np.array([0.15, 0.0, 0.03]),
+    )
     strategy = TopDownGrasp(approach_height_m=0.08, retract_height_m=0.10,
                               grasp_lateral_offset_mm=0.0)
-    gp = strategy.plan(obj)
+    gp = strategy.plan(obj_no_bbox)
     assert gp is not None, "plan() devrait reussir pour un cube standard"
-    # Verifie les 3 positions (alignees au cube vu que offset=0)
+    # Verifie les 3 positions (alignees au cube vu que offset=0 et bbox=None)
     assert np.allclose(gp.T_base_gripper_approach[:3, 3], [0.15, 0, 0.11]), \
         f"approach Z attendu 0.11m, recu {gp.T_base_gripper_approach[:3, 3]}"
     assert np.allclose(gp.T_base_gripper_grasp[:3, 3], [0.15, 0, 0.03])
@@ -393,15 +411,18 @@ if __name__ == "__main__":
     print(f"  [OK] TopDownGrasp.plan (offset=0) : 3 poses verticales pour cube a (15, 0, 3) cm")
 
     # 3bis. TopDownGrasp avec decalage smart : le grasp est decale d'offset
-    # mm dans la direction OPPOSEE au doigt fixe.
+    # mm dans la direction OPPOSEE au doigt fixe + grasp Z 1/4 sous centre.
     strategy_smart = TopDownGrasp(approach_height_m=0.08, retract_height_m=0.10,
                                     grasp_lateral_offset_mm=8.0)
-    gp_smart = strategy_smart.plan(obj)
+    gp_smart = strategy_smart.plan(obj)  # cube 30mm bbox, centre Z=0.03
     # Avec yaw=0 et fixed_finger_dir_gripper=(0,-1,0), l'offset oppose dans
     # le repere base est (0, -0.008, 0). Donc grasp Y = -0.008.
     assert abs(gp_smart.T_base_gripper_grasp[1, 3] - (-0.008)) < 1e-6, \
         f"grasp Y attendu -0.008 (decalage smart), recu {gp_smart.T_base_gripper_grasp[1, 3]}"
-    print(f"  [OK] TopDownGrasp.plan (offset smart 8mm) : grasp Y decale a -0.008m")
+    # Avec Fix 7 : grasp Z = centre - hauteur/4 = 0.03 - 0.03/4 = 0.0225
+    assert abs(gp_smart.T_base_gripper_grasp[2, 3] - 0.0225) < 1e-6, \
+        f"grasp Z attendu 0.0225 (1/4 sous centre), recu {gp_smart.T_base_gripper_grasp[2, 3]}"
+    print(f"  [OK] TopDownGrasp.plan (offset smart 8mm + Z=1/4 sous centre)")
 
     # 4. Filtre objet trop haut : gobelet de 15 cm -> plan() = None
     obj_hi = ObjectInstance(
