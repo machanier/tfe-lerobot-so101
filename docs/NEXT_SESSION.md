@@ -3,6 +3,47 @@
 Document à lire EN PREMIER quand tu reprends le projet (toi ou un nouvel
 agent Claude Code dans une nouvelle conversation).
 
+## 0. TL;DR pour un nouvel agent — lire dans cet ordre
+
+1. **`docs/PROJECT_STATUS.md`** : décisions techniques D1-D16 (le quoi & le pourquoi).
+2. **`docs/REPERE_BASE.md`** : conventions repère robot (CRUCIAL : `base_link`
+   = centre plaque de base à plat sur la table ; X devant le robot ; Y à
+   GAUCHE positif / Y à DROITE négatif ; Z au-dessus de la table).
+3. **`src/pipeline.py`** : c'est le module central. Toute la logique
+   `perception → planning → contrôle` y est. `PipelineConfig` en haut
+   liste tous les paramètres ajustables.
+4. **`configs/scene.json`** : position de la boîte de dépose et zones
+   d'exclusion. La position de la boîte (`drop_box.center_base_m`) est
+   en **mètres** dans le repère base et désigne le **centre du FOND** de
+   la boîte (le code calcule le dessus automatiquement).
+5. **`configs/perception/bias_correction.json`** : compensation dy=+30mm
+   appliquée à chaque détection 3D pour corriger le biais hand-eye.
+
+### Ce qui marche (au 2026-05-18)
+- Calibration Sprint 1 (intrinsèques + hand-eye 3 cams) : solide.
+- Perception 3D avec **HF (OWL-ViTv2)** : robuste, ~0.3 fps détection
+  initiale + raffinement cam_2.
+- Pipeline pick-and-place : saisie réussie ~70% en HF, dépose dans la
+  boîte si scene.json correct.
+- Retour à la pose de départ.
+
+### Ce qui ne marche pas / fragile
+- **HSV** : détecte la pince orange comme cube orange même après
+  recalibration. Marche mal en pratique. Privilégier HF.
+- **Saisie irrégulière** : la pince fixe peut percuter l'objet (pas de
+  décalage smart du grasp pour positionner l'objet du bon côté).
+- **Refinement cam_2 varie 38-50 mm** d'un essai à l'autre (plancher de
+  bruit + mouvement de la cam pendant capture).
+- **Approche figée en TOP-DOWN** : impossible de saisir par le côté.
+
+### Comment Maxence préfère collaborer
+- Ne PAS retirer de fonctionnalités sans demander (ex: bbox vertes dans
+  le live display).
+- Justifier les compromis avec des chiffres / sources.
+- Demander avant de modifier `configs/scene.json` (il a des modifs
+  locales avec ses mesures).
+- Privilégier 1 fix qui marche à 3 fix qui s'annulent.
+
 ## 1. État du projet au 2026-05-18 (session 9)
 
 ✅ **Sprint 1 (Calibration)** : complet. Intrinsèques + hand-eye OK.
@@ -11,34 +52,64 @@ agent Claude Code dans une nouvelle conversation).
 ✅ **Sprint 4 (Boucle fermée)** : raffinement cam_2 actif.
 ✅ **PREMIÈRE SAISIE RÉUSSIE** le 17 mai 2026 avec `pick_and_place.py`.
 
-### Session 9 (2026-05-18) — fixes UX & dépose
+### Session 9 (2026-05-18) — diverses améliorations pipeline
 
-Modifs dans `src/pipeline.py` :
+Refactos et fixes appliqués dans `src/pipeline.py` (commits 79b5899,
+86e647f, 621b5cf, et celui-ci) :
 
-1. **Dépose précise** : ajout d'un `IKSolver` dédié `_ik_drop` avec
-   `rotation_weight=0.01` (vs 0.1 standard) pour les poses
-   `drop_above`/`drop_release`. Justification : pour la dépose on s'en
-   moque que la pince soit pile verticale (elle ouvre, le cube tombe), on
-   veut surtout la position au mm près. Avant : `drop_above approx
-   trans=47mm` (IK sacrifiait la position pour préserver l'orientation —
-   sous-actuation 5/6 DDL). Après : `trans=0.1mm rot=11deg` (position
-   parfaite, inclinaison négligeable pour un drop).
+1. **IK dédié pour la dépose** : `_ik_drop = IKSolver(rotation_weight=0.05)`.
+   Pour `drop_above`/`drop_release` on accepte une orientation pince
+   approximative (≤15° de travers) pour gagner en précision position
+   (~2 mm vs 47 mm avant avec rotation_weight=0.1 standard).
+   Compromis 0.05 = équilibre entre précision (0.01 trop tordu, faisait
+   se cogner le bras) et conformité top-down (0.1 ratait la cible).
 
-2. **Retour home = position de départ** : nouveau champ
-   `PipelineConfig.home_from_session_start: bool = True` (défaut). Le
-   robot revient EXACTEMENT à la pose dans laquelle il était au lancement
-   du script. Maxence peut placer le robot dans une pose stable +
-   caméra orientée vers la scène, lancer la commande, et le bras y
-   revient. Plus de "robot qui part en cacahuètes" après la pose.
+2. **`home_from_session_start: bool = True`** : robot revient à la pose
+   du lancement du script (pas une pose hardcodée).
 
-3. **Display fluide en HF** : le callback live n'appelle plus
-   `detect_multi` à chaque rafraîchissement (~3-5s par appel en HF sur M4
-   → bloquait la trajectoire). Il affiche juste les frames brutes →
-   display fluide même avec `--display --detector hf`.
+3. **Convention scene.json clarifiée** : `center_base_m` = centre du
+   **FOND** de la boîte (face posée sur la table). Le dessus est calculé
+   auto = `center_base_m[2] + dimensions_m[2]`. Log détaillé au démarrage
+   + WARN si position semble incohérente (proche base / hors workspace).
 
-4. **Bug fix `_build_full_trajectory`** : `q_home` et `dur_home` étaient
-   référencés sans être définis (NameError sur `--no-closed-loop` /
-   `--dry-run`). Corrigé : utilise le param `q_home` ou fallback config.
+4. **`home_gripper_pct: float = 5.0`** : pince quasi-fermée à la fin
+   (au lieu de grand ouverte). Évite les accrochages cables.
+
+5. **Live display avec WORKER THREAD asynchrone** : la détection HF
+   tourne dans un thread séparé (queue size=1 pour les frames). Le
+   callback principal n'est jamais bloqué → trajectoire fluide même en
+   HF. Cache pré-peuplé avec les détections initiales pour que les bbox
+   vertes apparaissent dès la première frame du live.
+
+6. **Pince s'ouvre PROGRESSIVEMENT** durant le segment courant → approach
+   (au lieu d'être grand ouverte dès le démarrage).
+
+7. **Sortie verticale de la boîte** : nouveau segment
+   `drop_release → drop_above` avant `→ safe` pour éviter que la pince
+   fixe ne cogne le bord intérieur de la boîte en remontant en diagonale.
+
+8. **Ordre display caméras** : `cam_1 | cam_0 | cam_2` (au lieu de
+   `cam_0 | cam_1 | cam_2`) pour respecter la perspective du robot.
+   Tile agrandi à 960×540 (1.5×). Bandeau noir avec nom de la cam.
+
+9. **Bug `_build_full_trajectory`** corrigé (NameError q_home/dur_home en
+   mode `--no-closed-loop`/`--dry-run`).
+
+### Limites identifiées (en cours, à investiguer)
+
+- **HSV fragile** : détecte la pince orange comme cube orange. À
+  recalibrer en cliquant uniquement sur les pixels au CENTRE du cube
+  (pas les bords ni les ombres). Et augmenter `score_threshold` du HF
+  pour le mode --detector hf si trop de faux positifs.
+- **Refinement cam_2 varie 38-50 mm d'un essai à l'autre** : c'est le
+  plancher de bruit de la détection HF combiné au mouvement de cam_2
+  pendant l'exposition. Pas trivial à régler.
+- **Saisie qui rate parfois** : la pince fixe percute parfois l'objet
+  avant la fermeture. Solution V2 : décaler le grasp de demi-largeur
+  pour que l'objet soit du côté pince fixe (non implémenté, demande de
+  connaître la convention pince fixe/mobile dans l'URDF).
+- **Approche top-down rigide** : ne peut pas saisir un cube par le côté
+  ou un objet posé contre un mur. À étendre (V2, hors scope bachelor ?).
 
 🟡 **À continuer** : amélioration de la robustesse, recalibration HSV,
 évitement obstacles (Sprint 4.5), SmolVLA comparatif (Sprint 5),

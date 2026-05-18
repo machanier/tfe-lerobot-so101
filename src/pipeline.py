@@ -447,7 +447,7 @@ class PickAndPlacePipeline:
             #     met a jour le cache des detections.
             # Les detections affichees peuvent etre legerement obsoletes
             # (delai de quelques secondes en HF) mais le display reste fluide.
-            def make_live_callback():
+            def make_live_callback(initial_dets=None):
                 if not self.config.display:
                     return None
                 import cv2
@@ -458,8 +458,11 @@ class PickAndPlacePipeline:
                 # (les anciennes sont perdues, c'est OK)
                 frame_queue: Queue = Queue(maxsize=1)
                 # Cache partage des dernieres detections (avec lock pour
-                # synchronisation main <-> worker)
-                dets_cache = {"value": {}}
+                # synchronisation main <-> worker). On PRE-POPULE avec les
+                # detections de la perception initiale -> les bbox vertes
+                # sont visibles immediatement au lieu d'attendre le premier
+                # cycle worker HF (~3-5 sec).
+                dets_cache = {"value": initial_dets or {}}
                 dets_lock = threading.Lock()
                 stop_event = threading.Event()
 
@@ -529,8 +532,10 @@ class PickAndPlacePipeline:
 
             # Cree le callback live UNE SEULE FOIS pour eviter de lancer
             # plusieurs worker threads de detection. Le meme callback sera
-            # passe a phase 1 et phase 2.
-            live_callback = make_live_callback()
+            # passe a phase 1 et phase 2. Pre-popule le cache avec les
+            # detections initiales pour que les bbox vertes soient visibles
+            # immediatement (sans attendre 3-5 sec du premier cycle HF).
+            live_callback = make_live_callback(initial_dets=dets_by_cam)
 
             if self.config.closed_loop and not self.config.dry_run:
                 # --- Phase 1 : trajectoire courant -> approach ---
@@ -766,8 +771,10 @@ class PickAndPlacePipeline:
                                   ) -> JointTrajectory:
         """Sprint 4 boucle fermee : trajectoire courant -> approach uniquement.
 
-        Pince ouverte. Apres l'execution, on raffine avec cam_2 puis on
-        genere la phase 2 (approach corrige -> grasp -> ...).
+        Pince commence FERMEE (assume home_gripper_pct ~ 5%, l'etat de
+        repos) et s'OUVRE PROGRESSIVEMENT durant le mouvement vers approach.
+        Comme ca elle n'est pas grand-ouverte des le depart (qui donne
+        l'impression de "balayer" inutilement).
         """
         c = self.config
         q_app = ik_approach.joint_angles_rad
@@ -775,7 +782,8 @@ class PickAndPlacePipeline:
             q_current, q_app,
             duration_s=estimate_duration_safe(q_current, q_app,
                                                max_velocity_rad_s=c.max_velocity_rad_s),
-            gripper_start=c.grip_open_pct, gripper_end=c.grip_open_pct,
+            gripper_start=c.home_gripper_pct,  # ferme au depart (etat home)
+            gripper_end=c.grip_open_pct,        # ouverte a l'arrivee, prete au grasp
         )
 
     def _build_phase2_trajectory(self,
@@ -853,11 +861,18 @@ class PickAndPlacePipeline:
             # 7. STATIQUE : relache (ouvre la pince)
             quintic_trajectory(q_rel, q_rel, duration_s=max(c.pause_release_s, 0.3),
                                 gripper_start=gp_c, gripper_end=gp_o),
-            # 8. drop_release -> SAFE intermediaire (releve le bras AVANT
+            # 7.5 SORTIE VERTICALE de la boite : drop_release -> drop_above.
+            #    Sans ce segment, le bras allait directement de l'interieur
+            #    de la boite (drop_release) vers q_safe (centre, haut) -> la
+            #    pince fixe cognait le bord interieur de la boite en chemin.
+            #    En remontant d'abord verticalement, on sort proprement.
+            quintic_trajectory(q_rel, q_drop, duration_s=dur(q_rel, q_drop),
+                                gripper_start=gp_o, gripper_end=gp_o),
+            # 8. drop_above -> SAFE intermediaire (releve le bras AVANT
             #    le retour a home, pour eviter de traverser la zone du cube).
             #    On ferme PROGRESSIVEMENT la pince ici pour eviter qu'elle
             #    reste grand-ouverte (securite : pas d'accrochage sur cables).
-            quintic_trajectory(q_rel, q_safe, duration_s=dur(q_rel, q_safe),
+            quintic_trajectory(q_drop, q_safe, duration_s=dur(q_drop, q_safe),
                                 gripper_start=gp_o, gripper_end=c.home_gripper_pct),
             # 9. SAFE -> HOME : transition RALENTIE pour atterrissage doux.
             #    Pince finit a home_gripper_pct (par defaut 5 = presque fermee).
@@ -917,8 +932,10 @@ class PickAndPlacePipeline:
         )
 
         segs = [
+            # 1. courant -> approach : pince s'OUVRE progressivement
             quintic_trajectory(q_current, q_app, duration_s=dur(q_current, q_app),
-                                gripper_start=gp_o, gripper_end=gp_o),
+                                gripper_start=c.home_gripper_pct,  # ferme au depart
+                                gripper_end=gp_o),                  # ouverte a l'arrivee
             quintic_trajectory(q_app, q_grp, duration_s=dur(q_app, q_grp),
                                 gripper_start=gp_o, gripper_end=gp_o),
             quintic_trajectory(q_grp, q_grp, duration_s=max(c.pause_grasp_s, 0.5),
@@ -931,9 +948,13 @@ class PickAndPlacePipeline:
                                 gripper_start=gp_c, gripper_end=gp_c),
             quintic_trajectory(q_rel, q_rel, duration_s=max(c.pause_release_s, 0.3),
                                 gripper_start=gp_c, gripper_end=gp_o),
+            # Sortie VERTICALE de la boite (drop_release -> drop_above) AVANT
+            # safe -> evite que la pince fixe cogne le bord interieur.
+            quintic_trajectory(q_rel, q_drop, duration_s=dur(q_rel, q_drop),
+                                gripper_start=gp_o, gripper_end=gp_o),
             # Safe intermediate AVANT home (evite que la pince traverse la zone
             # du cube pendant le retour). Pince se referme progressivement.
-            quintic_trajectory(q_rel, q_safe, duration_s=dur(q_rel, q_safe),
+            quintic_trajectory(q_drop, q_safe, duration_s=dur(q_drop, q_safe),
                                 gripper_start=gp_o, gripper_end=c.home_gripper_pct),
             # Transition finale vers home : RALENTIE pour atterrissage doux.
             # Pince finit a home_gripper_pct (defaut 5 = quasi-fermee).
