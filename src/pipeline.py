@@ -433,31 +433,43 @@ class PickAndPlacePipeline:
             # Helper : callback display live qui rafraichit cv2.imshow
             # pendant l'execution moteur (toutes les ~30 frames de traj).
             #
-            # STRATEGIE detection :
-            #   - HSV : rapide (~10fps) -> detection a chaque rafraichissement
-            #   - HF  : lent  (~0.3fps) -> detection toutes les N visites du
-            #     callback (par defaut N=5, soit ~5sec). Entre 2 detections on
-            #     REUTILISE les dernieres bboxes (cache). Le display reste
-            #     fluide et tu vois quand meme les detections vertes.
+            # ARCHITECTURE THREADING (fix saccades) :
+            # Probleme avant : la detection HF (~3-5s sur M4) etait appelee
+            # depuis le callback execute_trajectory -> bloquait l'envoi des
+            # commandes moteur pendant ces 3-5s -> bras s'arrete, puis envoi
+            # en rafale pour rattraper le timing -> mouvements brusques.
+            #
+            # Solution : detection dans un THREAD WORKER separe.
+            #   - Main loop (callback) : grab frames, push dans une queue,
+            #     affiche les dernieres detections disponibles, retourne
+            #     immediatement (< 50 ms). La trajectoire continue fluide.
+            #   - Worker thread : prend les frames, fait la detection (3-5s),
+            #     met a jour le cache des detections.
+            # Les detections affichees peuvent etre legerement obsoletes
+            # (delai de quelques secondes en HF) mais le display reste fluide.
             def make_live_callback():
                 if not self.config.display:
                     return None
                 import cv2
-                # Etat partage entre les invocations
-                cache = {"count": 0, "last_dets": {}}
-                # HSV = rapide => refresh a chaque step. HF = lent => refresh
-                # tous les N steps (config.display_detect_every_n).
-                refresh_every = (1 if self.config.detector_kind == "hsv"
-                                 else max(1, self.config.display_detect_every_n))
-                def on_step(i, trajectory):
-                    cache["count"] += 1
-                    try:
-                        rs = self._provider.read_live()
-                    except Exception:
-                        return
-                    frames = mc.grab(robot_state=rs)
-                    # Refresh detection occasionnellement
-                    if cache["count"] % refresh_every == 0:
+                import threading
+                from queue import Queue, Empty, Full
+
+                # Queue de taille 1 : on garde seulement les dernieres frames
+                # (les anciennes sont perdues, c'est OK)
+                frame_queue: Queue = Queue(maxsize=1)
+                # Cache partage des dernieres detections (avec lock pour
+                # synchronisation main <-> worker)
+                dets_cache = {"value": {}}
+                dets_lock = threading.Lock()
+                stop_event = threading.Event()
+
+                def detector_worker():
+                    """Boucle worker : detecte sur les dernieres frames dispo."""
+                    while not stop_event.is_set():
+                        try:
+                            frames = frame_queue.get(timeout=0.2)
+                        except Empty:
+                            continue
                         try:
                             dets = self._detector.detect_multi(frames)
                             if self._label_mapping:
@@ -465,12 +477,36 @@ class PickAndPlacePipeline:
                                     for d in cam_dets:
                                         if d.label in self._label_mapping:
                                             d.label = self._label_mapping[d.label]
-                            cache["last_dets"] = dets
+                            with dets_lock:
+                                dets_cache["value"] = dets
                         except Exception as e:
-                            print(f"[live display] detection error: {e}")
+                            print(f"[live worker] detection error: {e}")
+
+                # Demarre le worker (daemon=True : se ferme avec le programme)
+                worker = threading.Thread(target=detector_worker, daemon=True)
+                worker.start()
+                # Memorise pour pouvoir l'arreter proprement dans finally
+                self._live_stop_event = stop_event
+
+                def on_step(i, trajectory):
+                    try:
+                        rs = self._provider.read_live()
+                    except Exception:
+                        return
+                    frames = mc.grab(robot_state=rs)
+                    # Pousse les frames au worker (remplace si encore pleine
+                    # = le worker n'a pas fini la precedente, on saute)
+                    try:
+                        frame_queue.put_nowait(frames)
+                    except Full:
+                        pass  # worker occupe, on ignore ce frame pour la detection
+                    # Display avec les dernieres detections (potentiellement
+                    # obsoletes de quelques sec en HF, instantanees en HSV)
+                    with dets_lock:
+                        cur_dets = dict(dets_cache["value"])
                     import numpy as np
                     tiles = [self._annotate_frame(frames.get(k),
-                                                  cache["last_dets"].get(k, []),
+                                                  cur_dets.get(k, []),
                                                   None)
                              for k in CAM_DISPLAY_ORDER]
                     mosaic = np.hstack(tiles)
@@ -491,13 +527,18 @@ class PickAndPlacePipeline:
                 q_home_final = self.config.home_angles_rad
                 home_origin = "pose fixe (home_angles_rad)"
 
+            # Cree le callback live UNE SEULE FOIS pour eviter de lancer
+            # plusieurs worker threads de detection. Le meme callback sera
+            # passe a phase 1 et phase 2.
+            live_callback = make_live_callback()
+
             if self.config.closed_loop and not self.config.dry_run:
                 # --- Phase 1 : trajectoire courant -> approach ---
                 print(">> Phase 1 : courant -> approach (boucle fermee Sprint 4)")
                 traj_phase1 = self._build_phase1_trajectory(q_current, r_app)
                 print(f"   {len(traj_phase1)} points, duree {traj_phase1.duration_s:.1f}s")
                 controller.execute_trajectory(traj_phase1, verbose=True,
-                                              on_step=make_live_callback())
+                                              on_step=live_callback)
                 print()
 
                 # --- Raffinement cam_2 ---
@@ -549,7 +590,7 @@ class PickAndPlacePipeline:
                 )
                 print(f"   {len(traj_phase2)} points, duree {traj_phase2.duration_s:.1f}s")
                 controller.execute_trajectory(traj_phase2, verbose=True,
-                                              on_step=make_live_callback())
+                                              on_step=live_callback)
                 print(f">> Termine. Robot revenu a la {home_origin}.")
                 if self.config.display:
                     import cv2
@@ -570,7 +611,7 @@ class PickAndPlacePipeline:
                 else:
                     print(f">> Execution sur le robot (jusqu'au retour {home_origin})...")
                     controller.execute_trajectory(traj, verbose=True,
-                                                  on_step=make_live_callback())
+                                                  on_step=live_callback)
                     print(f">> Termine. Robot revenu a la {home_origin}.")
                     if self.config.display:
                         import cv2
@@ -584,6 +625,16 @@ class PickAndPlacePipeline:
             self._safe_stop_with_torque(controller)
             raise
         finally:
+            # Arrete proprement le worker thread du live display (s'il existe).
+            # Sans cela, le thread tournerait jusqu'a la fin du programme
+            # (daemon=True le ferme quand meme, mais c'est plus propre).
+            stop_ev = getattr(self, "_live_stop_event", None)
+            if stop_ev is not None:
+                try:
+                    stop_ev.set()
+                except Exception:
+                    pass
+                self._live_stop_event = None
             try:
                 mc.close()
             except Exception:
