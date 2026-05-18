@@ -540,7 +540,9 @@ class PickAndPlacePipeline:
             if self.config.closed_loop and not self.config.dry_run:
                 # --- Phase 1 : trajectoire courant -> approach ---
                 print(">> Phase 1 : courant -> approach (boucle fermee Sprint 4)")
-                traj_phase1 = self._build_phase1_trajectory(q_current, r_app)
+                traj_phase1 = self._build_phase1_trajectory(
+                    q_current, r_app,
+                    gripper_open_pct=grasp_pose.gripper_open_pct)
                 print(f"   {len(traj_phase1)} points, duree {traj_phase1.duration_s:.1f}s")
                 controller.execute_trajectory(traj_phase1, verbose=True,
                                               on_step=live_callback)
@@ -585,13 +587,77 @@ class PickAndPlacePipeline:
                     print(f"   IK re-resolue avec poses corrigees.")
                 print()
 
-                # --- Phase 2 : trajectoire approach -> grasp -> retract -> drop ---
+                # === A4 : Mini-descente + Refinement #2 (cam_2 plus pres) ===
+                # Apres le 1er refinement, on descend a mi-chemin entre approach
+                # et grasp (4cm au-dessus de l'objet), puis on refait un
+                # refinement cam_2. A cette distance, cam_2 voit l'objet de
+                # plus pres -> plus precis. Si l'objet a bouge (ex: pousse par
+                # une petite vibration), on detecte et on recorrige.
+                print(">> A4 : Mini-descente + Refinement #2")
+                T_intermediate = grasp_pose.T_base_gripper_grasp.copy()
+                T_intermediate[2, 3] += 0.04  # 4cm au-dessus du grasp
+                r_intermediate = self._ik.solve(
+                    T_intermediate, q_init=r_app.joint_angles_rad)
+                mini_traj = quintic_trajectory(
+                    rs_at_approach.joint_angles_rad,
+                    r_intermediate.joint_angles_rad,
+                    duration_s=estimate_duration_safe(
+                        rs_at_approach.joint_angles_rad,
+                        r_intermediate.joint_angles_rad,
+                        max_velocity_rad_s=self.config.max_velocity_rad_s),
+                    gripper_start=grasp_pose.gripper_open_pct,
+                    gripper_end=grasp_pose.gripper_open_pct,
+                )
+                print(f"   Mini-descente : {len(mini_traj)} points, "
+                      f"duree {mini_traj.duration_s:.1f}s")
+                controller.execute_trajectory(mini_traj, verbose=False,
+                                              on_step=live_callback)
+                # Refinement #2
+                rs_at_intermediate = self._provider.read_live()
+                refinement2 = refine_grasp_with_cam2(
+                    target_label=self.config.target_label,
+                    detector=self._detector,
+                    multi_camera=mc,
+                    robot_state=rs_at_intermediate,
+                    target_z_base_m=float(grasp_pose.T_base_gripper_grasp[2, 3]),
+                    label_mapping=self._label_mapping,
+                )
+                print(f"   Refinement #2 : {refinement2.message}")
+                # Seuil plus strict pour le 2e refinement (~3cm max) : si
+                # l'objet a vraiment beaucoup bouge c'est suspect, on s'abstient.
+                if refinement2.confidence > 0.1 and refinement2.delta_norm_mm < 30:
+                    apply_correction_to_grasp_pose(grasp_pose,
+                                                    refinement2.delta_base_m)
+                    print(f"   Correction #2 appliquee "
+                          f"(norme {refinement2.delta_norm_mm:.1f} mm)")
+                    # Re-IK grasp et retract uniquement (approach deja passe)
+                    r_grp = self._ik.solve(
+                        grasp_pose.T_base_gripper_grasp,
+                        q_init=r_intermediate.joint_angles_rad)
+                    r_ret = self._ik.solve(
+                        grasp_pose.T_base_gripper_retract,
+                        q_init=r_grp.joint_angles_rad)
+                elif refinement2.delta_norm_mm >= 30:
+                    print(f"   [WARN] correction #2 = {refinement2.delta_norm_mm:.1f}mm "
+                          f"> 30mm, suspect, ignoree")
+                else:
+                    print(f"   [INFO] objet stable depuis refinement #1 (pas de re-correction)")
+                print()
+
+                # --- Phase 2 : trajectoire intermediate -> grasp -> retract -> drop ---
+                # (au lieu de approach -> grasp : on est deja a intermediate)
                 print(f">> Phase 2 : descente + saisie + depot + retour ({home_origin})")
-                q_at_approach = rs_at_approach.joint_angles_rad
+                q_at_intermediate = rs_at_intermediate.joint_angles_rad
+                # gripper_open_pct vient du grasp_pose : adapte a la bbox de
+                # l'objet (A3 : ouverture pince adaptative). Ex : cube 30mm
+                # -> ~84%, gros objet -> 100%, petit objet -> 30% min.
+                # On passe r_intermediate a la place de r_app : le 1er segment
+                # de la trajectoire devient quasi-statique (on est deja la).
                 traj_phase2 = self._build_phase2_trajectory(
-                    q_at_approach,
-                    [r_app, r_grp, r_ret, r_drop_above, r_drop_release],
+                    q_at_intermediate,
+                    [r_intermediate, r_grp, r_ret, r_drop_above, r_drop_release],
                     q_home=q_home_final,
+                    gripper_open_pct=grasp_pose.gripper_open_pct,
                 )
                 print(f"   {len(traj_phase2)} points, duree {traj_phase2.duration_s:.1f}s")
                 controller.execute_trajectory(traj_phase2, verbose=True,
@@ -608,6 +674,7 @@ class PickAndPlacePipeline:
                     q_current,
                     [r_app, r_grp, r_ret, r_drop_above, r_drop_release],
                     q_home=q_home_final,
+                    gripper_open_pct=grasp_pose.gripper_open_pct,
                 )
                 print(f"   {len(traj)} points, duree {traj.duration_s:.1f}s")
                 print()
@@ -767,29 +834,32 @@ class PickAndPlacePipeline:
 
     def _build_phase1_trajectory(self,
                                   q_current: dict[str, float],
-                                  ik_approach: IKResult
+                                  ik_approach: IKResult,
+                                  gripper_open_pct: Optional[float] = None,
                                   ) -> JointTrajectory:
         """Sprint 4 boucle fermee : trajectoire courant -> approach uniquement.
 
         Pince commence FERMEE (assume home_gripper_pct ~ 5%, l'etat de
-        repos) et s'OUVRE PROGRESSIVEMENT durant le mouvement vers approach.
-        Comme ca elle n'est pas grand-ouverte des le depart (qui donne
-        l'impression de "balayer" inutilement).
+        repos) et s'OUVRE PROGRESSIVEMENT (a l'ouverture adaptee a l'objet,
+        si fournie) durant le mouvement vers approach. Pas grand-ouverte
+        des le depart, donc pas de "balayage" inutile.
         """
         c = self.config
         q_app = ik_approach.joint_angles_rad
+        gp_end = gripper_open_pct if gripper_open_pct is not None else c.grip_open_pct
         return quintic_trajectory(
             q_current, q_app,
             duration_s=estimate_duration_safe(q_current, q_app,
                                                max_velocity_rad_s=c.max_velocity_rad_s),
             gripper_start=c.home_gripper_pct,  # ferme au depart (etat home)
-            gripper_end=c.grip_open_pct,        # ouverte a l'arrivee, prete au grasp
+            gripper_end=gp_end,                  # ouverture adaptee a l'arrivee
         )
 
     def _build_phase2_trajectory(self,
                                   q_at_approach: dict[str, float],
                                   ik_results: list[IKResult],
                                   q_home: Optional[dict] = None,
+                                  gripper_open_pct: Optional[float] = None,
                                   ) -> JointTrajectory:
         """Sprint 4 phase 2 : approach -> grasp -> retract -> drop_above
         -> drop_release -> safe -> home.
@@ -802,6 +872,9 @@ class PickAndPlacePipeline:
                 fallback sur self.config.home_angles_rad ou la pose hardcodee.
                 Typiquement, le pipeline appelle avec q_home=q_session_start
                 pour que le robot retourne ou l'utilisateur l'avait place.
+            gripper_open_pct : ouverture pince a utiliser (= calculee par
+                TopDownGrasp selon la bbox de l'objet). Si None, fallback
+                sur config.grip_open_pct (100%).
         """
         q_app  = ik_results[0].joint_angles_rad
         q_grp  = ik_results[1].joint_angles_rad
@@ -809,7 +882,7 @@ class PickAndPlacePipeline:
         q_drop = ik_results[3].joint_angles_rad
         q_rel  = ik_results[4].joint_angles_rad
         c = self.config
-        gp_o = c.grip_open_pct
+        gp_o = gripper_open_pct if gripper_open_pct is not None else c.grip_open_pct
         gp_c = c.grip_close_pct
 
         def dur(q1, q2):
@@ -886,6 +959,7 @@ class PickAndPlacePipeline:
                                 q_current: dict[str, float],
                                 ik_results: list[IKResult],
                                 q_home: Optional[dict] = None,
+                                gripper_open_pct: Optional[float] = None,
                                 ) -> JointTrajectory:
         """Concatene les sous-trajectoires : current -> approach -> grasp ->
         (fermer pince) -> retract -> drop_above -> drop_release ->
@@ -897,6 +971,8 @@ class PickAndPlacePipeline:
         Args:
             q_home : pose finale a rejoindre. Si None, fallback sur
                 config.home_angles_rad ou la pose hardcodee.
+            gripper_open_pct : ouverture pince calculee par TopDownGrasp
+                selon la bbox de l'objet. Si None, fallback config.
         """
         q_app  = ik_results[0].joint_angles_rad
         q_grp  = ik_results[1].joint_angles_rad
@@ -905,7 +981,7 @@ class PickAndPlacePipeline:
         q_rel  = ik_results[4].joint_angles_rad
 
         c = self.config
-        gp_o = c.grip_open_pct
+        gp_o = gripper_open_pct if gripper_open_pct is not None else c.grip_open_pct
         gp_c = c.grip_close_pct
 
         def dur(q1, q2):

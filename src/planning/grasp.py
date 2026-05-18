@@ -205,7 +205,33 @@ class TopDownGrasp(GraspStrategy):
                  gripper_open_pct: float = 100.0,
                  gripper_close_pct: float = 0.0,
                  align_wrist_roll: bool = True,
-                 max_object_height_m: float = 0.12):
+                 max_object_height_m: float = 0.12,
+                 # --- A2 : decalage smart vers la pince fixe ---
+                 # Le SO-101 a une pince ASYMETRIQUE : un doigt fixe, un
+                 # doigt mobile qui ferme contre le fixe. Si on centre le
+                 # grasp sur le centroide objet, le doigt fixe percute
+                 # l'objet AVANT la fermeture -> l'objet bouge, saisie rate.
+                 # Solution : decaler le grasp pour que l'objet finisse
+                 # contre le doigt fixe (= le doigt fixe touche un bord
+                 # de l'objet, le doigt mobile vient l'ecraser).
+                 grasp_lateral_offset_mm: float = 8.0,
+                 # Cote du doigt fixe dans le repere PINCE.
+                 # SO-101 de Maxence : doigt fixe cote Y_base+ (gauche du
+                 # robot, vu de derriere). Avec _rotation_top_down(yaw=0),
+                 # Y_pince = -Y_base, donc doigt fixe a Y_pince-.
+                 # Si on cherche un offset OPPOSE au doigt fixe : +Y_pince.
+                 # En vecteur unitaire dans le repere PINCE :
+                 fixed_finger_dir_gripper: tuple = (0, -1, 0),
+                 # --- A3 : ouverture pince adaptative ---
+                 # Si True ET que bbox_3d_m est fourni dans l'ObjectInstance,
+                 # l'ouverture pince est calculee selon la largeur objet
+                 # (plutot que d'ouvrir grand pour rien). Formule :
+                 # pct = (largeur + 2*marge) / largeur_max_pince * 100.
+                 adaptive_gripper_open: bool = True,
+                 gripper_open_margin_mm: float = 5.0,  # marge faible -> ouverture
+                                                        # vraiment adaptee a l'objet
+                 gripper_max_opening_mm: float = 50.0,
+                 ):
         self.approach_height_m = approach_height_m
         self.grasp_offset_m = grasp_offset_m
         self.retract_height_m = retract_height_m
@@ -213,6 +239,12 @@ class TopDownGrasp(GraspStrategy):
         self.gripper_close_pct = gripper_close_pct
         self.align_wrist_roll = align_wrist_roll
         self.max_object_height_m = max_object_height_m
+        self.grasp_lateral_offset_mm = grasp_lateral_offset_mm
+        self.fixed_finger_dir_gripper = np.asarray(fixed_finger_dir_gripper,
+                                                     dtype=np.float64)
+        self.adaptive_gripper_open = adaptive_gripper_open
+        self.gripper_open_margin_mm = gripper_open_margin_mm
+        self.gripper_max_opening_mm = gripper_max_opening_mm
 
     @property
     def name(self) -> str:
@@ -256,16 +288,40 @@ class TopDownGrasp(GraspStrategy):
                     # cam_2 : skip, on laisse yaw=0
         R = _rotation_top_down(yaw)
 
-        # 3 poses : approach, grasp, retract (tous a la meme (x, y), z varie)
-        T_approach = _se3(R, [x, y, z + self.approach_height_m])
-        T_grasp    = _se3(R, [x, y, z + self.grasp_offset_m])
-        T_retract  = _se3(R, [x, y, z + self.retract_height_m])
+        # === A2 : decalage smart vers la pince fixe ===
+        # On veut que l'objet finisse contre le doigt fixe (l'autre ferme
+        # vers lui). Donc on decale le centre du grasp DANS LA DIRECTION
+        # OPPOSEE au doigt fixe (en repere pince), puis on transforme dans
+        # le repere base via R.
+        opposite_dir_gripper = -self.fixed_finger_dir_gripper
+        offset_base = R @ opposite_dir_gripper * (self.grasp_lateral_offset_mm / 1000.0)
+        # On decale approach/grasp/retract pareillement (pour rester aligne)
+        grasp_xy = np.array([x, y, 0.0]) + np.array([offset_base[0], offset_base[1], 0.0])
+        gx, gy = float(grasp_xy[0]), float(grasp_xy[1])
+
+        # 3 poses : approach, grasp, retract (tous a la meme (gx, gy), z varie)
+        T_approach = _se3(R, [gx, gy, z + self.approach_height_m])
+        T_grasp    = _se3(R, [gx, gy, z + self.grasp_offset_m])
+        T_retract  = _se3(R, [gx, gy, z + self.retract_height_m])
+
+        # === A3 : ouverture pince adaptative selon bbox 3D ===
+        # Si on a bbox_3d_m, on calcule l'ouverture optimale (plutot que
+        # d'ouvrir grand). Formule : pct = (largeur + 2 * marge) / max_pince
+        # On prend min(X, Y) car la pince ferme dans le plan XY.
+        gripper_open = self.gripper_open_pct
+        if self.adaptive_gripper_open and obj.bbox_3d_m is not None:
+            obj_width_m = min(obj.bbox_3d_m[0], obj.bbox_3d_m[1])
+            target_open_mm = obj_width_m * 1000 + 2 * self.gripper_open_margin_mm
+            pct = (target_open_mm / self.gripper_max_opening_mm) * 100.0
+            # Clip a [30, 100] : evite des ouvertures trop petites qui empechent
+            # l'insertion + on plafonne a 100%
+            gripper_open = float(np.clip(pct, 30.0, 100.0))
 
         return GraspPose(
             T_base_gripper_approach=T_approach,
             T_base_gripper_grasp=T_grasp,
             T_base_gripper_retract=T_retract,
-            gripper_open_pct=self.gripper_open_pct,
+            gripper_open_pct=gripper_open,
             gripper_close_pct=self.gripper_close_pct,
             label=obj.label,
             score=obj.score,
@@ -275,6 +331,9 @@ class TopDownGrasp(GraspStrategy):
                 "approach_height_m": self.approach_height_m,
                 "grasp_offset_m": self.grasp_offset_m,
                 "retract_height_m": self.retract_height_m,
+                "lateral_offset_mm": self.grasp_lateral_offset_mm,
+                "offset_base_xy_mm": (float(offset_base[0]*1000), float(offset_base[1]*1000)),
+                "gripper_open_pct_computed": gripper_open,
             },
         )
 
@@ -315,10 +374,15 @@ if __name__ == "__main__":
         position_base_m=np.array([0.15, 0.0, 0.03]),
         bbox_3d_m=(0.03, 0.03, 0.03),
     )
-    strategy = TopDownGrasp(approach_height_m=0.08, retract_height_m=0.10)
+    # Test sans decalage smart (grasp_lateral_offset_mm=0) pour valider la
+    # logique de base : les 3 poses doivent etre verticalement alignees au
+    # cube. Avec le decalage smart (defaut 8mm), le grasp est decale en Y
+    # pour aligner avec la pince fixe -- teste plus bas.
+    strategy = TopDownGrasp(approach_height_m=0.08, retract_height_m=0.10,
+                              grasp_lateral_offset_mm=0.0)
     gp = strategy.plan(obj)
     assert gp is not None, "plan() devrait reussir pour un cube standard"
-    # Verifie les 3 positions
+    # Verifie les 3 positions (alignees au cube vu que offset=0)
     assert np.allclose(gp.T_base_gripper_approach[:3, 3], [0.15, 0, 0.11]), \
         f"approach Z attendu 0.11m, recu {gp.T_base_gripper_approach[:3, 3]}"
     assert np.allclose(gp.T_base_gripper_grasp[:3, 3], [0.15, 0, 0.03])
@@ -326,7 +390,18 @@ if __name__ == "__main__":
     # Verifie l'orientation : Z_pince vers le bas
     Zp = gp.T_base_gripper_grasp[:3, :3] @ np.array([0, 0, 1.0])
     assert np.allclose(Zp, [0, 0, -1])
-    print(f"  [OK] TopDownGrasp.plan : 3 poses verticales pour cube a (15, 0, 3) cm")
+    print(f"  [OK] TopDownGrasp.plan (offset=0) : 3 poses verticales pour cube a (15, 0, 3) cm")
+
+    # 3bis. TopDownGrasp avec decalage smart : le grasp est decale d'offset
+    # mm dans la direction OPPOSEE au doigt fixe.
+    strategy_smart = TopDownGrasp(approach_height_m=0.08, retract_height_m=0.10,
+                                    grasp_lateral_offset_mm=8.0)
+    gp_smart = strategy_smart.plan(obj)
+    # Avec yaw=0 et fixed_finger_dir_gripper=(0,-1,0), l'offset oppose dans
+    # le repere base est (0, -0.008, 0). Donc grasp Y = -0.008.
+    assert abs(gp_smart.T_base_gripper_grasp[1, 3] - (-0.008)) < 1e-6, \
+        f"grasp Y attendu -0.008 (decalage smart), recu {gp_smart.T_base_gripper_grasp[1, 3]}"
+    print(f"  [OK] TopDownGrasp.plan (offset smart 8mm) : grasp Y decale a -0.008m")
 
     # 4. Filtre objet trop haut : gobelet de 15 cm -> plan() = None
     obj_hi = ObjectInstance(
