@@ -640,28 +640,30 @@ class PickAndPlacePipeline:
                     label_mapping=self._label_mapping,
                 )
                 print(f"   Refinement #2 : {refinement2.message}")
-                # Seuil DYNAMIQUE selon confiance HF (P2) :
-                #   - score >= 0.5 (tres confiant) -> seuil 100mm
-                #   - score >= 0.3 (confiance moyenne) -> seuil 80mm
-                #   - sinon -> seuil 60mm (filet de securite)
-                # Avant : seuil fixe 60mm rejetait les vrais deplacements >60mm
-                # de l'objet pousse par Maxence pendant l'approche. Quand la
-                # cam_2 HF voit bien l'objet (score eleve), on peut faire
-                # confiance a une correction plus grande. Reference :
-                # confidence-weighted estimation, Chaumette & Hutchinson 2006.
+                # B2 (2026-05-19) : PLAFOND ABSOLU 30mm pour R2,
+                # INDEPENDANT du score HF.
+                #
+                # Justification physique : entre R1 et R2 il s'ecoule la
+                # mini-descente (~0.5s). L'objet ne peut PAS bouger de >30mm
+                # en 0.5s sans qu'on le pousse activement. Une correction
+                # R2 >30mm = forcement une fausse detection (faux positif HF
+                # sur un autre objet, bbox sur bord d'image, etc.).
+                #
+                # Cas concret : essai 3 du 2026-05-19, R2 a propose +80mm
+                # (cam_2 a vu l'objet a Y=-106mm alors qu'il etait a Y=-25mm
+                # avec score 0.69) -> robot envoye au vide.
+                #
+                # Note : la logique P2 dynamique (60/80/100mm selon score)
+                # reste active pour le REFINEMENT RETRY (apres saisie ratee),
+                # ou l'objet PEUT vraiment avoir bouge suite au contact rate.
+                R2_MAX_ABSOLUTE_MM = 30.0
                 score = refinement2.confidence
-                if score >= 0.5:
-                    seuil_mm = 100.0
-                elif score >= 0.3:
-                    seuil_mm = 80.0
-                else:
-                    seuil_mm = 60.0
-                if refinement2.confidence > 0.1 and refinement2.delta_norm_mm < seuil_mm:
+                if refinement2.confidence > 0.1 and refinement2.delta_norm_mm < R2_MAX_ABSOLUTE_MM:
                     apply_correction_to_grasp_pose(grasp_pose,
                                                     refinement2.delta_base_m)
                     print(f"   Correction #2 appliquee "
                           f"(norme {refinement2.delta_norm_mm:.1f} mm, "
-                          f"seuil={seuil_mm:.0f}mm @ score {score:.2f})")
+                          f"plafond R2={R2_MAX_ABSOLUTE_MM:.0f}mm @ score {score:.2f})")
                     # Re-IK grasp et retract uniquement (approach deja passe)
                     r_grp = self._ik.solve(
                         grasp_pose.T_base_gripper_grasp,
@@ -669,9 +671,10 @@ class PickAndPlacePipeline:
                     r_ret = self._ik.solve(
                         grasp_pose.T_base_gripper_retract,
                         q_init=r_grp.joint_angles_rad)
-                elif refinement2.delta_norm_mm >= seuil_mm:
+                elif refinement2.delta_norm_mm >= R2_MAX_ABSOLUTE_MM:
                     print(f"   [WARN] correction #2 = {refinement2.delta_norm_mm:.1f}mm "
-                          f"> seuil {seuil_mm:.0f}mm (score {score:.2f}), ignoree")
+                          f"> plafond R2 {R2_MAX_ABSOLUTE_MM:.0f}mm "
+                          f"(score {score:.2f}, probable fausse detection), ignoree")
                 else:
                     print(f"   [INFO] objet stable depuis refinement #1 (pas de re-correction)")
                 print()
