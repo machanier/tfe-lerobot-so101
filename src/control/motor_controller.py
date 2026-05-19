@@ -313,6 +313,25 @@ class MotorController:
         raw = self._bus.sync_read("Present_Position", normalize=False)
         return {k: int(v) for k, v in raw.items()}
 
+    def read_gripper_pct(self) -> float:
+        """Lit la position ACTUELLE de la pince en pourcentage [0, 100].
+
+        0%  = pince completement fermee (raw = range_min)
+        100% = pince completement ouverte (raw = range_max)
+
+        Utilise pour P1 (feedback de saisie) : apres une commande de
+        fermeture (gripper_pct=5), si la valeur lue est >> 5 (ex: 30%),
+        c'est que la pince a bute sur un objet -> saisie reussie.
+        """
+        raw_all = self.read_raw_positions()
+        raw_g = raw_all["gripper"]
+        cg = self.calib["gripper"]
+        span = cg["range_max"] - cg["range_min"]
+        if span <= 0:
+            return 0.0
+        pct = (raw_g - cg["range_min"]) / span * 100.0
+        return float(np.clip(pct, 0.0, 100.0))
+
     # ----- helpers --------------------------------------------------------
 
     def _require_bus(self):
