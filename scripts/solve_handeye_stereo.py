@@ -174,13 +174,25 @@ def main():
         img_size_l,
         flags=flags, criteria=criteria,
     )
-    # T_cam0_cam1 (T_left_right) = transformation de cam_0 vers cam_1
-    T_cam0_cam1 = np.eye(4)
-    T_cam0_cam1[:3, :3] = R_l2r
-    # t_l2r est en mm (car obj_pts en mm) -> conversion en m
-    T_cam0_cam1[:3, 3] = t_l2r.flatten() / 1000.0
 
-    baseline_mm = np.linalg.norm(t_l2r)
+    # IMPORTANT (fix bug 2026-05-19 21h30) : cv2.stereoCalibrate retourne
+    # (R_l2r, t_l2r) tels que P_right = R @ P_left + T. Autrement dit,
+    # (R, T) forment T_right_left (= pose de cam_left dans repere cam_right).
+    # Pour avoir T_cam0_cam1 (= pose de cam_1 dans repere cam_0), on doit
+    # INVERSER : T_cam0_cam1 = inverse(T_right_left) = [R.T  -R.T@T; 0 1].
+    #
+    # Erreur initiale : on stockait T_cam0_cam1 = [R T; 0 1] qui etait en
+    # realite T_cam1_cam0 -> T_base_cam1 = T_base_cam0 @ T_cam1_cam0 etait
+    # une composition incorrecte -> cam_1 se retrouvait du mauvais cote
+    # (delta Y inverse, residu cam_1 = 80mm au lieu de ~6mm).
+    R_cam0_to_cam1 = R_l2r.T
+    t_cam0_to_cam1_in_cam0_mm = (-R_l2r.T @ t_l2r).flatten()
+    T_cam0_cam1 = np.eye(4)
+    T_cam0_cam1[:3, :3] = R_cam0_to_cam1
+    T_cam0_cam1[:3, 3] = t_cam0_to_cam1_in_cam0_mm / 1000.0  # mm -> m
+
+    # baseline = norme de la translation (independante du sens)
+    baseline_mm = float(np.linalg.norm(t_l2r))
     # Angle entre axes optiques z (apres rotation)
     axis_l = np.array([0, 0, 1.0])
     axis_r_in_l = R_l2r.T @ axis_l  # axe z de cam1 exprime dans cam0
@@ -190,8 +202,10 @@ def main():
           f"({'BON <0.5' if rms_stereo < 0.5 else 'eleve, verifie les captures' if rms_stereo > 1 else 'OK'})")
     print(f"  Baseline cam_0 -> cam_1 : {baseline_mm:.1f} mm")
     print(f"  Angle entre axes optiques z : {angle_axes_deg:.1f} deg")
-    print(f"  T_cam0_cam1 (translation en mm) : "
-          f"({t_l2r[0,0]:+.1f}, {t_l2r[1,0]:+.1f}, {t_l2r[2,0]:+.1f})")
+    print(f"  T_cam0_cam1 (translation cam_0 -> cam_1 dans cam_0, en mm) : "
+          f"({t_cam0_to_cam1_in_cam0_mm[0]:+.1f}, "
+          f"{t_cam0_to_cam1_in_cam0_mm[1]:+.1f}, "
+          f"{t_cam0_to_cam1_in_cam0_mm[2]:+.1f})")
     print()
 
     # =====================================================================
@@ -276,11 +290,18 @@ def main():
     # Bonus : sauve T_cam0_cam1 + RMS pour traçabilite
     info_path = REPO / "configs/handeye_stereo_info.json"
     info = {
-        "schema_version": "stereo_v1",
+        "schema_version": "stereo_v1.1",
         "cam_indices": [idx_l, idx_r],
         "cam_keys": [cam_l_key, cam_r_key],
         "T_cam0_cam1": T_cam0_cam1.tolist(),
-        "T_cam0_cam1_translation_mm": (t_l2r.flatten()).tolist(),
+        "T_cam0_cam1_translation_mm": t_cam0_to_cam1_in_cam0_mm.tolist(),
+        "stereo_R_raw_opencv": R_l2r.tolist(),
+        "stereo_T_raw_opencv_mm": t_l2r.flatten().tolist(),
+        "_doc_opencv": (
+            "OpenCV stereoCalibrate retourne (R, T) tels que P_right = R @ P_left + T. "
+            "Ce sont donc T_right_left. Pour la composition T_base_cam1 = T_base_cam0 @ "
+            "T_cam0_cam1, on prend T_cam0_cam1 = [R.T, -R.T@T; 0 1] (inverse)."
+        ),
         "stereo_rms_reprojection_px": float(rms_stereo),
         "baseline_mm": float(baseline_mm),
         "angle_optical_axes_deg": float(angle_axes_deg),
