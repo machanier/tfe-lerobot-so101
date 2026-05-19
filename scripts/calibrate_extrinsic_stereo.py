@@ -113,10 +113,14 @@ def estimate_board_pose(frame, K, D, rows, cols, square_size_mm):
     return rvec, tvec, corners, obj
 
 
-def draw_overlay(frame, K, D, rvec, tvec, corners, square_size_mm, cam_label, status_text):
+def draw_overlay(frame, K, D, rvec, tvec, corners, square_size_mm,
+                 cam_label, status_text, rows, cols):
     display = frame.copy()
     if rvec is not None:
-        cv2.drawChessboardCorners(display, (frame.shape[1], frame.shape[0]), corners, True)
+        # BUG fix 2026-05-19 21h : drawChessboardCorners attend (cols, rows)
+        # du DAMIER, pas la taille de l'image en pixels. Le passage de
+        # (1920, 1080) faisait dessiner 2M de coins -> traits partout + FPS=0.
+        cv2.drawChessboardCorners(display, (cols, rows), corners, True)
         axis_len = square_size_mm * 3
         axis_pts = np.float32([[axis_len, 0, 0], [0, axis_len, 0], [0, 0, -axis_len]])
         imgpts, _ = cv2.projectPoints(axis_pts, rvec, tvec, K, D)
@@ -265,9 +269,11 @@ def main():
                         else "Damier NON detecte")
 
             disp_l = draw_overlay(frame_l, K_l, D_l, rvec_l, tvec_l, corners_l,
-                                   args.square_size, cam_l_key, status_l)
+                                   args.square_size, cam_l_key, status_l,
+                                   args.rows, args.cols)
             disp_r = draw_overlay(frame_r, K_r, D_r, rvec_r, tvec_r, corners_r,
-                                   args.square_size, cam_r_key, status_r)
+                                   args.square_size, cam_r_key, status_r,
+                                   args.rows, args.cols)
 
             mosaic = np.hstack([disp_l, disp_r])
             # Bandeau central
