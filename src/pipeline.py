@@ -138,6 +138,18 @@ class PipelineConfig:
     # = np.array([dx, dy, dz]) en metres. None = pas de compensation.
     systematic_bias_correction_m: Optional[object] = None  # ndarray (3,)
 
+    # ---------- B0 : restreindre HF a un seul label (la cible) ----------
+    # Par defaut hf_specs.json contient 10 labels ("orange_cube", "tissue_box",
+    # "pen", "robot_arm", ...). Sur le poste de Maxence, ces labels parasites
+    # generent des fausses detections (e.g. tissue_box detecte a (+125,-243,+42)
+    # alors qu'il n'y a rien la). Quand True (defaut), on ne charge que le
+    # prompt qui mappe vers target_label, ce qui :
+    #   - elimine les bbox parasites dans le display
+    #   - reduit legerement le temps de detection HF (moins de comparaisons texte)
+    #   - rend les logs lisibles (1 seul objet a discuter)
+    # Mettre a False pour debugger ou comparer detections multi-objets.
+    hf_restrict_to_target: bool = True
+
     # ---------- P1 : feedback de saisie + retry ----------
     # Apres la fermeture pince (consigne = grip_close_pct), on lit la position
     # REELLE du gripper. Si la pince a bute sur un objet, elle ne pourra pas
@@ -271,6 +283,24 @@ class PickAndPlacePipeline:
                 model_name = "google/owlv2-base-patch16-ensemble"
                 threshold = 0.15
                 self._label_mapping = {}
+            # B0 : si demande, on ne garde que le prompt qui mappe vers target_label
+            # Elimine les detections parasites (tissue_box, pen, robot_arm, etc.)
+            if self.config.hf_restrict_to_target:
+                target = self.config.target_label
+                prompts_to_keep = [p for p in labels
+                                   if self._label_mapping.get(p, p) == target]
+                if prompts_to_keep:
+                    n_before = len(labels)
+                    labels = prompts_to_keep
+                    self._label_mapping = {
+                        p: m for p, m in self._label_mapping.items()
+                        if p in prompts_to_keep
+                    }
+                    print(f">> HF restreint a {len(labels)}/{n_before} label(s) "
+                          f"(cible='{target}') : {labels}")
+                else:
+                    print(f"[WARN] aucun prompt HF ne mappe vers '{target}', "
+                          f"utilisation des {len(labels)} labels par defaut")
             self._detector = HFDetector(prompt_labels=labels,
                                         model_name=model_name,
                                         score_threshold=threshold)
@@ -615,6 +645,13 @@ class PickAndPlacePipeline:
                 T_intermediate[2, 3] += 0.04  # 4cm au-dessus du grasp
                 r_intermediate = self._ik.solve(
                     T_intermediate, q_init=r_app.joint_angles_rad)
+                # B4 (2026-05-19) : c'est PENDANT cette mini-descente que la
+                # pince s'ouvre (de home_gripper_pct=5% a gripper_open_pct
+                # adapte a la bbox de l'objet). Avant : la pince etait deja
+                # ouverte depuis le debut de l'approche. Maintenant : reste
+                # fermee jusqu'a approach, puis s'ouvre pile au moment de
+                # descendre vers l'objet. Plus economique visuellement et
+                # mecaniquement (moins de risque d'accrochage cables).
                 mini_traj = quintic_trajectory(
                     rs_at_approach.joint_angles_rad,
                     r_intermediate.joint_angles_rad,
@@ -622,8 +659,8 @@ class PickAndPlacePipeline:
                         rs_at_approach.joint_angles_rad,
                         r_intermediate.joint_angles_rad,
                         max_velocity_rad_s=self.config.max_velocity_rad_s),
-                    gripper_start=grasp_pose.gripper_open_pct,
-                    gripper_end=grasp_pose.gripper_open_pct,
+                    gripper_start=self.config.home_gripper_pct,    # B4 : ferme a l'arrivee approach
+                    gripper_end=grasp_pose.gripper_open_pct,        # s'ouvre pendant la mini-descente
                 )
                 print(f"   Mini-descente : {len(mini_traj)} points, "
                       f"duree {mini_traj.duration_s:.1f}s")
@@ -1006,20 +1043,24 @@ class PickAndPlacePipeline:
                                   ) -> JointTrajectory:
         """Sprint 4 boucle fermee : trajectoire courant -> approach uniquement.
 
-        Pince commence FERMEE (assume home_gripper_pct ~ 5%, l'etat de
-        repos) et s'OUVRE PROGRESSIVEMENT (a l'ouverture adaptee a l'objet,
-        si fournie) durant le mouvement vers approach. Pas grand-ouverte
-        des le depart, donc pas de "balayage" inutile.
+        B4 (2026-05-19) : pince reste FERMEE pendant tout le deplacement
+        vers approach. Avant : la pince s'ouvrait progressivement de 5% a 80%
+        durant ce segment, donc arrivait au-dessus de l'objet deja ouverte
+        (et balayait visuellement la scene depuis le depart). Maintenant :
+        la pince reste fermee pendant l'approche, et ne s'ouvre qu'au moment
+        de la mini-descente (4cm au-dessus du grasp), pour ne plus etre
+        ouverte que strictement quand necessaire (= pour saisir).
+        Le parametre gripper_open_pct est ignore ici mais conserve dans la
+        signature pour compatibilite.
         """
         c = self.config
         q_app = ik_approach.joint_angles_rad
-        gp_end = gripper_open_pct if gripper_open_pct is not None else c.grip_open_pct
         return quintic_trajectory(
             q_current, q_app,
             duration_s=estimate_duration_safe(q_current, q_app,
                                                max_velocity_rad_s=c.max_velocity_rad_s),
-            gripper_start=c.home_gripper_pct,  # ferme au depart (etat home)
-            gripper_end=gp_end,                  # ouverture adaptee a l'arrivee
+            gripper_start=c.home_gripper_pct,  # ferme au depart
+            gripper_end=c.home_gripper_pct,    # B4 : reste fermee a l'arrivee
         )
 
     def _build_phase2_trajectory(self,
