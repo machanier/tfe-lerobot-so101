@@ -202,6 +202,14 @@ def main():
                         help="Echelle d'affichage de la mosaic side-by-side (defaut 0.45)")
     args = parser.parse_args()
 
+    # Desactive OpenCL : evite les warnings de cache OpenCL sur macOS (ocl.cpp)
+    # qui polluent la sortie. Aucun impact sur la calibration (CPU suffit pour
+    # findChessboardCorners et solvePnP).
+    try:
+        cv2.ocl.setUseOpenCL(False)
+    except Exception:
+        pass
+
     idx_l, idx_r = args.cam_indices
     cam_l_key = next((k for k, v in CAMERAS.items() if v["index"] == idx_l), f"cam_{idx_l}")
     cam_r_key = next((k for k, v in CAMERAS.items() if v["index"] == idx_r), f"cam_{idx_r}")
@@ -256,15 +264,25 @@ def main():
         print(f"Images sauvegardees dans : {img_dir_l}/ et {img_dir_r}/")
 
     # Output path + helper
-    output_path = REPO / args.output
+    # FIX 2026-05-19 22h45 (apres incident) : on ne sauvegarde PLUS directement
+    # dans le JSON officiel a chaque capture. On sauve dans un fichier PARTIAL
+    # (outputs/extrinsic_stereo_partial.json). Le JSON officiel n'est mis a
+    # jour QUE si la session se termine avec 'q' ET assez de captures. Sur
+    # ESC ou 'q' avec captures insuffisantes, le JSON officiel reste intact.
+    # Comme ca, une session avortee ne CORROMPT PAS le pipeline existant
+    # (incident du 19 mai 22h : 3 captures avortees ecrasaient 71 bonnes captures).
+    output_path = REPO / args.output  # JSON officiel (touche seulement en fin)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    partial_dir = REPO / "outputs"
+    partial_dir.mkdir(parents=True, exist_ok=True)
+    partial_path = partial_dir / f"extrinsic_stereo_partial_{idx_l}_{idx_r}.json"
 
     captures = []
     img_size_l = (w_l, h_l)
     img_size_r = (w_r, h_r)
+    exit_reason = "unknown"  # mis a "q" ou "esc" en fin de boucle
 
-    def save_now():
-        """Sauvegarde incrementale (cf fix calibrate_extrinsic 2026-05-19)."""
+    def build_result_dict():
         result = {
             "schema_version": "stereo_v1",
             "cam_indices": [idx_l, idx_r],
@@ -283,9 +301,26 @@ def main():
             "num_captures": len(captures),
             "captures": captures,
         }
-        with open(output_path, "w") as f:
-            json.dump(result, f, indent=2)
+        return result
 
+    def save_partial():
+        """Sauvegarde incrementale dans le fichier PARTIAL (pas le officiel).
+        Comme ca une session avortee ne corrompt pas le JSON officiel utilise
+        par le solveur."""
+        with open(partial_path, "w") as f:
+            json.dump(build_result_dict(), f, indent=2)
+
+    def promote_to_official():
+        """Copie le partial vers le JSON officiel. Appele seulement en fin
+        de session reussie avec assez de captures."""
+        with open(output_path, "w") as f:
+            json.dump(build_result_dict(), f, indent=2)
+        print(f"  [OK] JSON officiel mis a jour : {output_path}")
+
+    print()
+    print(f"Sauvegarde incrementale (partial) : {partial_path}")
+    print(f"Le JSON officiel ({output_path.name}) ne sera mis a jour qu'en")
+    print(f"fin de session reussie avec >= 10 captures.")
     print()
     print("Controles : 'c'=capturer (les 2 detectent), 'q'=terminer, ESC=annuler")
     print()
@@ -393,7 +428,8 @@ def main():
                     cv2.imwrite(str(img_dir_l / f"capture_{n:02d}_axes.png"), disp_l)
                     cv2.imwrite(str(img_dir_r / f"capture_{n:02d}_raw.png"), sync_r)
                     cv2.imwrite(str(img_dir_r / f"capture_{n:02d}_axes.png"), disp_r)
-                save_now()
+                # Sauvegarde dans le PARTIAL (le officiel n'est PAS touche)
+                save_partial()
                 print(f"  Capture {n} : "
                       f"{cam_l_key} dist={dist_l_sync:.0f}mm, "
                       f"{cam_r_key} dist={dist_r_sync:.0f}mm  (sync)")
@@ -401,13 +437,18 @@ def main():
                 print(f"  [SKIP] le damier doit etre detecte dans LES DEUX cameras "
                       f"(actuellement L={rvec_l is not None}, R={rvec_r is not None})")
             elif key == ord("q"):
+                exit_reason = "q"
                 break
             elif key == 27:
+                exit_reason = "esc"
                 print("Annule par utilisateur (ESC).")
                 if captures:
-                    save_now()
-                    print(f"  {len(captures)} captures sauvees malgre l'annulation : {output_path}")
+                    save_partial()
+                    print(f"  {len(captures)} captures sauvees dans le PARTIAL : {partial_path}")
+                    print(f"  Le JSON officiel ({output_path.name}) n'est PAS modifie.")
                 break
+        else:
+            exit_reason = "q"  # boucle finie sans break = q par defaut
 
     finally:
         try:
@@ -420,26 +461,49 @@ def main():
             pass
         cv2.destroyAllWindows()
 
-    # Sauvegarde finale AVANT bus.disconnect (cf fix 2026-05-19)
-    if len(captures) >= 5:
-        save_now()
-        print()
-        print(f"{len(captures)} captures sauvegardees : {output_path}")
-        print(f"Etape suivante : python scripts/solve_handeye_stereo.py")
-    elif captures:
-        save_now()
-        print(f"\nSeulement {len(captures)} captures (5 min recommande).")
-        print(f"  Le JSON est sauve : {output_path}")
-    else:
-        print("\nAucune capture, rien a sauver.")
+    # Decision finale : promote partial -> officiel SEULEMENT si :
+    #  - exit via 'q' (pas ESC)
+    #  - >= MIN_CAPTURES_FOR_PROMOTE captures
+    #
+    # Codes de retour :
+    #   0 = succes (JSON officiel mis a jour, solve a lancer)
+    #   2 = capture avortee (JSON officiel intact, NE PAS lancer le solve)
+    #   1 = erreur fatale (deja sortie via sys.exit)
+    MIN_CAPTURES_FOR_PROMOTE = 10
+    exit_code = 2  # par defaut : ne pas promote
+
+    if exit_reason == "esc":
+        # ESC : on garde le partial mais on ne touche PAS au officiel
+        if captures:
+            print(f"\nESC avec {len(captures)} captures.")
+            print(f"  PARTIAL conserve : {partial_path}")
+            print(f"  JSON officiel INTACT : {output_path}")
+            print(f"  Pour utiliser ces captures : cp {partial_path} {output_path}")
+        exit_code = 2
+    elif exit_reason == "q":
+        if len(captures) >= MIN_CAPTURES_FOR_PROMOTE:
+            promote_to_official()
+            print()
+            print(f"{len(captures)} captures promues vers le JSON officiel.")
+            print(f"Etape suivante : python scripts/solve_handeye_stereo.py")
+            exit_code = 0
+        elif captures:
+            print(f"\nSeulement {len(captures)} captures, < {MIN_CAPTURES_FOR_PROMOTE} requis pour promote auto.")
+            print(f"  PARTIAL conserve : {partial_path}")
+            print(f"  JSON officiel INTACT : {output_path}")
+            print(f"  Pour forcer l'utilisation : cp {partial_path} {output_path}")
+            exit_code = 2
+        else:
+            print("\nAucune capture, rien a sauver.")
+            exit_code = 2
 
     # Disconnect dans try/except
     try:
         bus.disconnect()
     except Exception as e:
         print(f"  [WARN] bus.disconnect() : {e}")
-        if captures:
-            print(f"         OK, les captures sont sauvees dans {output_path}.")
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

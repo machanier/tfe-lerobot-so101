@@ -180,11 +180,27 @@ def main():
             "--cols", str(args.cols),
             "--square-size", str(args.square_size),
         ], cwd=REPO).returncode
+
+        # Codes de retour de calibrate_extrinsic_stereo.py :
+        #   0 = succes (JSON officiel mis a jour)
+        #   2 = avorte (ESC ou < 10 captures, JSON officiel intact)
+        #   autre = erreur fatale
+        if rc == 2:
+            banner("CAPTURE AVORTEE - SOLVE NON LANCE", char="!")
+            print("  La capture a ete annulee (ESC) ou avait moins de 10 captures.")
+            print("  Le JSON officiel n'a pas ete modifie, donc les calibrations")
+            print("  handeye_cam_0.json et handeye_cam_1.json restent inchangees.")
+            print()
+            print("  Pour reprendre :")
+            print("    python scripts/recalibrate_handeye_stereo.py    # nouvelle session")
+            print()
+            print("  Si tu veux quand meme utiliser un PARTIAL precedent :")
+            print("    cp outputs/extrinsic_stereo_partial_0_1.json configs/extrinsic_capture_stereo.json")
+            print("    python scripts/recalibrate_handeye_stereo.py --skip-capture")
+            return
         if rc != 0:
-            print(f"\n!! Capture stereo a echoue (return code {rc}).")
-            print("   Le JSON est peut-etre sauve quand meme (sauvegarde incrementale).")
-            print("   Tu peux relancer juste le solve avec : ")
-            print("     python scripts/recalibrate_handeye_stereo.py --skip-capture")
+            print(f"\n!! Capture a echoue avec code inattendu {rc}.")
+            print("   Le JSON officiel n'a pas ete modifie.")
             return
 
     # ---- Solve stereo ----
