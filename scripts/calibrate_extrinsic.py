@@ -189,6 +189,35 @@ def main():
         os.makedirs(images_dir, exist_ok=True)
         print(f"Images sauvegardees dans : {images_dir}/")
 
+    # Output path + helper de sauvegarde incrementale (fix bug 2026-05-19 :
+    # 65 captures perdues car JSON ecrit APRES bus.disconnect() qui plante
+    # parfois en cas de hoquet USB). Desormais on sauve apres chaque capture.
+    output_path = args.output or f"configs/extrinsic_capture_cam_{args.index}.json"
+    out_parent = os.path.dirname(output_path)
+    if out_parent:
+        os.makedirs(out_parent, exist_ok=True)
+
+    def save_captures_now(captures_list):
+        """Sauvegarde incrementale : appelee a chaque capture + a la fin.
+        Garantit qu'on ne perd JAMAIS les captures meme si crash USB plus tard."""
+        result = {
+            "camera_index": args.index,
+            "camera_key": cam_key,
+            "intrinsic_file": intrinsic_path,
+            "motor_calibration_file": "configs/calibration_follower.json",
+            "checkerboard": {
+                "rows": args.rows,
+                "cols": args.cols,
+                "square_size_mm": args.square_size,
+            },
+            "motor_names": motor_names,
+            "motor_position_units": "raw_encoder_counts",
+            "num_captures": len(captures_list),
+            "captures": captures_list,
+        }
+        with open(output_path, "w") as f:
+            json.dump(result, f, indent=2)
+
     print()
     print("Controles : 'c'=capturer (damier vert), 'q'=terminer, ESC=annuler")
     print()
@@ -255,48 +284,51 @@ def main():
                 cv2.imwrite(raw_path, frame)
                 cv2.imwrite(annotated_path, display)
 
+            # Sauvegarde INCREMENTALE apres chaque capture : si crash USB plus
+            # tard, on garde tout ce qui a deja ete capture (cf bug 2026-05-19).
+            save_captures_now(captures)
+
             print(f"  Capture {n} : distance={capture_data['distance_mm']:.0f}mm")
 
         elif key == ord("q"):
             break
         elif key == 27:
             print("Annule.")
+            if captures:
+                save_captures_now(captures)
+                print(f"  {len(captures)} captures sauvees malgre l'annulation : {output_path}")
             cap.release()
             cv2.destroyAllWindows()
-            bus.disconnect()
+            try:
+                bus.disconnect()
+            except Exception as e:
+                print(f"  [WARN] bus.disconnect() : {e}")
             return
 
     cap.release()
     cv2.destroyAllWindows()
-    bus.disconnect()
 
-    if len(captures) < 5:
+    # SAUVE AVANT bus.disconnect() : si disconnect plante (hoquet USB), on a
+    # deja le JSON ecrit sur disque. C'est exactement le bug qui a fait perdre
+    # 65 captures le 2026-05-19.
+    if len(captures) >= 5:
+        save_captures_now(captures)
+        print(f"\n{len(captures)} captures sauvegardees : {output_path}")
+        print("Etape suivante : lancer la resolution hand-eye sur ce fichier.")
+    else:
         print(f"\nSeulement {len(captures)} captures. Il en faut au moins 5 (15-25 recommande).")
-        return
+        if captures:
+            save_captures_now(captures)
+            print(f"  Le JSON est tout de meme sauve : {output_path}")
 
-    result = {
-        "camera_index": args.index,
-        "camera_key": cam_key,
-        "intrinsic_file": intrinsic_path,
-        "motor_calibration_file": "configs/calibration_follower.json",
-        "checkerboard": {
-            "rows": args.rows,
-            "cols": args.cols,
-            "square_size_mm": args.square_size,
-        },
-        "motor_names": motor_names,
-        "motor_position_units": "raw_encoder_counts",
-        "num_captures": len(captures),
-        "captures": captures,
-    }
-
-    output_path = args.output or f"configs/extrinsic_capture_cam_{args.index}.json"
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(result, f, indent=2)
-
-    print(f"\n{len(captures)} captures sauvegardees : {output_path}")
-    print("Etape suivante : lancer la resolution hand-eye sur ce fichier.")
+    # Disconnect du bus dans try/except : meme si le bus a un hoquet a la fin,
+    # le JSON est deja sur disque, donc echec ici = warning, pas crash.
+    try:
+        bus.disconnect()
+    except Exception as e:
+        print(f"  [WARN] bus.disconnect() a echoue (USB transitoire) : {e}")
+        print(f"         Les captures sont sauvees dans {output_path}, c'est OK.")
+        print(f"         Tu peux debrancher/rebrancher le follower si besoin pour la suite.")
 
 
 if __name__ == "__main__":
