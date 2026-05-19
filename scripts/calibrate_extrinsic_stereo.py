@@ -91,17 +91,32 @@ def connect_robot(port: str):
 
 
 def estimate_board_pose(frame, K, D, rows, cols, square_size_mm):
-    """Detecte le damier et calcule rvec/tvec en mm. Renvoie aussi les corners 2D."""
+    """Detecte le damier et calcule rvec/tvec en mm. Renvoie aussi les corners 2D.
+
+    Utilise findChessboardCornersSB (Sector Based, OpenCV 4) : plus precis et
+    plus rapide que findChessboardCorners classique. Tombe en fallback sur
+    l'ancien si SB indisponible (compat OpenCV <4).
+    """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    found, corners = cv2.findChessboardCorners(
-        gray, (cols, rows),
-        cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE,
-    )
+
+    # Detection sub-pixel native (SB = Sector Based, ~2x plus precis)
+    if hasattr(cv2, "findChessboardCornersSB"):
+        found, corners = cv2.findChessboardCornersSB(
+            gray, (cols, rows),
+            flags=cv2.CALIB_CB_NORMALIZE_IMAGE
+                 + cv2.CALIB_CB_EXHAUSTIVE
+                 + cv2.CALIB_CB_ACCURACY,
+        )
+    else:
+        found, corners = cv2.findChessboardCorners(
+            gray, (cols, rows),
+            cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE,
+        )
+        if found:
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
     if not found:
         return None, None, None, None
-    # Sub-pixel refinement (precision)
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
 
     # Object points en mm (damier plat z=0)
     obj = np.zeros((rows * cols, 3), np.float32)
@@ -111,6 +126,37 @@ def estimate_board_pose(frame, K, D, rows, cols, square_size_mm):
     if not ok:
         return None, None, None, None
     return rvec, tvec, corners, obj
+
+
+def synchronized_capture(cap_l, cap_r, flush_frames: int = 5):
+    """Capture quasi-simultanee : flush les buffers OpenCV puis grab+retrieve
+    rapprochees sur les 2 cameras.
+
+    OpenCV VideoCapture bufferise ~5 frames. Sans flush, on lit une frame
+    obsolete (ex: de quand le bras bougeait encore). On vide d'abord, puis
+    on fait grab() simultane (rapide, declenche la capture sur les 2 cams)
+    et retrieve() apres (decode chaque buffer).
+
+    Returns:
+        (frame_l, frame_r) ou (None, None) si echec.
+    """
+    # 1. Flush des buffers (lit et jette les frames anciennes)
+    for _ in range(flush_frames):
+        cap_l.grab()
+        cap_r.grab()
+
+    # 2. Capture quasi-simultanee : grab() (signale "capture next frame") sur
+    #    les 2 cams le plus proche possible dans le temps, puis retrieve() pour
+    #    decoder. C'est le pattern OpenCV recommande pour multi-cam sync.
+    ok_l = cap_l.grab()
+    ok_r = cap_r.grab()
+    if not (ok_l and ok_r):
+        return None, None
+    ret_l, frame_l = cap_l.retrieve()
+    ret_r, frame_r = cap_r.retrieve()
+    if not (ret_l and ret_r):
+        return None, None
+    return frame_l, frame_r
 
 
 def draw_overlay(frame, K, D, rvec, tvec, corners, square_size_mm,
@@ -297,36 +343,60 @@ def main():
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("c") and both_detected:
+                # Capture SYNCHRONISEE : flush buffers + grab+retrieve quasi-simultanes
+                # sur les 2 cams. Critique pour stereoCalibrate (le decalage temporel
+                # entre cap_l.read() et cap_r.read() en mode preview peut atteindre
+                # 30ms -> coins du damier desalignes si bras pas parfaitement immobile
+                # -> RMS stereo eleve).
+                sync_l, sync_r = synchronized_capture(cap_l, cap_r, flush_frames=5)
+                if sync_l is None:
+                    print("  [WARN] capture sync echouee, retry sur le prochain frame.")
+                    continue
+
+                # Re-detection sur les frames synchronisees (les corners precedents
+                # venaient du preview, asynchrones)
+                rvec_l_s, tvec_l_s, corners_l_s, obj_l_s = estimate_board_pose(
+                    sync_l, K_l, D_l, args.rows, args.cols, args.square_size)
+                rvec_r_s, tvec_r_s, corners_r_s, obj_r_s = estimate_board_pose(
+                    sync_r, K_r, D_r, args.rows, args.cols, args.square_size)
+                if rvec_l_s is None or rvec_r_s is None:
+                    print(f"  [SKIP] apres sync, damier non detecte "
+                          f"(L={rvec_l_s is not None}, R={rvec_r_s is not None}). "
+                          f"Verifie immobilite du bras.")
+                    continue
+
                 try:
                     motor_pos = bus.sync_read("Present_Position", normalize=False)
                 except Exception as e:
                     print(f"  [WARN] lecture moteur echouee : {e}")
                     continue
+
+                dist_l_sync = float(np.linalg.norm(tvec_l_s))
+                dist_r_sync = float(np.linalg.norm(tvec_r_s))
                 n = len(captures) + 1
                 capture_data = {
                     "id": n,
-                    "rvec_target_cam0": rvec_l.flatten().tolist(),
-                    "tvec_target_cam0": tvec_l.flatten().tolist(),
-                    "rvec_target_cam1": rvec_r.flatten().tolist(),
-                    "tvec_target_cam1": tvec_r.flatten().tolist(),
-                    "img_points_cam0": corners_l.reshape(-1, 2).tolist(),
-                    "img_points_cam1": corners_r.reshape(-1, 2).tolist(),
-                    "obj_points": obj_l.tolist(),  # meme damier pour les 2
-                    "distance_mm_cam0": dist_l_mm,
-                    "distance_mm_cam1": dist_r_mm,
+                    "rvec_target_cam0": rvec_l_s.flatten().tolist(),
+                    "tvec_target_cam0": tvec_l_s.flatten().tolist(),
+                    "rvec_target_cam1": rvec_r_s.flatten().tolist(),
+                    "tvec_target_cam1": tvec_r_s.flatten().tolist(),
+                    "img_points_cam0": corners_l_s.reshape(-1, 2).tolist(),
+                    "img_points_cam1": corners_r_s.reshape(-1, 2).tolist(),
+                    "obj_points": obj_l_s.tolist(),
+                    "distance_mm_cam0": dist_l_sync,
+                    "distance_mm_cam1": dist_r_sync,
                     "motor_positions_raw": {k: float(v) for k, v in motor_pos.items()},
                 }
                 captures.append(capture_data)
                 if not args.no_save_images:
-                    cv2.imwrite(str(img_dir_l / f"capture_{n:02d}_raw.png"), frame_l)
+                    cv2.imwrite(str(img_dir_l / f"capture_{n:02d}_raw.png"), sync_l)
                     cv2.imwrite(str(img_dir_l / f"capture_{n:02d}_axes.png"), disp_l)
-                    cv2.imwrite(str(img_dir_r / f"capture_{n:02d}_raw.png"), frame_r)
+                    cv2.imwrite(str(img_dir_r / f"capture_{n:02d}_raw.png"), sync_r)
                     cv2.imwrite(str(img_dir_r / f"capture_{n:02d}_axes.png"), disp_r)
-                # Sauvegarde incrementale du JSON apres chaque capture
                 save_now()
                 print(f"  Capture {n} : "
-                      f"{cam_l_key} dist={dist_l_mm:.0f}mm, "
-                      f"{cam_r_key} dist={dist_r_mm:.0f}mm")
+                      f"{cam_l_key} dist={dist_l_sync:.0f}mm, "
+                      f"{cam_r_key} dist={dist_r_sync:.0f}mm  (sync)")
             elif key == ord("c") and not both_detected:
                 print(f"  [SKIP] le damier doit etre detecte dans LES DEUX cameras "
                       f"(actuellement L={rvec_l is not None}, R={rvec_r is not None})")
