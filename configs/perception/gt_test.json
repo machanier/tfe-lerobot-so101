@@ -1,0 +1,17 @@
+{
+  "_doc": "EXEMPLE de ground truth pour valider la perception 3D (cf scripts/check_perception.py --gt FICHIER). Mesure chaque position au pied a coulisse depuis la BASE du robot : X = devant le robot (vers la cam), Y = a gauche (positif), Z = au-dessus du sol. En MILLIMETRES.",
+  "_procedure": [
+    "1. Pose UN objet a la fois sur la table, bien visible des 2 cameras stereo.",
+    "2. Mesure au pied a coulisse : distance X de la base du robot vers l'objet (sens du bras vers l'avant), distance Y a gauche/droite (positif a gauche), hauteur Z du dessus de la table.",
+    "3. Reporte ici dans 'objects'.",
+    "4. Lance : python scripts/check_perception.py --gt configs/perception/gt_test_example.json",
+    "5. Compare l'erreur euclidienne par objet. Critere : moyenne <= 10 mm."
+  ],
+  "objects": [
+    {
+      "label": "orange_cube",
+      "position_base_mm": [369.6, 30, 23.6],
+      "_comment": "remplace par tes vraies mesures pied a coulisse"
+    }
+  ]
+}

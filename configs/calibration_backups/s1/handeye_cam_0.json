@@ -1,0 +1,73 @@
+{
+  "camera_key": "cam_0",
+  "camera_index": 0,
+  "configuration": "eye_to_hand",
+  "method": "HORAUD_STEREO_INDEPENDENT",
+  "robust": true,
+  "transform_name": "T_base_cam",
+  "transform": [
+    [
+      -0.0625375200162923,
+      0.5247192982517865,
+      -0.8489750977692841,
+      0.6543441250348782
+    ],
+    [
+      0.9979646350481672,
+      0.043509667856791494,
+      -0.04662076786337958,
+      0.09189961712419331
+    ],
+    [
+      0.012475807925397098,
+      -0.8501626708137363,
+      -0.5263722897070712,
+      0.23464104986891265
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "n_poses_total": 71,
+  "n_poses_used": 23,
+  "used_capture_ids": [
+    1,
+    6,
+    16,
+    17,
+    20,
+    28,
+    35,
+    39,
+    40,
+    41,
+    43,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    53,
+    63,
+    66,
+    67,
+    68,
+    69
+  ],
+  "residuals": {
+    "label": "T_gripper_target (apres alignement + rejet outliers)",
+    "n_poses": 23,
+    "n_poses_total": 71,
+    "translation_mean_dev_mm": 6.5760895324752715,
+    "translation_max_dev_mm": 20.791681980110084,
+    "translation_median_dev_mm": 5.795865118747099,
+    "rotation_mean_dev_deg": 1.4351994544606652,
+    "rotation_max_dev_deg": 2.3510845265959035,
+    "rotation_median_dev_deg": 1.4690792824421273
+  },
+  "capture_file": "configs/extrinsic_capture_stereo.json"
+}

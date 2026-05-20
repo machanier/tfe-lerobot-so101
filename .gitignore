@@ -71,6 +71,13 @@ tfe-lerobot-so101/
 # ============================================
 requirements.freeze.txt
 
+# ============================================
+# Snapshots locaux ad-hoc de configs
+# (la provenance versionnee est dans configs/calibration_backups/)
+# ============================================
+configs/**/*.backup.json
+configs/perception/*.original_maxence.json
+
 # LaTeX build artifacts (docs/memoire)
 docs/memoire/*.aux
 docs/memoire/*.bbl

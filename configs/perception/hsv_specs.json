@@ -1,34 +1,31 @@
 {
-  "_doc": "Plages HSV par objet. Modifie via scripts/calibrate_hsv.py (mode append par defaut).",
+  "_doc": "Genere par scripts/calibrate_hsv.py. Voir src/perception/detector.py.",
   "specs": [
-    {
-      "label": "orange_cube",
-      "color_mode": "chromatic",
-      "h_lo": 2, "h_hi": 11,
-      "s_lo": 108, "s_hi": 255,
-      "v_lo": 144, "v_hi": 255,
-      "min_area_px": 500, "max_area_px": 200000,
-      "meta": {},
-      "_n_samples_px": 1519,
-      "_note": "Filament robot orange = meme teinte. Filtrage par exclusion_zone (configs/scene.json)."
-    },
     {
       "label": "blue_rectangular_box",
       "color_mode": "chromatic",
-      "h_lo": 108, "h_hi": 121,
-      "s_lo": 109, "s_hi": 255,
-      "v_lo": 69, "v_hi": 255,
-      "min_area_px": 500, "max_area_px": 200000,
+      "h_lo": 108,
+      "h_hi": 121,
+      "s_lo": 109,
+      "s_hi": 255,
+      "v_lo": 69,
+      "v_hi": 255,
+      "min_area_px": 500,
+      "max_area_px": 200000,
       "meta": {},
       "_n_samples_px": 1911
     },
     {
       "label": "purple_cylinder",
       "color_mode": "chromatic",
-      "h_lo": 122, "h_hi": 135,
-      "s_lo": 58, "s_hi": 255,
-      "v_lo": 80, "v_hi": 255,
-      "min_area_px": 500, "max_area_px": 200000,
+      "h_lo": 122,
+      "h_hi": 135,
+      "s_lo": 58,
+      "s_hi": 255,
+      "v_lo": 80,
+      "v_hi": 255,
+      "min_area_px": 500,
+      "max_area_px": 200000,
       "meta": {},
       "_n_samples_px": 1372
     },
@@ -36,10 +33,38 @@
       "label": "black_triangular_prism",
       "color_mode": "black",
       "v_hi": 75,
-      "min_area_px": 500, "max_area_px": 200000,
+      "min_area_px": 500,
+      "max_area_px": 200000,
       "meta": {},
       "_n_samples_px": 2009,
       "_note": "Recalibre 2026-05-16. v_hi conservateur (~mediane*1.8) pour eviter de capter le fond. Si robot detecte du noir parasite, baisser v_hi a 60."
+    },
+    {
+      "label": "white_mug",
+      "color_mode": "gray",
+      "s_hi": 43,
+      "v_lo": 125,
+      "v_hi": 255,
+      "min_area_px": 500,
+      "max_area_px": 200000,
+      "meta": {},
+      "_n_samples_px": 2499,
+      "_diagnostic": "S median=9, V median=169"
+    },
+    {
+      "label": "orange_cube",
+      "color_mode": "chromatic",
+      "h_lo": 3,
+      "h_hi": 11,
+      "s_lo": 147,
+      "s_hi": 255,
+      "v_lo": 170,
+      "v_hi": 255,
+      "min_area_px": 500,
+      "max_area_px": 200000,
+      "meta": {},
+      "_n_samples_px": 2597,
+      "_diagnostic": "H median=7, S median=179, V median=202"
     }
   ]
 }
