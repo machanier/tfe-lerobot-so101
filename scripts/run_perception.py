@@ -188,6 +188,10 @@ def run_live(args):
             print(mc.info())
             win = "Perception (live)"
             cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+            # FPS measurement
+            fps_start = time.time()
+            fps_frames = 0
+            fps = 0.0
             try:
                 while True:
                     # 1. Etat robot pour cam_2 eye-in-hand
@@ -199,6 +203,13 @@ def run_live(args):
                         rs = provider.read_live()
                     # 2. Capture
                     frames = mc.grab(robot_state=rs)
+                    # update FPS counter
+                    fps_frames += 1
+                    elapsed = time.time() - fps_start
+                    if elapsed >= 1.0:
+                        fps = fps_frames / elapsed
+                        fps_start = time.time()
+                        fps_frames = 0
                     # 3. Detection
                     dets_by_cam = detector.detect_multi(frames)
                     # 4. Reconstruction 3D
@@ -210,6 +221,8 @@ def run_live(args):
                             tiles.append(None)
                         else:
                             tiles.append(annotate_frame(frames[k], dets_by_cam[k], scene))
+                    if tiles and tiles[0] is not None:
+                        cv2.putText(tiles[0], f"{fps:.1f} FPS", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
                     cv2.imshow(win, horizontal_tile(tiles))
                     if args.print_each_frame and scene.objects:
                         print(scene.pretty())
