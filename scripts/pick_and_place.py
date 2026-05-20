@@ -26,6 +26,8 @@ PRECAUTIONS :
 """
 
 import argparse
+import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -35,6 +37,41 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 from config import FOLLOWER_PORT  # noqa: E402
 from src.pipeline import PickAndPlacePipeline, PipelineConfig  # noqa: E402
+
+
+def apply_calib_profile(profile: str):
+    """Copie les handeye_cam_*.json d'un profil de calibration vers configs/.
+
+    Permet de tester plusieurs calibrations sans re-scotcher le damier :
+    on a archive chaque session dans configs/calibration_profiles/<profile>/.
+    Le pipeline lit toujours configs/handeye_cam_*.json, donc on copie le
+    profil voulu juste avant de lancer.
+    """
+    prof_dir = REPO / "configs" / "calibration_profiles" / profile
+    if not prof_dir.exists():
+        avail = [p.name for p in (REPO / "configs" / "calibration_profiles").glob("*")
+                 if p.is_dir()]
+        print(f"!! Profil de calibration '{profile}' introuvable dans {prof_dir.parent}")
+        print(f"   Profils disponibles : {avail}")
+        sys.exit(1)
+
+    cfg = REPO / "configs"
+    for fname in ("handeye_cam_0.json", "handeye_cam_1.json"):
+        src = prof_dir / fname
+        if src.exists():
+            shutil.copy(src, cfg / fname)
+
+    # Affiche les metriques du profil charge
+    meta_path = REPO / "configs" / "calibration_profiles" / "profiles_metadata.json"
+    info = ""
+    if meta_path.exists():
+        meta = json.load(open(meta_path)).get(profile, {})
+        if meta:
+            info = (f" (cam0={meta.get('cam0_mean_mm')}mm, cam1={meta.get('cam1_mean_mm')}mm, "
+                    f"coherence={meta.get('stereo_coherence_mean_mm')}mm, "
+                    f"{meta.get('n_captures')} captures)")
+    print(f">> Calibration profil '{profile}' charge dans configs/{info}")
+    print()
 
 
 def main():
@@ -60,7 +97,17 @@ def main():
                         help="Affiche les 3 cameras (cv2.imshow) avec detections "
                              "aux moments cles (perception initiale). Snapshot sauve "
                              "dans outputs/perception/.")
+    parser.add_argument("--calib-profile", type=str, default=None,
+                        help="Charge un profil de calibration archive avant de lancer "
+                             "(ex: s1, s2). Copie configs/calibration_profiles/<profil>/ "
+                             "vers configs/. Permet de comparer plusieurs calibrations "
+                             "sans re-scotcher le damier.")
     args = parser.parse_args()
+
+    # Charge le profil de calibration demande (avant d'instancier le pipeline,
+    # qui lit configs/handeye_cam_*.json au demarrage)
+    if args.calib_profile:
+        apply_calib_profile(args.calib_profile)
 
     config = PipelineConfig(
         target_label=args.target,
