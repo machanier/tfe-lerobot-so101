@@ -65,6 +65,73 @@ par la replanification en boucle fermée (objectif 4 du cahier des charges).
 
 ## 3. Décisions techniques importantes
 
+### D18 — Feedback de saisie + retry + fiabilisation pince (2026-05-20)
+
+Plusieurs améliorations du pipeline de saisie (commits sur main, session 10) :
+
+- **P1 — Feedback de saisie** (`MotorController.read_gripper_pct()` +
+  `src/pipeline.py`) : après la fermeture de la pince, on lit sa position
+  réelle. Si elle reste ouverte d'au moins `grasp_success_threshold_pct`
+  au-dessus de la consigne, c'est qu'elle a buté sur l'objet → **saisie OK**.
+  Sinon → ratée. Calibré expérimentalement à **8%** pour le cube 30mm + pince
+  TPU (script `scripts/calibrate_grasp_threshold.py`). Avant : 15% (faux
+  négatifs systématiques).
+- **Retry** : sur saisie ratée, le robot remonte à approach, refait un
+  refinement cam_2, redescend, retente. Max 1 retry (configurable).
+- **P2 — Seuil refinement #2 dynamique** : 60/80/100 mm selon le score HF
+  (confidence-weighted, Chaumette & Hutchinson 2006). + **plafond absolu 30mm**
+  sur R2 (B2) : entre R1 et R2 l'objet ne peut pas bouger de >30mm en 0.5s,
+  donc une correction R2 plus grande = fausse détection.
+- **B0 — Restriction HF à 1 label** : `hf_restrict_to_target=True` ne charge
+  que le prompt de la cible → élimine les détections parasites (tissue_box, pen).
+- **B4 — Pince ouverte seulement pendant la descente** : reste fermée pendant
+  l'approche, s'ouvre durant la mini-descente.
+- **P4 — Campagne expérimentale** : `scripts/experiment_campaign.py` (N essais
+  × K positions, mesure succès/tentatives/temps, sortie JSON+CSV).
+
+### D17 — Calibration stéréo CONJOINTE cam_0+cam_1 (B3b, 2026-05-20)
+
+**Problème** : la calibration hand-eye **séparée** de cam_0 et cam_1 (méthode
+historique) produisait des résidus individuels bas (~6 mm chacun) mais une
+**cohérence stéréo catastrophique de ~21 mm** : les 2 caméras n'étaient pas
+d'accord sur la position 3D du même point. Conséquence mesurée : **biais Y
+systématique de +40 mm** à la triangulation, que `bias_correction.json`
+(dy=30mm) compensait approximativement.
+
+**Cause** : en calibrant chaque caméra indépendamment, leurs erreurs n'ont
+aucune raison de s'annuler. Sur une baseline stéréo majoritairement en Y, les
+composantes Y des 2 biais s'**additionnent géométriquement**.
+
+**Solution** : calibration **stéréo conjointe** (`scripts/recalibrate_handeye_stereo.py`) :
+1. Capture **simultanée** cam_0 + cam_1 du damier (`calibrate_extrinsic_stereo.py`,
+   sauvegarde incrémentale + sync `grab/retrieve` + `findChessboardCornersSB`).
+2. `cv2.stereoCalibrate(FIX_INTRINSIC)` → `T_cam0_cam1` précis.
+3. Hand-eye eye-to-hand sur cam_0 → `T_base_cam0`.
+4. **Déduction** `T_base_cam1 = T_base_cam0 @ T_cam0_cam1` → les 2 calibrations
+   sont **cohérentes par construction**.
+
+**Résultats expérimentaux** (validation 3834 points + tests robot) :
+
+| Métrique | Avant (séparé) | Après (conjoint) |
+|---|---|---|
+| Cohérence stéréo (moyenne) | 21.46 mm | **1.95 mm** (−91%) |
+| Biais Y pratique (correction R1) | ~+40 mm | **~+14 mm** |
+
+`bias_correction.json` **désactivé** (dy=0) : plus nécessaire, le décalage est
+maintenant dans la calibration. cam_2 (eye-in-hand) inchangée (2.48 mm, déjà bonne).
+
+**Référence** : Hartley & Zisserman 2018, *Multiple View Geometry*, ch.10
+(stereo calibration) ; Tsai & Lenz 1989 (hand-eye base).
+
+**Système de calibrations** : `configs/handeye_cam_0/1.json` = calibration
+attitrée (stéréo B3b, profil "s1"). Backups dans `configs/calibration_backups/`
+(s1, s2, legacy_separate) pour comparaison mémoire. Voir le README de ce dossier.
+
+**Bug critique évité** : `cv2.stereoCalibrate` retourne `(R, T)` tels que
+`P_right = R·P_left + T` (= `T_cam1_cam0`). Pour la composition il faut
+`T_cam0_cam1 = [R.T, −R.T·T; 0 1]` (l'inverse) — sinon cam_1 se retrouve du
+mauvais côté (delta Y inversé, résidu 80 mm).
+
 ### D1 — Recalage du `Homing_Offset` de `wrist_roll`
 
 **Problème découvert** : la calibration LeRobot d'origine avait laissé
