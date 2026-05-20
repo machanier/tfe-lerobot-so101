@@ -40,19 +40,22 @@ from src.pipeline import PickAndPlacePipeline, PipelineConfig  # noqa: E402
 
 
 def apply_calib_profile(profile: str):
-    """Copie les handeye_cam_*.json d'un profil de calibration vers configs/.
+    """USAGE EXCEPTIONNEL : ressort une calibration de backup/souvenir.
 
-    Permet de tester plusieurs calibrations sans re-scotcher le damier :
-    on a archive chaque session dans configs/calibration_profiles/<profile>/.
-    Le pipeline lit toujours configs/handeye_cam_*.json, donc on copie le
-    profil voulu juste avant de lancer.
+    Le flux NORMAL n'utilise PAS ce flag : la calibration attitree est
+    directement dans configs/handeye_cam_*.json (= s1, la stereo conjointe B3b).
+    Ce flag sert seulement a re-tester ponctuellement une ancienne calibration
+    archivee dans configs/calibration_backups/<profile>/ (s2, legacy_separate).
+
+    ATTENTION : ce flag ECRASE configs/handeye_cam_*.json avec le backup choisi.
+    Pour revenir a la calibration attitree, relance avec --calib-profile s1.
     """
-    prof_dir = REPO / "configs" / "calibration_profiles" / profile
+    backups = REPO / "configs" / "calibration_backups"
+    prof_dir = backups / profile
     if not prof_dir.exists():
-        avail = [p.name for p in (REPO / "configs" / "calibration_profiles").glob("*")
-                 if p.is_dir()]
-        print(f"!! Profil de calibration '{profile}' introuvable dans {prof_dir.parent}")
-        print(f"   Profils disponibles : {avail}")
+        avail = [p.name for p in backups.glob("*") if p.is_dir()]
+        print(f"!! Backup de calibration '{profile}' introuvable dans {backups}")
+        print(f"   Backups disponibles : {avail}")
         sys.exit(1)
 
     cfg = REPO / "configs"
@@ -61,16 +64,17 @@ def apply_calib_profile(profile: str):
         if src.exists():
             shutil.copy(src, cfg / fname)
 
-    # Affiche les metriques du profil charge
-    meta_path = REPO / "configs" / "calibration_profiles" / "profiles_metadata.json"
+    # Affiche les metriques du backup charge
+    meta_path = backups / "profiles_metadata.json"
     info = ""
     if meta_path.exists():
-        meta = json.load(open(meta_path)).get(profile, {})
+        meta = json.load(open(meta_path)).get("profils", {}).get(profile, {})
         if meta:
-            info = (f" (cam0={meta.get('cam0_mean_mm')}mm, cam1={meta.get('cam1_mean_mm')}mm, "
-                    f"coherence={meta.get('stereo_coherence_mean_mm')}mm, "
-                    f"{meta.get('n_captures')} captures)")
-    print(f">> Calibration profil '{profile}' charge dans configs/{info}")
+            info = (f" (cam0={meta.get('cam0_residual_mm')}mm, "
+                    f"cam1={meta.get('cam1_residual_mm')}mm, "
+                    f"coherence={meta.get('coherence_stereo_mean_mm')}mm)")
+    print(f">> [BACKUP] calibration '{profile}' chargee dans configs/{info}")
+    print(f">> (flux normal = pas de flag, configs/ contient deja la calib attitree s1)")
     print()
 
 
@@ -102,10 +106,11 @@ def main():
                              "aux moments cles (perception initiale). Snapshot sauve "
                              "dans outputs/perception/.")
     parser.add_argument("--calib-profile", type=str, default=None,
-                        help="Charge un profil de calibration archive avant de lancer "
-                             "(ex: s1, s2). Copie configs/calibration_profiles/<profil>/ "
-                             "vers configs/. Permet de comparer plusieurs calibrations "
-                             "sans re-scotcher le damier.")
+                        help="EXCEPTIONNEL : ressort une calibration de backup depuis "
+                             "configs/calibration_backups/<nom>/ (s2, legacy_separate). "
+                             "Le flux NORMAL n'a pas besoin de ce flag : la calibration "
+                             "attitree (s1) est deja dans configs/. Pour revenir a s1 "
+                             "apres un test : --calib-profile s1.")
     args = parser.parse_args()
 
     # Charge le profil de calibration demande (avant d'instancier le pipeline,
