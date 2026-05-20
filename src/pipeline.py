@@ -157,10 +157,15 @@ class PipelineConfig:
     # atteint (presque) la consigne, c'est qu'elle s'est fermee dans le vide
     # = saisie ratee.
     # Marge en pourcentage au-dessus de grip_close_pct pour conclure "saisi".
-    # Ex : grip_close_pct=5, grasp_success_threshold_pct=15 -> on conclut OK
-    # si la pince reelle reste >= 5 + 15 = 20% apres fermeture.
-    # Pour un cube 30mm, la pince s'arrete typiquement vers 30-40% -> marge OK.
-    grasp_success_threshold_pct: float = 15.0
+    # Ex : grip_close_pct=5, grasp_success_threshold_pct=8 -> on conclut OK
+    # si la pince reelle reste >= 5 + 8 = 13% apres fermeture.
+    # CALIBRE EXPERIMENTALEMENT (2026-05-20) : sur le cube 30mm + pince TPU de
+    # Maxence, la pince ferme a vide vers ~10-11% et sur le cube vers ~14-15%.
+    # La marge utile est etroite (~4-5%). Seuil 8% = bon compromis : capte les
+    # vraies saisies (marge ~9%) sans trop de faux positifs. Avant : 15% (trop
+    # haut -> faux negatifs systematiques, vraies saisies a 14% classees RATE).
+    # Ajustable via --grasp-threshold de pick_and_place.py.
+    grasp_success_threshold_pct: float = 8.0
     # Nombre max de RETRY apres echec (0 = pas de retry, 1 = 1 essai + 1 retry).
     max_grasp_retries: int = 1
     # Pause apres fermeture pince avant de LIRE la position (laisser le servo
