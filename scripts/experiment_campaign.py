@@ -64,8 +64,14 @@ def make_pipeline(args) -> PickAndPlacePipeline:
         closed_loop=True,                   # toujours actif pour comparaison juste
         display=args.display,
         max_grasp_retries=args.max_retries,
-        grasp_success_threshold_pct=args.grasp_threshold,
     )
+    # Seuil de detection saisie : par defaut on herite du defaut CALIBRE de
+    # PipelineConfig (8.0 pour le cube 30mm). On n'override que si
+    # --grasp-threshold est explicitement passe (analyse de sensibilite).
+    # Evite le faux negatif de l'ancien defaut 15.0 (cf calibrate_grasp_threshold.py :
+    # une saisie reussie a 14% etait classee RATEE car 14-5=9% < 15%).
+    if args.grasp_threshold is not None:
+        cfg.grasp_success_threshold_pct = args.grasp_threshold
     return PickAndPlacePipeline(cfg)
 
 
@@ -223,8 +229,11 @@ def main():
                    help="Consigne fermeture pince 0-100 (defaut: 5 = presque ferme).")
     p.add_argument("--max-retries", type=int, default=1,
                    help="Nb max de retry par essai (defaut: 1 = 2 tentatives total).")
-    p.add_argument("--grasp-threshold", type=float, default=15.0,
-                   help="Seuil de detection saisie %% au-dessus de grip-close (defaut: 15).")
+    p.add_argument("--grasp-threshold", type=float, default=None,
+                   help="Seuil de detection saisie (%% au-dessus de grip-close). "
+                        "Defaut = herite du defaut CALIBRE de PipelineConfig "
+                        "(8.0 pour le cube 30mm). Ne le force que pour une analyse "
+                        "de sensibilite (l'ancien 15.0 causait des faux negatifs).")
     p.add_argument("--output-dir", default="outputs/experiments",
                    help="Repertoire de sortie (defaut: outputs/experiments).")
     p.add_argument("--no-prompt", action="store_true",
@@ -243,7 +252,9 @@ def main():
     print(f"  essais/position  : {args.n_per_position}")
     print(f"  total essais     : {args.n_per_position * len(args.positions)}")
     print(f"  max retries      : {args.max_retries}")
-    print(f"  seuil saisie OK  : pince > consigne + {args.grasp_threshold}%")
+    seuil_txt = (f"{args.grasp_threshold}%" if args.grasp_threshold is not None
+                 else "8% (defaut calibre PipelineConfig)")
+    print(f"  seuil saisie OK  : pince > consigne + {seuil_txt}")
     print("=" * 70)
     print()
     if not args.no_prompt:
