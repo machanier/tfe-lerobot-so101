@@ -3,9 +3,30 @@
 Document à lire EN PREMIER quand tu reprends le projet (toi ou un nouvel
 agent Claude Code dans une nouvelle conversation).
 
+## 0bis. DERNIÈRE SESSION (2026-05-20) — calibration stéréo + feedback saisie
+
+**Étape majeure : calibration hand-eye STÉRÉO CONJOINTE (D17).**
+- Avant : cam_0 et cam_1 calibrées séparément → cohérence stéréo 21mm → biais
+  Y +40mm en pratique.
+- Après : calibration conjointe (`cv2.stereoCalibrate` + déduction) → cohérence
+  **1.95mm**, biais Y pratique **~14mm**. Validé sur robot.
+- **`bias_correction.json` désactivé** (dy=0) : plus nécessaire.
+- Calibration attitrée = `configs/handeye_cam_0/1.json` (profil "s1"). Backups
+  dans `configs/calibration_backups/` (voir son README).
+- Refaire une calibration : `python scripts/recalibrate_handeye_stereo.py`.
+
+**Autres (D18) :** feedback de saisie par lecture pince (seuil 8%) + retry 1×,
+seuil refinement #2 dynamique + plafond 30mm, HF restreint à 1 label,
+pince ouverte seulement pendant la descente, script de campagne expérimentale.
+
+**Problème restant identifié (PAS la calibration) :** le robot descend droit
+sur le cube et **cogne sa pince fixe** au lieu de se décaler latéralement.
+C'est le `grasp_lateral_offset_mm` (A2, actuellement 8mm) à augmenter/repenser.
+**C'est la prochaine étape pour fiabiliser les prises.**
+
 ## 0. TL;DR pour un nouvel agent — lire dans cet ordre
 
-1. **`docs/PROJECT_STATUS.md`** : décisions techniques D1-D16 (le quoi & le pourquoi).
+1. **`docs/PROJECT_STATUS.md`** : décisions techniques D1-D18 (le quoi & le pourquoi).
 2. **`docs/REPERE_BASE.md`** : conventions repère robot (CRUCIAL : `base_link`
    = centre plaque de base à plat sur la table ; X devant le robot ; Y à
    GAUCHE positif / Y à DROITE négatif ; Z au-dessus de la table).
@@ -16,25 +37,29 @@ agent Claude Code dans une nouvelle conversation).
    d'exclusion. La position de la boîte (`drop_box.center_base_m`) est
    en **mètres** dans le repère base et désigne le **centre du FOND** de
    la boîte (le code calcule le dessus automatiquement).
-5. **`configs/perception/bias_correction.json`** : compensation dy=+30mm
-   appliquée à chaque détection 3D pour corriger le biais hand-eye.
+5. **`configs/perception/bias_correction.json`** : DÉSACTIVÉ (dy=0) depuis
+   la calibration stéréo conjointe (D17). N'est plus nécessaire.
 
-### Ce qui marche (au 2026-05-18)
+### Ce qui marche (au 2026-05-20)
 - Calibration Sprint 1 (intrinsèques + hand-eye 3 cams) : solide.
-- Perception 3D avec **HF (OWL-ViTv2)** : robuste, ~0.3 fps détection
-  initiale + raffinement cam_2.
-- Pipeline pick-and-place : saisie réussie ~70% en HF, dépose dans la
-  boîte si scene.json correct.
-- Retour à la pose de départ.
+- **Calibration stéréo CONJOINTE cam_0+cam_1 (D17)** : cohérence stéréo 1.95mm
+  (vs 21mm avant). Biais Y pratique ~14mm (vs 40mm). C'est l'amélioration
+  majeure de cette session.
+- Perception 3D avec **HF (OWL-ViTv2)** : robuste, raffinement cam_2.
+- Pipeline pick-and-place : positionnement précis sur l'objet (plus de
+  décalage parasite à droite). Feedback de saisie + retry (D18).
+- Retour à la pose de départ (wrist_roll OK).
 
 ### Ce qui ne marche pas / fragile
-- **HSV** : détecte la pince orange comme cube orange même après
-  recalibration. Marche mal en pratique. Privilégier HF.
-- **Saisie irrégulière** : la pince fixe peut percuter l'objet (pas de
-  décalage smart du grasp pour positionner l'objet du bon côté).
-- **Refinement cam_2 varie 38-50 mm** d'un essai à l'autre (plancher de
-  bruit + mouvement de la cam pendant capture).
-- **Approche figée en TOP-DOWN** : impossible de saisir par le côté.
+- **Descente qui cogne le cube** : le robot descend droit sur l'objet et
+  heurte sa pince fixe au lieu de se décaler latéralement → saisie irrégulière.
+  C'EST LE PROBLÈME PRIORITAIRE. Réglage `grasp_lateral_offset_mm` (A2) à revoir.
+- **HSV** : détecte la pince orange comme cube orange. Privilégier HF.
+- **Triangulation Z** : le centre de bbox 2D ne correspond pas exactement au
+  centre 3D du cube (limite de la détection par bbox vs masque). À surveiller.
+- **Approche figée en TOP-DOWN** : impossible de saisir par le côté (side-grasp
+  = extension V2 possible).
+- **cam_2 parfois aveugle au départ** du refinement (selon l'angle de la pince).
 
 ### Comment Maxence préfère collaborer
 - Ne PAS retirer de fonctionnalités sans demander (ex: bbox vertes dans
