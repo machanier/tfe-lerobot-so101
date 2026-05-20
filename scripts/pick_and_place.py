@@ -88,6 +88,10 @@ def main():
                         help="Vitesse articulaire max (rad/s). 0.5 = prudent.")
     parser.add_argument("--grip-close", type=float, default=5.0,
                         help="Fermeture pince pour grasper (0-100, 5 = presque ferme)")
+    parser.add_argument("--grasp-threshold", type=float, default=None,
+                        help="Seuil de detection saisie (marge %% au-dessus de grip-close). "
+                             "Defaut PipelineConfig=8. Baisse si faux negatifs, monte si "
+                             "faux positifs. Maxence a calibre ~8-9 pour le cube 30mm.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Pas d'envoi moteur, juste log les angles calcules")
     parser.add_argument("--no-closed-loop", action="store_true",
@@ -119,6 +123,8 @@ def main():
         closed_loop=(not args.no_closed_loop),
         display=args.display,
     )
+    if args.grasp_threshold is not None:
+        config.grasp_success_threshold_pct = args.grasp_threshold
 
     pipeline = PickAndPlacePipeline(config)
     pipeline.run()
