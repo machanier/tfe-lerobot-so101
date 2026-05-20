@@ -192,6 +192,8 @@ def run_live(args):
             fps_start = time.time()
             fps_frames = 0
             fps = 0.0
+            # Latence de detection isolee (lissee EMA), pour comparer HSV vs HF
+            det_ms = 0.0
             try:
                 while True:
                     # 1. Etat robot pour cam_2 eye-in-hand
@@ -210,8 +212,12 @@ def run_live(args):
                         fps = fps_frames / elapsed
                         fps_start = time.time()
                         fps_frames = 0
-                    # 3. Detection
+                    # 3. Detection (chronometree pour comparer HSV vs HF)
+                    t_det = time.time()
                     dets_by_cam = detector.detect_multi(frames)
+                    det_ms_inst = (time.time() - t_det) * 1000.0
+                    det_ms = (det_ms_inst if det_ms == 0.0
+                              else 0.8 * det_ms + 0.2 * det_ms_inst)
                     # 4. Reconstruction 3D
                     scene = estimator.build_scene(dets_by_cam, frames)
                     # 5. Affichage
@@ -222,7 +228,9 @@ def run_live(args):
                         else:
                             tiles.append(annotate_frame(frames[k], dets_by_cam[k], scene))
                     if tiles and tiles[0] is not None:
-                        cv2.putText(tiles[0], f"{fps:.1f} FPS", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+                        hud = f"{fps:.1f} FPS | det {det_ms:.0f} ms ({detector.name})"
+                        cv2.putText(tiles[0], hud, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.8, (0, 255, 0), 2)
                     cv2.imshow(win, horizontal_tile(tiles))
                     if args.print_each_frame and scene.objects:
                         print(scene.pretty())
