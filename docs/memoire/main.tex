@@ -63,8 +63,9 @@
 ]{biblatex}
 \addbibresource{biblio.bib}
 
-% --- TODO (commenter \listoftodos\listoftodos pour cacher la liste)
-\usepackage[colorinlistoftodos,prependcaption,textsize=small]{todonotes}
+% --- TODO : l'option "disable" masque TOUTES les notes \todo/\todoF dans le PDF.
+%     (Retirer "disable" pour réafficher les annotations de brouillon.)
+\usepackage[disable,colorinlistoftodos,prependcaption,textsize=small]{todonotes}
 
 % --- Liens (a charger en DERNIER)
 \usepackage[
@@ -95,7 +96,7 @@
 
 % Table des matieres
 \tableofcontents
-\listoftodos[Liste des sections à compléter]
+% \listoftodos[Liste des sections à compléter]  % décommenter pour revoir la liste des TODO (brouillon)
 
 % Chapitres
 \input{chapters/01_introduction}
