@@ -96,6 +96,11 @@ def main():
                         help="Seuil de detection saisie (marge %% au-dessus de grip-close). "
                              "Defaut PipelineConfig=8. Baisse si faux negatifs, monte si "
                              "faux positifs. Maxence a calibre ~8-9 pour le cube 30mm.")
+    parser.add_argument("--grasp-lateral-offset", type=float, default=None,
+                        help="Decalage lateral de la saisie en mm (pince asymetrique SO-101). "
+                             "Defaut PipelineConfig=8 (calibre cube 30mm). Augmente/diminue "
+                             "pour une prise plus 'carree' sur rectangle/cylindre. "
+                             "Conseil reglage : --dry-run d'abord, puis live.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Pas d'envoi moteur, juste log les angles calcules")
     parser.add_argument("--no-closed-loop", action="store_true",
@@ -130,6 +135,8 @@ def main():
     )
     if args.grasp_threshold is not None:
         config.grasp_success_threshold_pct = args.grasp_threshold
+    if args.grasp_lateral_offset is not None:
+        config.grasp_lateral_offset_mm = args.grasp_lateral_offset
 
     pipeline = PickAndPlacePipeline(config)
     pipeline.run()

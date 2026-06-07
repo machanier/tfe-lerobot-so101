@@ -172,6 +172,16 @@ class PipelineConfig:
     # se stabiliser sur l'objet). 0.3s est conservatif.
     grasp_settle_pause_s: float = 0.3
 
+    # ---------- A2 : decalage lateral de la saisie (pince asymetrique) ----------
+    # La pince SO-101 a un doigt FIXE et un doigt mobile. On decale le centre du
+    # grasp pour que l'objet finisse contre le doigt fixe (le mobile vient
+    # l'ecraser), sinon le doigt fixe percute l'objet et le pousse avant la
+    # fermeture -> prise "de travers". Calibre a 8mm pour le cube 30mm.
+    # None = on garde le defaut de TopDownGrasp (8.0mm). A REGLER PAR OBJET :
+    # un rectangle/cylindre plus large peut demander une autre valeur pour une
+    # prise bien "carree". Exposable via --grasp-lateral-offset.
+    grasp_lateral_offset_mm: Optional[float] = None
+
 
 # ============================================================
 # Orchestrateur principal
@@ -191,7 +201,10 @@ class PickAndPlacePipeline:
         self.config = config
         self._load_scene()
         self._build_perception()
-        self._grasp_strategy = TopDownGrasp()
+        grasp_kwargs = {}
+        if self.config.grasp_lateral_offset_mm is not None:
+            grasp_kwargs["grasp_lateral_offset_mm"] = self.config.grasp_lateral_offset_mm
+        self._grasp_strategy = TopDownGrasp(**grasp_kwargs)
         self._ik = IKSolver()
         # IK SPECIFIQUE A LA DEPOSE : poids de rotation reduit (0.05 vs 0.1
         # par defaut). Pour la depose on s'en moque que la pince soit pile

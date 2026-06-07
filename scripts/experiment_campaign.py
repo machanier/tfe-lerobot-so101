@@ -72,6 +72,8 @@ def make_pipeline(args) -> PickAndPlacePipeline:
     # une saisie reussie a 14% etait classee RATEE car 14-5=9% < 15%).
     if args.grasp_threshold is not None:
         cfg.grasp_success_threshold_pct = args.grasp_threshold
+    if args.grasp_lateral_offset is not None:
+        cfg.grasp_lateral_offset_mm = args.grasp_lateral_offset
     return PickAndPlacePipeline(cfg)
 
 
@@ -234,6 +236,10 @@ def main():
                         "Defaut = herite du defaut CALIBRE de PipelineConfig "
                         "(8.0 pour le cube 30mm). Ne le force que pour une analyse "
                         "de sensibilite (l'ancien 15.0 causait des faux negatifs).")
+    p.add_argument("--grasp-lateral-offset", type=float, default=None,
+                   help="Decalage lateral saisie en mm (pince asymetrique). Defaut=8 "
+                        "(cube 30mm). Regle par objet : rectangle/cylindre plus large "
+                        "peut demander une autre valeur (cf reglage prealable en single-shot).")
     p.add_argument("--output-dir", default="outputs/experiments",
                    help="Repertoire de sortie (defaut: outputs/experiments).")
     p.add_argument("--no-prompt", action="store_true",
