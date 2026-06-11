@@ -357,6 +357,35 @@ class PoseEstimator:
 
     # ----- API ------------------------------------------------------------
 
+    def _estimate_bbox_3d_m(self, det, frame, X_base):
+        """Estime l'extent 3D (dx, dy, dz) en metres a partir de la bbox 2D et
+        de la profondeur objet->camera, pour alimenter les features
+        adaptatives (ouverture pince = min(dx,dy) ; profondeur de prise =
+        table + dz/2).
+
+        Methode : taille_metrique ~= taille_pixel * profondeur / focale.
+        APPROXIMATION (la bbox image melange empreinte au sol et hauteur selon
+        l'angle de vue) ; suffisante pour adapter la prise, a raffiner avec les
+        dimensions reelles connues des objets si besoin. dz est borne a
+        [5, 150] mm. Renvoie None (=> comportement non-adaptatif) si indispo.
+        """
+        try:
+            if det is None or getattr(det, "bbox", None) is None or frame is None:
+                return None
+            f = float(np.asarray(frame.K, dtype=float)[0, 0])
+            T_cam_base = np.linalg.inv(np.asarray(frame.T_base_cam, dtype=float))
+            Xh = np.hstack([np.asarray(X_base, dtype=float).reshape(3), 1.0])
+            depth = abs(float((T_cam_base @ Xh)[2]))
+            if f <= 1e-6 or depth <= 1e-6:
+                return None
+            x0, y0, x1, y1 = det.bbox
+            dx = abs(float(x1 - x0)) * depth / f
+            dy = abs(float(y1 - y0)) * depth / f
+            dz = float(np.clip(dy, 0.005, 0.15))   # hauteur : proxy = extent vertical
+            return (float(dx), float(dy), dz)
+        except Exception:
+            return None
+
     def build_scene(self,
                     detections_by_cam: dict[str, list[Detection2D]],
                     frames: dict[str, Optional[Frame]]) -> Scene:
@@ -440,6 +469,7 @@ class PoseEstimator:
                         position_base_m=X,
                         source_detections=[det_L, det_R],
                         score=score,
+                        bbox_3d_m=self._estimate_bbox_3d_m(det_L, f_L, X),
                         meta={
                             "method": "stereo_triangulation",
                             "reproj_error_px": err,
