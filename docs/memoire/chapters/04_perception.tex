@@ -250,6 +250,84 @@ l'erreur. Résultat : \textbf{erreur maximale sub-micrométrique
 observée en pratique vient de la calibration ($K$, $T_{\text{base}}^{\text{cam}}$)
 ou de la détection 2D.
 
+\subsection{Sensibilité de la profondeur à l'erreur de détection}
+\label{sec:depth_sensitivity}
+
+La validation synthétique montre que la triangulation est mathématiquement
+exacte. En pratique, l'erreur dominante provient de l'incertitude sur le
+\textbf{centre 2D détecté}, et elle ne se répartit \emph{pas} également sur les
+trois axes : la \textbf{profondeur} ($Z$, distance caméra--objet) est
+structurellement l'axe le plus fragile. Le démontrer est essentiel, car cela
+conditionne la stratégie de saisie (chapitre~\ref{ch:planning}).
+
+\paragraph{Relation profondeur--disparité.} Pour une paire stéréo rectifiée de
+focale $f$ (en pixels) et de \textit{baseline} $b$ (écartement des centres
+optiques), un point à la profondeur $Z$ se projette dans les deux images avec
+un décalage horizontal --- la \textbf{disparité} $d$ --- donné par similitude
+de triangles :
+\begin{equation}
+  d = \frac{f\,b}{Z}
+  \qquad\Longleftrightarrow\qquad
+  Z = \frac{f\,b}{d}.
+  \label{eq:disparity}
+\end{equation}
+La profondeur est l'\emph{inverse} de la disparité : un objet proche se décale
+beaucoup d'une vue à l'autre, un objet lointain à peine.
+
+\paragraph{Propagation de l'erreur.} La disparité est mesurée à partir des
+centres détectés, entachés d'une incertitude $\delta d$ (pixels). En
+différenciant l'équation~\eqref{eq:disparity} :
+\begin{equation}
+  \delta Z = \frac{f\,b}{d^{2}}\,\delta d
+           = \frac{Z^{2}}{f\,b}\,\delta d,
+  \label{eq:depth_error}
+\end{equation}
+où l'on a substitué $d = f b / Z$. Trois enseignements :
+\begin{itemize}
+  \item $\delta Z \propto Z^{2}$ : l'erreur croît avec le \textbf{carré} de la
+        distance --- deux fois plus loin, quatre fois plus d'erreur ;
+  \item $\delta Z \propto 1/b$ : une \textbf{baseline} plus large la réduit
+        proportionnellement ;
+  \item $\delta Z \propto 1/f$ : davantage de focale ou de résolution la réduit
+        aussi.
+\end{itemize}
+À l'inverse, l'erreur \emph{latérale} suit $X \approx (u - c_x)\,Z/f$, donc
+$\delta X \approx (Z/f)\,\delta u$ : elle ne croît que \textbf{linéairement}
+avec $Z$. C'est pourquoi un même tremblement de quelques pixels du centroïde
+dégrade fortement $Z$ tout en laissant $X$ et $Y$ quasi stables.
+
+\paragraph{Application au banc.} Avec la calibration stéréo de ce poste
+($f \approx 1226$~px, $b = 103{,}35$~mm) et un objet à $Z \approx 40$--$50$~cm,
+l'équation~\eqref{eq:depth_error} donne :
+
+\begin{center}
+\begin{tabular}{c c c}
+\hline
+$\delta d$ (disparité) & $\delta Z$ à 40~cm & $\delta Z$ à 50~cm \\
+\hline
+5~px  & 6{,}3~mm  & 9{,}9~mm  \\
+10~px & 12{,}6~mm & 19{,}7~mm \\
+\hline
+\end{tabular}
+\end{center}
+
+Un masque HSV partiel (sous éclairage non contrôlé) déplace facilement le
+centroïde de 5 à 10~px, soit \textbf{6 à 20~mm d'erreur sur $Z$} --- ordre de
+grandeur confirmé expérimentalement, la profondeur estimée d'un même objet
+variant de plusieurs millimètres entre essais. La cause n'est pas un défaut
+logiciel mais la \textbf{géométrie du banc} : baseline courte (103~mm, les deux
+caméras étant contraintes côte à côte sur la barrière avant) et objet
+relativement lointain.
+
+\paragraph{Conséquence sur la stratégie de saisie.} Plutôt que de faire
+confiance au $Z$ absolu de la stéréo pour la profondeur de descente, on
+\textbf{ancre} celle-ci sur une référence fiable : le plan de la table
+($Z = 0$ dans le repère base, le \texttt{base\_link} étant au niveau de la
+table), sur lequel tout objet repose. La hauteur de prise est alors dérivée de
+ce plan plus une estimation grossière de la hauteur de l'objet, ce qui borne le
+résultat (jamais sous la table) et le rend robuste au bruit de profondeur. Ce
+choix est détaillé au chapitre~\ref{ch:planning}.
+
 \subsection{PnP monoculaire (fallback)}
 
 Si l'objet n'est vu que par une seule caméra (occlusion), le
