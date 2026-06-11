@@ -101,6 +101,11 @@ def main():
                              "Defaut PipelineConfig=8 (calibre cube 30mm). Augmente/diminue "
                              "pour une prise plus 'carree' sur rectangle/cylindre. "
                              "Conseil reglage : --dry-run d'abord, puis live.")
+    parser.add_argument("--grasp-load-threshold", type=float, default=None,
+                        help="Seuil de COUPLE pince (Present_Load, 0-1023) pour conclure "
+                             "'objet tenu', en plus de la marge position. Le couple est "
+                             "TOUJOURS affiche ([check pince] couple=...) ; regarde tenu vs "
+                             "vide puis active avec un seuil entre les deux. Fiable sur objets fins.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Pas d'envoi moteur, juste log les angles calcules")
     parser.add_argument("--no-closed-loop", action="store_true",
@@ -137,6 +142,8 @@ def main():
         config.grasp_success_threshold_pct = args.grasp_threshold
     if args.grasp_lateral_offset is not None:
         config.grasp_lateral_offset_mm = args.grasp_lateral_offset
+    if args.grasp_load_threshold is not None:
+        config.grasp_load_threshold = args.grasp_load_threshold
 
     pipeline = PickAndPlacePipeline(config)
     pipeline.run()
