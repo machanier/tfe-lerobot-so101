@@ -247,7 +247,20 @@ class IKSolver:
             lift = -0.2
             elbow = +0.4
             wflex = -0.4
-        q_smart = np.array([pan, lift, elbow, wflex, 0.0])
+        # wrist_roll : aligner sur le yaw demande par la pose cible. Le
+        # shoulder_pan ET le wrist_roll tournent autour de la verticale, donc
+        # wrist_roll ~= yaw_cible - pan. La pince etant SYMETRIQUE, yaw et
+        # yaw+-180deg sont la MEME prise : on prend le representant le plus
+        # proche du neutre (dans [-pi/2, pi/2]). Sans ca, l'IK partait de
+        # wrist_roll=0 et convergeait parfois vers la solution RETOURNEE
+        # (+-180deg) -> "tete a l'envers" intermittente (cf observations robot).
+        yaw_target = float(np.arctan2(T_target[1, 0], T_target[0, 0]))
+        wrist_roll = yaw_target - pan
+        while wrist_roll > np.pi / 2:
+            wrist_roll -= np.pi
+        while wrist_roll < -np.pi / 2:
+            wrist_roll += np.pi
+        q_smart = np.array([pan, lift, elbow, wflex, wrist_roll])
         return self._clip_to_limits(q_smart)
 
     def _solve_once(self, T_target: np.ndarray, q_init: np.ndarray) -> IKResult:
