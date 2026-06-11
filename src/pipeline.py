@@ -166,6 +166,12 @@ class PipelineConfig:
     # haut -> faux negatifs systematiques, vraies saisies a 14% classees RATE).
     # Ajustable via --grasp-threshold de pick_and_place.py.
     grasp_success_threshold_pct: float = 8.0
+    # Seuil de COUPLE (Present_Load, magnitude brute Feetech 0-1023) au-dessus
+    # duquel on considere la pince comme TENANT un objet, en COMPLEMENT (OR) de
+    # la marge position. Signal fiable independant de la taille (cylindre fin
+    # inclus), sans occlusion. None = desactive (comportement actuel). A caler
+    # avec les valeurs loggees (tenu vs vide). Activable via --grasp-load-threshold.
+    grasp_load_threshold: Optional[float] = None
     # Nombre max de RETRY apres echec (0 = pas de retry, 1 = 1 essai + 1 retry).
     max_grasp_retries: int = 1
     # Pause apres fermeture pince avant de LIRE la position (laisser le servo
@@ -776,20 +782,33 @@ class PickAndPlacePipeline:
                     # restee ouverte d'au moins grasp_success_threshold_pct.
                     time.sleep(self.config.grasp_settle_pause_s)
                     gripper_now = controller.read_gripper_pct()
+                    gripper_load = controller.read_gripper_load()
                     margin = gripper_now - self.config.grip_close_pct
                     success = margin > self.config.grasp_success_threshold_pct
+                    # Signal COUPLE (Present_Load) : bien plus fiable que la
+                    # position pour les objets fins (cylindre tenu = couple
+                    # eleve meme si marge position faible). Si un seuil est
+                    # configure, on RAJOUTE ce critere (OR) -> rattrape les faux
+                    # negatifs de la marge. Toujours LOGGE pour calage.
+                    load_thr = self.config.grasp_load_threshold
+                    if (load_thr is not None and gripper_load >= 0
+                            and gripper_load >= load_thr):
+                        success = True
                     grasp_attempts_log.append({
                         "attempt": attempt,
                         "gripper_pct": gripper_now,
+                        "gripper_load": gripper_load,
                         "consigne_pct": self.config.grip_close_pct,
                         "marge_pct": margin,
                         "seuil_pct": self.config.grasp_success_threshold_pct,
+                        "load_seuil": load_thr,
                         "success": success,
                     })
                     tag = "SAISIE OK" if success else "SAISIE RATEE"
+                    load_txt = f", couple={gripper_load}" if gripper_load >= 0 else ""
                     print(f"   [check pince] consigne={self.config.grip_close_pct:.0f}%, "
                           f"reel={gripper_now:.1f}%, marge={margin:+.1f}%, "
-                          f"seuil={self.config.grasp_success_threshold_pct:.0f}%  -->  {tag}")
+                          f"seuil={self.config.grasp_success_threshold_pct:.0f}%{load_txt}  -->  {tag}")
 
                     if success:
                         grasp_succeeded = True

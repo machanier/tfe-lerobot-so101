@@ -332,6 +332,25 @@ class MotorController:
         pct = (raw_g - cg["range_min"]) / span * 100.0
         return float(np.clip(pct, 0.0, 100.0))
 
+    def read_gripper_load(self) -> int:
+        """Lit la CHARGE/couple actuel(le) de la pince (registre Present_Load).
+
+        Signal de saisie bien plus fiable que la position : quand la pince
+        SERRE un objet, le couple monte (independamment de la taille de l'objet,
+        donc cylindre fin inclus) ; fermee a vide, il reste bas. Pas de probleme
+        d'occlusion (contrairement a une verif par vision).
+
+        Valeur brute Feetech (2 octets) : bits 0-9 = magnitude (0-1023), bit 10
+        = sens. On renvoie la MAGNITUDE. Renvoie -1 si lecture impossible (ne
+        casse jamais la saisie). A caler experimentalement (tenu vs vide).
+        """
+        try:
+            self._require_bus()
+            raw = self._bus.sync_read("Present_Load", normalize=False)
+            return int(raw["gripper"]) & 0x3FF
+        except Exception:
+            return -1
+
     # ----- helpers --------------------------------------------------------
 
     def _require_bus(self):
