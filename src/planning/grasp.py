@@ -231,6 +231,9 @@ class TopDownGrasp(GraspStrategy):
                  gripper_open_margin_mm: float = 5.0,  # marge faible -> ouverture
                                                         # vraiment adaptee a l'objet
                  gripper_max_opening_mm: float = 50.0,
+                 # --- D-Z : ancrage de la profondeur de prise sur la table ---
+                 table_z_m: float = 0.0,                 # plan table (repere base)
+                 min_grasp_clearance_m: float = 0.005,   # ne jamais saisir sous +5mm
                  ):
         self.approach_height_m = approach_height_m
         self.grasp_offset_m = grasp_offset_m
@@ -245,6 +248,8 @@ class TopDownGrasp(GraspStrategy):
         self.adaptive_gripper_open = adaptive_gripper_open
         self.gripper_open_margin_mm = gripper_open_margin_mm
         self.gripper_max_opening_mm = gripper_max_opening_mm
+        self.table_z_m = table_z_m
+        self.min_grasp_clearance_m = min_grasp_clearance_m
 
     @property
     def name(self) -> str:
@@ -299,22 +304,25 @@ class TopDownGrasp(GraspStrategy):
         grasp_xy = np.array([x, y, 0.0]) + np.array([offset_base[0], offset_base[1], 0.0])
         gx, gy = float(grasp_xy[0]), float(grasp_xy[1])
 
-        # === A7 : grasp legerement sous le centre (eviter touche au-dessus) ===
-        # L'IK a typiquement 4-5 mm d'erreur de translation sur le grasp. Si
-        # on vise pile le centre du cube, la pince ferme parfois au-DESSUS
-        # du cube qui glisse au lieu d'etre saisi. En visant a -1/4 hauteur
-        # sous le centre, on garantit que la pince ferme dans la moitie basse
-        # du cube (saisie solide), meme avec l'erreur IK.
-        # Si bbox_3d_m fourni : 1/4 de la hauteur. Sinon : grasp_offset_m.
+        # === D-Z : profondeur de prise ANCREE SUR LA TABLE ===
+        # Le Z stereo est l'axe le plus bruite (cf memoire, "sensibilite de la
+        # profondeur a l'erreur de detection") : il peut tomber sous la table
+        # -> la pince force dans le sol. Comme l'objet REPOSE sur la table
+        # (Z=0, base_link au niveau de la table), on derive la profondeur de
+        # prise du plan table + la moitie de la hauteur estimee (= milieu de
+        # l'objet en hauteur), au lieu du Z detecte. Garde-fou : jamais sous
+        # la table + une marge.
         if obj.bbox_3d_m is not None:
-            z_grasp_offset = -obj.bbox_3d_m[2] / 4.0
+            obj_height_m = float(obj.bbox_3d_m[2])
+            z_grasp = self.table_z_m + obj_height_m / 2.0    # milieu en hauteur
         else:
-            z_grasp_offset = self.grasp_offset_m
+            z_grasp = z + self.grasp_offset_m                # fallback : Z detecte
+        z_grasp = max(z_grasp, self.table_z_m + self.min_grasp_clearance_m)
 
-        # 3 poses : approach, grasp, retract (tous a la meme (gx, gy), z varie)
-        T_approach = _se3(R, [gx, gy, z + self.approach_height_m])
-        T_grasp    = _se3(R, [gx, gy, z + z_grasp_offset])
-        T_retract  = _se3(R, [gx, gy, z + self.retract_height_m])
+        # 3 poses : approach, grasp, retract (meme (gx, gy), Z relatif au grasp)
+        T_approach = _se3(R, [gx, gy, z_grasp + self.approach_height_m])
+        T_grasp    = _se3(R, [gx, gy, z_grasp])
+        T_retract  = _se3(R, [gx, gy, z_grasp + self.retract_height_m])
 
         # === A3 : ouverture pince adaptative selon bbox 3D ===
         # Si on a bbox_3d_m, on calcule l'ouverture optimale (plutot que
