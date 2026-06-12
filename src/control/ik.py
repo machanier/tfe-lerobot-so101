@@ -362,12 +362,25 @@ class IKSolver:
                              _flip(grasp_pose.T_base_gripper_grasp),
                              _flip(grasp_pose.T_base_gripper_retract))
 
+        # Cout = poignet naturel (|wrist_roll|) + CONTINUITE avec q_init.
+        # La continuite empeche de basculer entre A et B d'un re-solve a
+        # l'autre (apres correction cam_2) -> sinon le bras fait un "tour" a
+        # chaque bascule (les "3 tours" observes). Au 1er calcul (q_init
+        # lointain), c'est le poignet qui tranche -> orientation naturelle ;
+        # aux re-solves (q_init = pose courante), la continuite fait RESTER sur
+        # l'orientation deja prise.
+        q0vec = self._to_vector(q_init) if q_init is not None else None
+
         def _cost(trio):
             rg = trio[1]
-            wr = (abs(rg.joint_angles_rad.get("wrist_roll", 0.0))
-                  if rg.joint_angles_rad else 99.0)
+            if not rg.joint_angles_rad:
+                return 1e9
+            wr = abs(rg.joint_angles_rad.get("wrist_roll", 0.0))
             pen = sum(0.0 if r.converged else 5.0 for r in trio)
-            return wr + pen
+            cont = (float(np.linalg.norm(
+                self._to_vector(rg.joint_angles_rad) - q0vec))
+                if q0vec is not None else 0.0)
+            return wr + pen + cont
 
         chosen = trio_b if _cost(trio_b) < _cost(trio_a) else trio_a
         return chosen[0], chosen[1], chosen[2]
