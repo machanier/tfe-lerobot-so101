@@ -98,6 +98,22 @@ class RefinementResult:
 # ============================================================
 
 
+def _bbox_touches_border(bbox, img_w: float, img_h: float,
+                         margin_px: float = 4.0) -> bool:
+    """True si la bbox touche le bord de l'image (detection TRONQUEE).
+
+    Une bbox tronquee a un centre biaise (la partie hors champ manque) et la
+    distorsion est maximale au bord -> les corrections derivees sont fausses
+    (cas 'zone Y+100' du 2026-06-12 : objets a u=12-137px -> zigzag 25-50mm).
+    On prefere NE PAS corriger plutot que corriger faux.
+    """
+    if bbox is None:
+        return False
+    x0, y0, x1, y1 = bbox
+    return (x0 <= margin_px or y0 <= margin_px
+            or x1 >= img_w - margin_px or y1 >= img_h - margin_px)
+
+
 def refine_grasp_with_cam2(
     target_label: str,
     detector: ObjectDetector,
@@ -170,12 +186,26 @@ def refine_grasp_with_cam2(
             method="image_centering",
             message=f"cam_2 n'a pas detecte '{target_label}'",
         )
+    h, w = frame_c2.image.shape[:2]
+    # Rejette les bboxes TRONQUEES au bord de l'image : centre biaise +
+    # distorsion maximale -> correction fausse. Mieux vaut ne pas corriger.
+    inside = [d for d in matches if not _bbox_touches_border(d.bbox, w, h)]
+    if not inside:
+        return RefinementResult(
+            delta_base_m=np.zeros(3),
+            delta_pixels=(0.0, 0.0),
+            confidence=0.0,
+            detection=max(matches, key=lambda d: d.score),
+            target_label=target_label,
+            method="ray_plane_intersection",
+            message=(f"cam_2 : '{target_label}' detecte uniquement AU BORD de "
+                     f"l'image (bbox tronquee) -> correction ignoree"),
+        )
     # Garde la detection la plus confiante
-    det = max(matches, key=lambda d: d.score)
+    det = max(inside, key=lambda d: d.score)
 
     # Centre detecte vs centre de l'image
     u, v = det.center_px
-    h, w = frame_c2.image.shape[:2]
     u_center, v_center = w / 2.0, h / 2.0
     du_px = u - u_center  # positif = objet a droite dans l'image
     dv_px = v - v_center  # positif = objet en bas dans l'image
@@ -201,9 +231,23 @@ def refine_grasp_with_cam2(
 
     target_z = target_z_base_m if target_z_base_m is not None else 0.0
 
+    # UNDISTORTION du pixel avant le rayon. La triangulation stereo le fait
+    # deja (pose_estimator) mais ce module utilisait le pixel BRUT : pres du
+    # bord de l'image cam_2, la distorsion decale le rayon de plusieurs mm
+    # au sol -> corrections faussees (diagnostic 2026-06-12, zone Y+100).
+    u_id, v_id = u, v
+    try:
+        if frame_c2.dist is not None and np.any(np.asarray(frame_c2.dist) != 0):
+            und = cv2.undistortPoints(
+                np.array([[[float(u), float(v)]]], dtype=np.float64),
+                K, frame_c2.dist, P=K).reshape(2)
+            u_id, v_id = float(und[0]), float(und[1])
+    except Exception:
+        pass  # au pire : pixel brut (comportement historique)
+
     # Rayon dans le repere camera : d_cam (3,)
     K_inv = np.linalg.inv(K)
-    d_cam = K_inv @ np.array([u, v, 1.0])
+    d_cam = K_inv @ np.array([u_id, v_id, 1.0])
     # Rayon dans le repere base
     d_base = R_base_cam2 @ d_cam
     # Intersection avec plan Z = target_z
