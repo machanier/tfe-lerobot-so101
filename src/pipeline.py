@@ -675,8 +675,14 @@ class PickAndPlacePipeline:
                 print(">> A4 : Mini-descente + Refinement #2")
                 T_intermediate = grasp_pose.T_base_gripper_grasp.copy()
                 T_intermediate[2, 3] += 0.04  # 4cm au-dessus du grasp
+                # q_init = pose PHYSIQUE actuelle du robot (rs_at_approach), PAS
+                # r_app (l'approche re-calculee apres correction cam_2, qui peut
+                # avoir saute de bassin IK). Solve() prend la solution la plus
+                # proche -> la mini-descente part de la ou le bras EST -> plus
+                # de "tour" pendant le raffinement (les petites montees/descentes
+                # parasites observees par Maxence).
                 r_intermediate = self._ik.solve(
-                    T_intermediate, q_init=r_app.joint_angles_rad)
+                    T_intermediate, q_init=rs_at_approach.joint_angles_rad)
                 # B4 (2026-05-19) : c'est PENDANT cette mini-descente que la
                 # pince s'ouvre (de home_gripper_pct=5% a gripper_open_pct
                 # adapte a la bbox de l'objet). Avant : la pince etait deja
