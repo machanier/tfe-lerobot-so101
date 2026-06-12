@@ -802,16 +802,16 @@ class PickAndPlacePipeline:
                     gripper_now = controller.read_gripper_pct()
                     gripper_load = controller.read_gripper_load()
                     margin = gripper_now - self.config.grip_close_pct
-                    success = margin > self.config.grasp_success_threshold_pct
-                    # Signal COUPLE (Present_Load) : bien plus fiable que la
-                    # position pour les objets fins (cylindre tenu = couple
-                    # eleve meme si marge position faible). Si un seuil est
-                    # configure, on RAJOUTE ce critere (OR) -> rattrape les faux
-                    # negatifs de la marge. Toujours LOGGE pour calage.
+                    # DETECTION DE SAISIE : si un seuil de COUPLE est configure,
+                    # c'est le couple SEUL qui decide. La marge de POSITION est
+                    # ABANDONNEE (elle ne sait pas distinguer un objet fin tenu
+                    # d'une fermeture a vide -> tout l'interet du couple). Sans
+                    # seuil couple : fallback sur l'ancienne marge position.
                     load_thr = self.config.grasp_load_threshold
-                    if (load_thr is not None and gripper_load >= 0
-                            and gripper_load >= load_thr):
-                        success = True
+                    if load_thr is not None and gripper_load >= 0:
+                        success = gripper_load >= load_thr
+                    else:
+                        success = margin > self.config.grasp_success_threshold_pct
                     grasp_attempts_log.append({
                         "attempt": attempt,
                         "gripper_pct": gripper_now,
