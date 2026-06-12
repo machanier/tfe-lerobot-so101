@@ -663,7 +663,11 @@ class PickAndPlacePipeline:
                     # Refaire l'IK pour les poses corrigees
                     r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
                         grasp_pose, q_init=rs_at_approach.joint_angles_rad)
-                    print(f"   IK re-resolue avec poses corrigees.")
+                    _wr_av = np.degrees(rs_at_approach.joint_angles_rad.get("wrist_roll", 0.0))
+                    _wr_ap = np.degrees(r_grp.joint_angles_rad.get("wrist_roll", 0.0))
+                    _flag = "  <<< SAUT (tour)" if abs(_wr_ap - _wr_av) > 90 else ""
+                    print(f"   IK re-resolue. wrist_roll: courant={_wr_av:+.0f}deg "
+                          f"-> grasp={_wr_ap:+.0f}deg{_flag}")
                 print()
 
                 # === A4 : Mini-descente + Refinement #2 (cam_2 plus pres) ===
