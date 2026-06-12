@@ -321,12 +321,42 @@ class IKSolver:
         if not isinstance(grasp_pose, GraspPose):
             raise TypeError(f"Attendu GraspPose, recu {type(grasp_pose).__name__}")
 
-        r_app = self.solve(grasp_pose.T_base_gripper_approach, q_init=q_init)
-        r_grp = self.solve(grasp_pose.T_base_gripper_grasp,
-                           q_init=r_app.joint_angles_rad if r_app.joint_angles_rad else None)
-        r_ret = self.solve(grasp_pose.T_base_gripper_retract,
-                           q_init=r_grp.joint_angles_rad if r_grp.joint_angles_rad else None)
-        return r_app, r_grp, r_ret
+        # === Symetrie 180deg de la pince ===
+        # Une prise a l'orientation R est IDENTIQUE a R tournee de 180deg autour
+        # de l'axe d'approche (la pince ferme sur la meme ligne). On resout les
+        # DEUX orientations et on garde la config la plus NATURELLE (wrist_roll
+        # proche du neutre). Sans ca, l'IK gardait la 1ere solution convergee
+        # depuis q_init, parfois "enroulee" selon l'orientation de l'objet ->
+        # chemins interminables + tete a l'envers (diagnostic Maxence).
+        Rz180 = np.diag([-1.0, -1.0, 1.0])
+
+        def _flip(T):
+            T2 = np.array(T, dtype=np.float64, copy=True)
+            T2[:3, :3] = T2[:3, :3] @ Rz180
+            return T2
+
+        def _solve_trio(T_app, T_grp, T_ret):
+            ra = self.solve(T_app, q_init=q_init)
+            rg = self.solve(T_grp, q_init=ra.joint_angles_rad or None)
+            rr = self.solve(T_ret, q_init=rg.joint_angles_rad or None)
+            return (ra, rg, rr)
+
+        trio_a = _solve_trio(grasp_pose.T_base_gripper_approach,
+                             grasp_pose.T_base_gripper_grasp,
+                             grasp_pose.T_base_gripper_retract)
+        trio_b = _solve_trio(_flip(grasp_pose.T_base_gripper_approach),
+                             _flip(grasp_pose.T_base_gripper_grasp),
+                             _flip(grasp_pose.T_base_gripper_retract))
+
+        def _cost(trio):
+            rg = trio[1]
+            wr = (abs(rg.joint_angles_rad.get("wrist_roll", 0.0))
+                  if rg.joint_angles_rad else 99.0)
+            pen = sum(0.0 if r.converged else 5.0 for r in trio)
+            return wr + pen
+
+        chosen = trio_b if _cost(trio_b) < _cost(trio_a) else trio_a
+        return chosen[0], chosen[1], chosen[2]
 
     # ----- helpers internes -----------------------------------------------
 
