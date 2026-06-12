@@ -102,10 +102,25 @@ def main():
                              "pour une prise plus 'carree' sur rectangle/cylindre. "
                              "Conseil reglage : --dry-run d'abord, puis live.")
     parser.add_argument("--grasp-load-threshold", type=float, default=None,
-                        help="Seuil de COUPLE pince (Present_Load, 0-1023) pour conclure "
-                             "'objet tenu', en plus de la marge position. Le couple est "
-                             "TOUJOURS affiche ([check pince] couple=...) ; regarde tenu vs "
-                             "vide puis active avec un seuil entre les deux. Fiable sur objets fins.")
+                        help="Seuil de COUPLE pince (Present_Load, 0-1023). Quand fourni, "
+                             "c'est le couple SEUL qui juge la saisie (fermeture ET verif "
+                             "post-levee) ; il sert aussi de seuil de CONTACT pour la "
+                             "fermeture asservie. Reference : vide ~200-230, tenu ~350+. "
+                             "Conseille : 300.")
+    parser.add_argument("--grasp-close-mode", choices=["servo", "static"],
+                        default="servo",
+                        help="servo (defaut) = fermeture ASSERVIE au couple : la pince "
+                             "descend par pas et S'ARRETE AU CONTACT de l'objet "
+                             "(+ --grasp-squeeze de maintien). static = consigne aveugle "
+                             "a --grip-close (comportement historique).")
+    parser.add_argument("--grasp-squeeze", type=float, default=3.0,
+                        help="Mode servo : serrage de maintien (%% de course) ajoute "
+                             "apres le contact. Defaut 3.")
+    parser.add_argument("--no-lift-check", action="store_true",
+                        help="Desactive la VERIF POST-LEVEE (P1'). Par defaut, apres une "
+                             "fermeture jugee OK le bras remonte a retract et RE-LIT "
+                             "position+couple pour attraper les faux positifs "
+                             "(effleurement du sommet, morsure de bord, appui table).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Pas d'envoi moteur, juste log les angles calcules")
     parser.add_argument("--no-closed-loop", action="store_true",
@@ -144,6 +159,9 @@ def main():
         config.grasp_lateral_offset_mm = args.grasp_lateral_offset
     if args.grasp_load_threshold is not None:
         config.grasp_load_threshold = args.grasp_load_threshold
+    config.grasp_close_servo = (args.grasp_close_mode == "servo")
+    config.grasp_squeeze_pct = args.grasp_squeeze
+    config.lift_verify = (not args.no_lift_check)
 
     pipeline = PickAndPlacePipeline(config)
     pipeline.run()
