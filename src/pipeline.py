@@ -188,6 +188,28 @@ class PipelineConfig:
     # prise bien "carree". Exposable via --grasp-lateral-offset.
     grasp_lateral_offset_mm: Optional[float] = None
 
+    # ---------- P1' : verification POST-LEVEE (anti faux positifs) ----------
+    # Le couple A LA FERMETURE peut mentir : effleurement du sommet, morsure
+    # de bord ou appui sur la table donnent un couple eleve SANS tenir l'objet
+    # (faux positifs observes a couple=280, 328 et 500 le 2026-06-12, alors
+    # que les vraies prises etaient a 356-380 -> AUCUN seuil ne separe).
+    # Si True : apres une fermeture jugee OK, on monte d'abord a retract puis
+    # on RELIT position+couple. Un objet tenu maintient les deux ; un objet
+    # perdu retombe a la baseline -> le faux positif est attrape et on retry.
+    lift_verify: bool = True
+
+    # ---------- P5 : fermeture ASSERVIE AU COUPLE ----------
+    # Si True : la fermeture n'est plus une consigne aveugle a grip_close_pct,
+    # mais une rampe par pas qui LIT Present_Load et s'arrete au CONTACT
+    # (+ grasp_squeeze_pct de pression de maintien). La pince s'adapte ainsi
+    # a la taille de l'objet sans parametre par objet. Necessite un seuil
+    # grasp_load_threshold ; sans seuil, la rampe va au plancher (equivalent
+    # au comportement statique). False = fermeture statique historique.
+    grasp_close_servo: bool = True
+    # Serrage supplementaire apres contact (% de course pince). 3% = ferme
+    # sans ecraser ; la consigne tenue reste relative a la largeur de l'objet.
+    grasp_squeeze_pct: float = 3.0
+
 
 # ============================================================
 # Orchestrateur principal
@@ -361,6 +383,21 @@ class PickAndPlacePipeline:
                 print("   Bascule en mode --dry-run.")
                 self.config.dry_run = True
 
+        # BASELINE PINCE A VIDE : reference de la session pour interpreter le
+        # couple. A vide les doigts TPU se compriment entre eux des ~10% ->
+        # couple parasite ~200-230 meme sans objet. La logguer rend les
+        # seuils interpretables (tenu = nettement au-dessus de la baseline).
+        self._gripper_baseline = None
+        if not self.config.dry_run and controller is not None and controller._bus is not None:
+            try:
+                base_pct = controller.read_gripper_pct()
+                base_load = controller.read_gripper_load()
+                self._gripper_baseline = (base_pct, base_load)
+                print(f">> [baseline pince] au depart : position={base_pct:.1f}%, "
+                      f"couple={base_load}  (reference 'a vide' de la session)")
+            except Exception:
+                pass
+
         # IMPORTANT : la MultiCamera DOIT rester ouverte pendant TOUT le
         # pipeline car Sprint 4 (closed_loop) a besoin de cam_2 APRES la
         # phase 1 d'execution. Sinon le 'with MultiCamera() as mc' se ferme
@@ -450,6 +487,22 @@ class PickAndPlacePipeline:
                   f"({target.position_base_m[0]*1000:+.1f}, "
                   f"{target.position_base_m[1]*1000:+.1f}, "
                   f"{target.position_base_m[2]*1000:+.1f}) mm")
+            # Geometrie enrichie (P3) : hauteur fiabilisee + classe + yaw base
+            geo_bits = []
+            if target.bbox_3d_m is not None:
+                geo_bits.append(
+                    f"empreinte ~{target.bbox_3d_m[0]*1000:.0f}x"
+                    f"{target.bbox_3d_m[1]*1000:.0f}mm, "
+                    f"hauteur={target.bbox_3d_m[2]*1000:.0f}mm "
+                    f"({target.meta.get('height_method', '?')})")
+            if target.meta.get("pose_class"):
+                geo_bits.append(f"classe={target.meta['pose_class']}")
+            if "pose_class" in target.meta:
+                yb = target.meta.get("yaw_base_rad")
+                geo_bits.append("yaw_base=libre" if yb is None
+                                else f"yaw_base={np.degrees(yb):+.0f}deg")
+            if geo_bits:
+                print(f"   geometrie : {', '.join(geo_bits)}")
             print()
 
             # ============================================================
@@ -474,6 +527,11 @@ class PickAndPlacePipeline:
             q_session_start = dict(q_current)
 
             r_app, r_grp, r_ret = self._ik.solve_grasp_pose(grasp_pose, q_init=q_current)
+            self._log_wrist("IK initiale", q_current, r_grp)
+            if grasp_pose.meta.get("flipped_180"):
+                print(f"   (orientation de prise retournee de 180deg retenue, "
+                      f"yaw={np.degrees(grasp_pose.meta.get('yaw_rad', 0)):+.0f}deg ; "
+                      f"matrices persistees -> cibles coherentes pour la suite)")
             # IK pour la pose drop_above et drop_release : on utilise l'IK
             # specialise self._ik_drop qui a un poids rotation reduit (0.01).
             # Cela permet de privilegier la POSITION (precision au mm pour
@@ -663,11 +721,9 @@ class PickAndPlacePipeline:
                     # Refaire l'IK pour les poses corrigees
                     r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
                         grasp_pose, q_init=rs_at_approach.joint_angles_rad)
-                    _wr_av = np.degrees(rs_at_approach.joint_angles_rad.get("wrist_roll", 0.0))
-                    _wr_ap = np.degrees(r_grp.joint_angles_rad.get("wrist_roll", 0.0))
-                    _flag = "  <<< SAUT (tour)" if abs(_wr_ap - _wr_av) > 90 else ""
-                    print(f"   IK re-resolue. wrist_roll: courant={_wr_av:+.0f}deg "
-                          f"-> grasp={_wr_ap:+.0f}deg{_flag}")
+                    print(f"   IK re-resolue avec poses corrigees.")
+                    self._log_wrist("re-solve apres correction #1",
+                                    rs_at_approach.joint_angles_rad, r_grp)
                 print()
 
                 # === A4 : Mini-descente + Refinement #2 (cam_2 plus pres) ===
@@ -687,6 +743,8 @@ class PickAndPlacePipeline:
                 # parasites observees par Maxence).
                 r_intermediate = self._ik.solve(
                     T_intermediate, q_init=rs_at_approach.joint_angles_rad)
+                self._log_wrist("mini-descente",
+                                rs_at_approach.joint_angles_rad, r_intermediate)
                 # B4 (2026-05-19) : c'est PENDANT cette mini-descente que la
                 # pince s'ouvre (de home_gripper_pct=5% a gripper_open_pct
                 # adapte a la bbox de l'objet). Avant : la pince etait deja
@@ -736,13 +794,21 @@ class PickAndPlacePipeline:
                 # reste active pour le REFINEMENT RETRY (apres saisie ratee),
                 # ou l'objet PEUT vraiment avoir bouge suite au contact rate.
                 R2_MAX_ABSOLUTE_MM = 30.0
+                # P4 (2026-06-12) : le score HSV est un RATIO D'AIRE (clip
+                # plancher 0.05), pas une confiance. Un score 0.11 = blob
+                # minuscule (souvent une detection pourrie) qui avait pourtant
+                # le droit de corriger 28mm -> run 'completement a cote'.
+                # Double garde : score minimum + plafond PROPORTIONNEL au
+                # score (12mm + 40mm*score, borne par le plafond physique).
+                R2_MIN_SCORE = 0.18
                 score = refinement2.confidence
-                if refinement2.confidence > 0.1 and refinement2.delta_norm_mm < R2_MAX_ABSOLUTE_MM:
+                r2_cap_mm = min(R2_MAX_ABSOLUTE_MM, 12.0 + 40.0 * score)
+                if score >= R2_MIN_SCORE and refinement2.delta_norm_mm < r2_cap_mm:
                     apply_correction_to_grasp_pose(grasp_pose,
                                                     refinement2.delta_base_m)
                     print(f"   Correction #2 appliquee "
                           f"(norme {refinement2.delta_norm_mm:.1f} mm, "
-                          f"plafond R2={R2_MAX_ABSOLUTE_MM:.0f}mm @ score {score:.2f})")
+                          f"plafond {r2_cap_mm:.0f}mm @ score {score:.2f})")
                     # Re-IK grasp et retract uniquement (approach deja passe)
                     r_grp = self._ik.solve(
                         grasp_pose.T_base_gripper_grasp,
@@ -750,24 +816,32 @@ class PickAndPlacePipeline:
                     r_ret = self._ik.solve(
                         grasp_pose.T_base_gripper_retract,
                         q_init=r_grp.joint_angles_rad)
-                elif refinement2.delta_norm_mm >= R2_MAX_ABSOLUTE_MM:
+                    self._log_wrist("re-solve apres correction #2",
+                                    r_intermediate.joint_angles_rad, r_grp)
+                elif score < R2_MIN_SCORE and refinement2.delta_norm_mm > 0.5:
+                    print(f"   [INFO] score cam_2 {score:.2f} < {R2_MIN_SCORE} : "
+                          f"correction #2 ({refinement2.delta_norm_mm:.1f}mm) ignoree "
+                          f"(detection trop peu fiable)")
+                elif refinement2.delta_norm_mm >= r2_cap_mm:
                     print(f"   [WARN] correction #2 = {refinement2.delta_norm_mm:.1f}mm "
-                          f"> plafond R2 {R2_MAX_ABSOLUTE_MM:.0f}mm "
+                          f"> plafond {r2_cap_mm:.0f}mm "
                           f"(score {score:.2f}, probable fausse detection), ignoree")
                 else:
                     print(f"   [INFO] objet stable depuis refinement #1 (pas de re-correction)")
                 print()
 
-                # --- Phase 2 : BOUCLE de tentatives de saisie avec FEEDBACK (P1) ---
-                # Au lieu d'executer une trajectoire monolithique, on procede en
-                # 3 etapes par tentative :
-                #   1. SOUS-TRAJ : intermediate -> approach -> grasp -> ferme pince
-                #   2. CHECK : lecture position reelle gripper
-                #        - si position >> consigne -> pince a bute sur l'objet = SAISIE OK
-                #        - sinon -> SAISIE RATEE (pince ferme dans le vide)
-                #   3. Si OK -> sous-traj finish (retract + drop + home)
-                #      Si rate ET retry possible -> remontee + refinement + boucle
-                #      Si rate ET tous retries epuises -> abort vers home sans depose
+                # --- Phase 2 : BOUCLE de tentatives de saisie avec FEEDBACK ---
+                # Chaque tentative :
+                #   1. DESCENTE (pince ouverte) vers la pose grasp.
+                #   2. FERMETURE : asservie au couple (P5, stop au contact +
+                #      pression de maintien) ou statique (mode historique).
+                #   3. CHECK FERMETURE : couple >= seuil (ou marge position).
+                #   4. P1' VERIF POST-LEVEE : remontee a retract puis RE-LECTURE
+                #      position+couple. Le couple a la fermeture peut mentir
+                #      (effleurement du sommet / morsure de bord / appui table
+                #      -> faux positifs a 280-500 observes) ; apres 10cm de
+                #      levee, un objet perdu retombe a la baseline -> attrape.
+                #   5. Si tenu -> depose ; sinon retry (refinement + redescente).
                 print(f">> Phase 2 : tentative(s) de saisie avec feedback pince + depot + retour ({home_origin})")
                 q_at_intermediate = rs_at_intermediate.joint_angles_rad
 
@@ -775,6 +849,12 @@ class PickAndPlacePipeline:
                 grasp_attempts_log = []
                 grasp_succeeded = False
                 q_start_attempt = q_at_intermediate  # depart de la 1ere descente
+                # Consigne pince TENUE pendant le transport. En fermeture
+                # asservie, c'est la consigne figee au contact (relative a la
+                # largeur de l'objet), pas le plancher grip_close_pct.
+                hold_cmd = self.config.grip_close_pct
+                use_servo_close = bool(self.config.grasp_close_servo)
+                load_thr = self.config.grasp_load_threshold
 
                 attempt = 0
                 while attempt <= self.config.max_grasp_retries:
@@ -782,77 +862,161 @@ class PickAndPlacePipeline:
                     print()
                     print(f">> --- Tentative #{attempt}/{self.config.max_grasp_retries + 1} ---")
 
-                    # Sous-traj : descente vers grasp + fermeture pince statique
+                    # 1. DESCENTE vers grasp (fermeture incluse seulement en
+                    # mode statique ; en mode asservi elle vient juste apres).
                     traj_grasp = self._build_grasp_attempt_traj(
                         q_start_attempt,
                         r_app.joint_angles_rad,
                         r_grp.joint_angles_rad,
                         grip_open_pct=grasp_pose.gripper_open_pct,
                         grip_close_pct=self.config.grip_close_pct,
+                        include_close=not use_servo_close,
                     )
-                    print(f"   Descente + fermeture : {len(traj_grasp)} points, "
+                    label_traj = "Descente" if use_servo_close else "Descente + fermeture"
+                    print(f"   {label_traj} : {len(traj_grasp)} points, "
                           f"duree {traj_grasp.duration_s:.1f}s")
                     controller.execute_trajectory(traj_grasp, verbose=True,
                                                   on_step=live_callback)
 
-                    # CHECK pince : laisse le servo se stabiliser puis lit la
-                    # position reelle. Si la pince a bute sur l'objet, elle est
-                    # restee ouverte d'au moins grasp_success_threshold_pct.
+                    # 2. FERMETURE asservie au couple (P5)
+                    close_info = None
+                    hold_cmd = self.config.grip_close_pct
+                    if use_servo_close:
+                        close_info = controller.close_gripper_with_feedback(
+                            start_pct=grasp_pose.gripper_open_pct,
+                            floor_pct=self.config.grip_close_pct,
+                            load_stop=load_thr,
+                            squeeze_pct=self.config.grasp_squeeze_pct,
+                        )
+                        hold_cmd = close_info["stop_cmd_pct"]
+                        if close_info["stopped_on_contact"]:
+                            print(f"   [fermeture asservie] CONTACT a "
+                                  f"{close_info['contact_pct']:.1f}% (~largeur objet), "
+                                  f"maintien a {hold_cmd:.1f}% "
+                                  f"(serrage +{self.config.grasp_squeeze_pct:.0f}%), "
+                                  f"couple={close_info['final_load']}")
+                        else:
+                            print(f"   [fermeture asservie] aucun contact detecte, "
+                                  f"plancher {self.config.grip_close_pct:.0f}% atteint "
+                                  f"(couple={close_info['final_load']})")
+
+                    # 3. CHECK FERMETURE : couple seul si seuil configure,
+                    # sinon marge position (mode legacy).
                     time.sleep(self.config.grasp_settle_pause_s)
                     gripper_now = controller.read_gripper_pct()
                     gripper_load = controller.read_gripper_load()
                     margin = gripper_now - self.config.grip_close_pct
-                    # DETECTION DE SAISIE : si un seuil de COUPLE est configure,
-                    # c'est le couple SEUL qui decide. La marge de POSITION est
-                    # ABANDONNEE (elle ne sait pas distinguer un objet fin tenu
-                    # d'une fermeture a vide -> tout l'interet du couple). Sans
-                    # seuil couple : fallback sur l'ancienne marge position.
-                    load_thr = self.config.grasp_load_threshold
                     if load_thr is not None and gripper_load >= 0:
-                        success = gripper_load >= load_thr
+                        close_ok = gripper_load >= load_thr
                     else:
-                        success = margin > self.config.grasp_success_threshold_pct
-                    grasp_attempts_log.append({
+                        close_ok = margin > self.config.grasp_success_threshold_pct
+                    tag = "SAISIE OK" if close_ok else "SAISIE RATEE"
+                    load_txt = f", couple={gripper_load}" if gripper_load >= 0 else ""
+                    print(f"   [check pince] consigne={hold_cmd:.1f}%, "
+                          f"reel={gripper_now:.1f}%, marge={margin:+.1f}%, "
+                          f"seuil={self.config.grasp_success_threshold_pct:.0f}%{load_txt}  -->  {tag}")
+
+                    entry = {
                         "attempt": attempt,
                         "gripper_pct": gripper_now,
                         "gripper_load": gripper_load,
                         "consigne_pct": self.config.grip_close_pct,
+                        "hold_cmd_pct": hold_cmd,
                         "marge_pct": margin,
                         "seuil_pct": self.config.grasp_success_threshold_pct,
                         "load_seuil": load_thr,
-                        "success": success,
-                    })
-                    tag = "SAISIE OK" if success else "SAISIE RATEE"
-                    load_txt = f", couple={gripper_load}" if gripper_load >= 0 else ""
-                    print(f"   [check pince] consigne={self.config.grip_close_pct:.0f}%, "
-                          f"reel={gripper_now:.1f}%, marge={margin:+.1f}%, "
-                          f"seuil={self.config.grasp_success_threshold_pct:.0f}%{load_txt}  -->  {tag}")
+                        "servo_contact": (close_info or {}).get("stopped_on_contact"),
+                        "contact_pct": (close_info or {}).get("contact_pct"),
+                        "close_ok": close_ok,
+                        "lift_pct": None,
+                        "lift_load": None,
+                        "held_after_lift": None,
+                        "success": False,
+                    }
+                    grasp_attempts_log.append(entry)
 
-                    if success:
+                    failed_stage = None  # "close" | "lift" | None
+                    if close_ok and self.config.lift_verify:
+                        # 4. P1' : VERIF POST-LEVEE — remonte a retract, pince
+                        # tenue a hold_cmd, puis re-lecture.
+                        rs_g = self._provider.read_live()
+                        traj_lift_v = quintic_trajectory(
+                            rs_g.joint_angles_rad,
+                            r_ret.joint_angles_rad,
+                            duration_s=estimate_duration_safe(
+                                rs_g.joint_angles_rad, r_ret.joint_angles_rad,
+                                max_velocity_rad_s=self.config.max_velocity_rad_s),
+                            gripper_start=hold_cmd,
+                            gripper_end=hold_cmd,
+                        )
+                        print(f"   Levee de verification : {len(traj_lift_v)} points, "
+                              f"duree {traj_lift_v.duration_s:.1f}s")
+                        controller.execute_trajectory(traj_lift_v, verbose=False,
+                                                      on_step=live_callback)
+                        time.sleep(self.config.grasp_settle_pause_s)
+                        lift_pct = controller.read_gripper_pct()
+                        lift_load = controller.read_gripper_load()
+                        if load_thr is not None and lift_load >= 0:
+                            held = lift_load >= load_thr
+                        else:
+                            # Sans seuil couple : l'objet tenu maintient la
+                            # pince a ~la meme ouverture qu'a la fermeture ;
+                            # perdu, elle retombe a la butee a vide (~-2%).
+                            held = lift_pct > gripper_now - 1.5
+                        tag_l = ("OBJET TENU (saisie confirmee)" if held
+                                 else "OBJET PERDU -> faux positif attrape")
+                        print(f"   [verif levee] pince={lift_pct:.1f}%, "
+                              f"couple={lift_load}  -->  {tag_l}")
+                        entry["lift_pct"] = lift_pct
+                        entry["lift_load"] = lift_load
+                        entry["held_after_lift"] = held
+                        if held:
+                            entry["success"] = True
+                            grasp_succeeded = True
+                            break
+                        failed_stage = "lift"
+                    elif close_ok:
+                        # Verif post-levee desactivee : on fait confiance au
+                        # check fermeture (comportement historique).
+                        entry["success"] = True
                         grasp_succeeded = True
                         break
+                    else:
+                        failed_stage = "close"
 
-                    # Echec : retry possible ?
+                    # Echec (fermeture a vide OU faux positif post-levee) :
+                    # retry possible ?
                     if attempt > self.config.max_grasp_retries:
                         print(f"   >> ABANDON apres {attempt} tentative(s) (max retries atteint).")
                         break
 
-                    print(f"   >> RETRY : remontee + refinement cam_2 + redescente")
+                    reason = ("faux positif post-levee" if failed_stage == "lift"
+                              else "fermeture a vide")
+                    print(f"   >> RETRY ({reason}) : refinement cam_2 + redescente")
 
-                    # 1. Remontee a approach AVEC pince ouverte (libere ce qu'on aurait pu saisir partiellement)
-                    rs_at_grasp = self._provider.read_live()
-                    traj_lift = self._build_retry_lift_traj(
-                        rs_at_grasp.joint_angles_rad,
-                        r_app.joint_angles_rad,
-                        grip_open_pct=grasp_pose.gripper_open_pct,
-                    )
-                    print(f"   Remontee a approach : {len(traj_lift)} points, "
-                          f"duree {traj_lift.duration_s:.1f}s")
-                    controller.execute_trajectory(traj_lift, verbose=False,
-                                                  on_step=live_callback)
+                    if failed_stage == "lift":
+                        # Deja a retract, pince fermee sur rien : OUVRIR en
+                        # place (le bras ne bouge pas) puis refinement.
+                        controller.set_gripper_pct(grasp_pose.gripper_open_pct)
+                        time.sleep(0.6)
+                        rs_after_lift = self._provider.read_live()
+                    else:
+                        # 1. Remontee a approach AVEC pince ouverte (libere ce
+                        # qu'on aurait pu saisir partiellement)
+                        rs_at_grasp = self._provider.read_live()
+                        traj_lift = self._build_retry_lift_traj(
+                            rs_at_grasp.joint_angles_rad,
+                            r_app.joint_angles_rad,
+                            grip_open_pct=grasp_pose.gripper_open_pct,
+                        )
+                        print(f"   Remontee a approach : {len(traj_lift)} points, "
+                              f"duree {traj_lift.duration_s:.1f}s")
+                        controller.execute_trajectory(traj_lift, verbose=False,
+                                                      on_step=live_callback)
+                        rs_after_lift = self._provider.read_live()
 
-                    # 2. Refinement cam_2 (l'objet peut avoir bouge a cause du contact rate)
-                    rs_after_lift = self._provider.read_live()
+                    # 2. Refinement cam_2 (l'objet peut avoir bouge a cause du
+                    # contact rate)
                     print(f"   Refinement cam_2 retry...")
                     refinement_retry = refine_grasp_with_cam2(
                         target_label=self.config.target_label,
@@ -863,7 +1027,9 @@ class PickAndPlacePipeline:
                         label_mapping=self._label_mapping,
                     )
                     print(f"   {refinement_retry.message}")
-                    # Seuil dynamique selon score (meme logique P2)
+                    # Seuil dynamique selon score (meme logique P2) + score
+                    # minimum releve a 0.15 (P4 : le score est un ratio d'aire,
+                    # une correction de 49mm @ 0.28 a deja envoye le bras a cote)
                     score_r = refinement_retry.confidence
                     if score_r >= 0.5:
                         seuil_r_mm = 100.0
@@ -871,20 +1037,25 @@ class PickAndPlacePipeline:
                         seuil_r_mm = 80.0
                     else:
                         seuil_r_mm = 60.0
-                    if score_r > 0.1 and refinement_retry.delta_norm_mm < seuil_r_mm:
+                    if score_r >= 0.15 and refinement_retry.delta_norm_mm < seuil_r_mm:
                         apply_correction_to_grasp_pose(grasp_pose, refinement_retry.delta_base_m)
                         print(f"   Correction retry appliquee "
                               f"(norme {refinement_retry.delta_norm_mm:.1f}mm, "
                               f"seuil={seuil_r_mm:.0f}mm @ score {score_r:.2f})")
                         r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
                             grasp_pose, q_init=rs_after_lift.joint_angles_rad)
+                        self._log_wrist("re-solve retry",
+                                        rs_after_lift.joint_angles_rad, r_grp)
                     elif refinement_retry.delta_norm_mm >= seuil_r_mm:
                         print(f"   [WARN] correction retry = {refinement_retry.delta_norm_mm:.1f}mm "
                               f"> seuil {seuil_r_mm:.0f}mm (score {score_r:.2f}), ignoree")
+                    elif score_r < 0.15:
+                        print(f"   [INFO] score cam_2 {score_r:.2f} < 0.15 : "
+                              f"correction retry ignoree (detection peu fiable)")
 
                     # Le point de depart de la prochaine descente = position courante
                     q_start_attempt = rs_after_lift.joint_angles_rad
-                    # (la boucle reprend : descente + fermeture + check)
+                    # (la boucle reprend : descente + fermeture + checks)
 
                 print()
 
@@ -893,13 +1064,15 @@ class PickAndPlacePipeline:
                 if grasp_succeeded:
                     print(f">> SAISIE REUSSIE en {attempt} tentative(s). "
                           f"Depose dans la boite + retour {home_origin}.")
+                    # NB : si la verif post-levee est active, on est DEJA a
+                    # retract -> le 1er segment (grasp->retract) est ~statique.
                     traj_finish = self._build_finish_after_grasp_traj(
                         q_grp=rs_after_grasp.joint_angles_rad,
                         q_ret=r_ret.joint_angles_rad,
                         q_drop=r_drop_above.joint_angles_rad,
                         q_rel=r_drop_release.joint_angles_rad,
                         q_home=q_home_final,
-                        grip_close_pct=self.config.grip_close_pct,
+                        grip_close_pct=hold_cmd,
                         grip_open_pct=grasp_pose.gripper_open_pct,
                     )
                 else:
@@ -1090,6 +1263,24 @@ class PickAndPlacePipeline:
             print(f"[WARN] Echec disable_torque : {e}. Coupe l'alim manuellement.")
 
     # ----- helpers --------------------------------------------------------
+
+    def _log_wrist(self, tag: str, q_ref: dict, ik_res) -> None:
+        """Trace la continuite du wrist_roll a chaque (re-)resolution IK.
+
+        Un ecart > 90deg = la cible demande un demi-tour de poignet : c'est la
+        signature des 'tours' observes pendant mini-descente/descente. Avec la
+        persistance d'orientation (solve_grasp_pose), cela ne devrait plus se
+        produire ; ce log le verifie run apres run (ou pinpointe le cas restant).
+        """
+        try:
+            if ik_res is None or not getattr(ik_res, "joint_angles_rad", None):
+                return
+            wr0 = float(np.degrees(q_ref.get("wrist_roll", 0.0)))
+            wr1 = float(np.degrees(ik_res.joint_angles_rad.get("wrist_roll", 0.0)))
+            flag = "  <<< SAUT (tour)" if abs(wr1 - wr0) > 90.0 else ""
+            print(f"   [wrist] {tag} : {wr0:+.0f}deg -> {wr1:+.0f}deg{flag}")
+        except Exception:
+            pass
 
     def _build_phase1_trajectory(self,
                                   q_current: dict[str, float],
@@ -1322,13 +1513,17 @@ class PickAndPlacePipeline:
         self, q_from: dict[str, float], q_app: dict[str, float],
         q_grp: dict[str, float],
         grip_open_pct: float, grip_close_pct: float,
+        include_close: bool = True,
     ) -> JointTrajectory:
-        """Sous-traj : q_from -> approach -> grasp -> ferme pince (statique).
+        """Sous-traj : q_from -> approach -> grasp (-> ferme pince statique).
 
         Utilisee pour chaque TENTATIVE de saisie (1er essai + eventuels retries).
-        A la sortie, la pince a recu la commande de fermeture (grip_close_pct)
-        mais sa position REELLE depend de ce qu'elle a rencontre. C'est
-        precisement ce que run() va lire via controller.read_gripper_pct().
+        include_close=False (mode fermeture ASSERVIE P5) : la trajectoire
+        s'arrete pince OUVERTE a la pose grasp ; la fermeture est ensuite
+        pilotee par controller.close_gripper_with_feedback() qui lit le couple
+        en continu et s'arrete au contact.
+        include_close=True (mode statique historique) : fermeture aveugle a
+        grip_close_pct en fin de trajectoire ; run() lit la position apres.
         """
         c = self.config
         def dur(q1, q2):
@@ -1339,10 +1534,12 @@ class PickAndPlacePipeline:
                                 gripper_start=gp_o, gripper_end=gp_o),
             quintic_trajectory(q_app, q_grp, duration_s=dur(q_app, q_grp),
                                 gripper_start=gp_o, gripper_end=gp_o),
-            # Fermeture STATIQUE (le bras ne bouge pas, la pince ferme).
-            quintic_trajectory(q_grp, q_grp, duration_s=max(c.pause_grasp_s, 0.5),
-                                gripper_start=gp_o, gripper_end=gp_c),
         ]
+        if include_close:
+            # Fermeture STATIQUE (le bras ne bouge pas, la pince ferme).
+            segs.append(
+                quintic_trajectory(q_grp, q_grp, duration_s=max(c.pause_grasp_s, 0.5),
+                                    gripper_start=gp_o, gripper_end=gp_c))
         return chain_trajectories(segs)
 
     def _build_retry_lift_traj(
@@ -1480,11 +1677,22 @@ class PickAndPlacePipeline:
         for entry in attempts_log:
             n = entry["attempt"]
             gp = entry["gripper_pct"]
-            margin = entry["marge_pct"]
+            load = entry.get("gripper_load", -1)
             sc = entry["success"]
-            tag = "OK" if sc else "RATE"
-            print(f"  Tentative #{n} : pince reelle = {gp:>5.1f}%  "
-                  f"(marge {margin:+5.1f}% vs seuil {entry['seuil_pct']:.0f}%)  --> {tag}")
+            if sc:
+                tag = "OK"
+            elif entry.get("held_after_lift") is False:
+                tag = "FAUX POSITIF (attrape a la levee)"
+            else:
+                tag = "RATE"
+            load_txt = f", couple {load}" if load is not None and load >= 0 else ""
+            print(f"  Tentative #{n} : fermeture pince {gp:>5.1f}%{load_txt}  --> {tag}")
+            if entry.get("held_after_lift") is not None:
+                ll = entry.get("lift_load")
+                lp = entry.get("lift_pct")
+                verdict = "tenu" if entry["held_after_lift"] else "PERDU"
+                print(f"                 apres levee : pince {lp:.1f}%, "
+                      f"couple {ll}  --> {verdict}")
         final = "REUSSIE" if succeeded else "ECHEC"
         print(f"  --> Resultat final : {final}  ({total_attempts} tentative(s) total)")
         print("=" * 70)

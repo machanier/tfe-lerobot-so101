@@ -351,6 +351,103 @@ class MotorController:
         except Exception:
             return -1
 
+    def set_gripper_pct(self, pct: float):
+        """Commande UNIQUEMENT la pince (les 5 joints du bras ne recoivent rien).
+
+        Utilise par la fermeture asservie et par l'ouverture en place apres
+        un faux positif attrape post-levee (le bras ne doit pas bouger).
+        """
+        self._require_bus()
+        if not self._torque_enabled:
+            raise RuntimeError("Couple desactive. Appelle enable_torque() d'abord.")
+        cg = self.calib["gripper"]
+        pct = float(np.clip(pct, 0.0, 100.0))
+        raw_g = int(round(cg["range_min"]
+                          + pct / 100.0 * (cg["range_max"] - cg["range_min"])))
+        self._bus.sync_write("Goal_Position", {"gripper": raw_g}, normalize=False)
+
+    def close_gripper_with_feedback(self,
+                                    start_pct: float,
+                                    floor_pct: float,
+                                    load_stop: Optional[float] = None,
+                                    squeeze_pct: float = 3.0,
+                                    step_pct: float = 2.0,
+                                    period_s: float = 0.04,
+                                    confirm_reads: int = 2,
+                                    timeout_s: float = 6.0) -> dict:
+        """Fermeture ASSERVIE AU COUPLE : la pince s'arrete sur l'objet.
+
+        Reponse a « comment la pince sait quand s'arreter » : avant, elle ne
+        le savait pas (consigne fixe floor_pct, le servo butait en aveugle).
+        Maintenant on descend la consigne PAR PAS en lisant Present_Load a
+        chaque pas ; des que le couple confirme le CONTACT (>= load_stop sur
+        `confirm_reads` lectures consecutives), on fige la consigne a
+        (position de contact - squeeze_pct) pour garantir une pression de
+        maintien, et on s'arrete. Adaptatif a la taille de l'objet, aucun
+        parametre par objet.
+
+        A vide : aucun contact detecte, la consigne descend jusqu'a floor_pct
+        (= comportement historique, le check aval conclura SAISIE RATEE).
+
+        Args:
+            start_pct     : consigne de depart (= ouverture actuelle).
+            floor_pct     : consigne plancher si aucun contact (ex: 5%%).
+            load_stop     : seuil Present_Load (0-1023) declarant le contact.
+                            None = pas de detection, rampe directe au plancher.
+            squeeze_pct   : serrage supplementaire apres contact (%% course).
+            step_pct      : decrement de consigne par pas.
+            period_s      : periode de la boucle (lecture couple incluse).
+            confirm_reads : lectures consecutives >= seuil pour confirmer
+                            (anti pic de couple transitoire du mouvement).
+            timeout_s     : garde-fou temps total.
+
+        Returns:
+            dict : stopped_on_contact (bool), stop_cmd_pct (consigne finale
+            tenue, a REUTILISER pour le transport), contact_pct (position
+            reelle au moment du contact, ~largeur objet, ou None),
+            final_pct / final_load (lectures apres stabilisation).
+        """
+        self._require_bus()
+        if not self._torque_enabled:
+            raise RuntimeError("Couple desactive. Appelle enable_torque() d'abord.")
+        cmd = float(max(start_pct, floor_pct))
+        hits = 0
+        contact_pct = None
+        stopped_on_contact = False
+        t0 = time.time()
+        while True:
+            cmd = max(float(floor_pct), cmd - float(step_pct))
+            self.set_gripper_pct(cmd)
+            time.sleep(period_s)
+            if load_stop is not None:
+                load = self.read_gripper_load()
+                if load >= 0 and load >= load_stop:
+                    hits += 1
+                    if hits >= confirm_reads:
+                        contact_pct = self.read_gripper_pct()
+                        stopped_on_contact = True
+                        break
+                else:
+                    hits = 0
+            if cmd <= float(floor_pct) + 1e-9:
+                break
+            if time.time() - t0 > timeout_s:
+                break
+        if stopped_on_contact:
+            # Pression de maintien : consigne un peu SOUS la position de
+            # contact (le servo pousse dans l'objet -> Present_Load reste
+            # haut, prise ferme pour la levee). Relative a l'objet lui-meme.
+            cmd = max(float(floor_pct), float(contact_pct) - float(squeeze_pct))
+            self.set_gripper_pct(cmd)
+        time.sleep(0.25)
+        return {
+            "stopped_on_contact": stopped_on_contact,
+            "stop_cmd_pct": float(cmd),
+            "contact_pct": (float(contact_pct) if contact_pct is not None else None),
+            "final_pct": self.read_gripper_pct(),
+            "final_load": self.read_gripper_load(),
+        }
+
     # ----- helpers --------------------------------------------------------
 
     def _require_bus(self):
@@ -430,6 +527,17 @@ if __name__ == "__main__":
         raise AssertionError("aurait du lever RuntimeError")
     except RuntimeError:
         print(f"  [OK] send_angles sans bus -> RuntimeError")
+
+    # 5b. set_gripper_pct / close_gripper_with_feedback sans bus -> RuntimeError
+    for fn, kwargs in ((mc.set_gripper_pct, {"pct": 50.0}),
+                       (mc.close_gripper_with_feedback,
+                        {"start_pct": 80.0, "floor_pct": 5.0, "load_stop": 300})):
+        try:
+            fn(**kwargs)
+            raise AssertionError("aurait du lever RuntimeError")
+        except RuntimeError:
+            pass
+    print(f"  [OK] set_gripper_pct / close_gripper_with_feedback sans bus -> RuntimeError")
 
     # 6. Context manager : pas de crash sur exit sans connexion
     with MotorController() as mc2:

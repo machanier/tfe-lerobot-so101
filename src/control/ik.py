@@ -317,16 +317,28 @@ class IKSolver:
                                   message=f"Non-converge (residu {prev_norm:.4f})")
 
     def solve_grasp_pose(self, grasp_pose,
-                         q_init: Optional[dict[str, float]] = None
+                         q_init: Optional[dict[str, float]] = None,
+                         persist_choice: bool = True,
                          ) -> tuple[IKResult, IKResult, IKResult]:
         """Resout l'IK pour les 3 poses d'un GraspPose (approach/grasp/retract).
 
         Strategie : chaque solve utilise la solution precedente comme point de
         depart (continuite articulaire, evite les sauts entre approach et grasp).
 
+        PERSISTANCE DU CHOIX D'ORIENTATION (persist_choice=True) : si la
+        variante retournee de 180deg est choisie, les matrices de grasp_pose
+        sont REECRITES avec cette orientation. CONTRAT : apres l'appel,
+        FK(solution) == grasp_pose.T_base_gripper_* — toute resolution
+        ulterieure (mini-descente, re-IK apres refinement #2, retry) qui
+        repart de ces matrices vise donc la MEME orientation physique.
+        Sans ca, les cibles alternaient entre les 2 orientations d'un solve
+        a l'autre -> demi-tours aller-retour du poignet pendant la descente
+        (mini-descentes de ~9s au lieu de ~1s, diagnostic 2026-06-12).
+
         Args:
             grasp_pose : src.planning.grasp.GraspPose.
             q_init     : configuration initiale pour l'approach (defaut : zero).
+            persist_choice : ecrit l'orientation choisie dans grasp_pose.
 
         Returns:
             (result_approach, result_grasp, result_retract)
@@ -344,9 +356,20 @@ class IKSolver:
         # chemins interminables + tete a l'envers (diagnostic Maxence).
         Rz180 = np.diag([-1.0, -1.0, 1.0])
 
+        # La pince est ASYMETRIQUE (doigt fixe / doigt mobile) : retourner
+        # l'orientation de 180deg met le doigt fixe DE L'AUTRE COTE de l'objet.
+        # L'offset lateral A2 (qui plaque l'objet contre le doigt fixe) est
+        # deja integre dans la translation -> la variante retournee doit le
+        # MIROITER (t' = t - 2*offset) pour rester plaquee contre le doigt fixe.
+        off = (grasp_pose.meta or {}).get("offset_base_xy_mm")
+        d_off = np.zeros(3)
+        if off is not None:
+            d_off = np.array([float(off[0]) / 1000.0, float(off[1]) / 1000.0, 0.0])
+
         def _flip(T):
             T2 = np.array(T, dtype=np.float64, copy=True)
             T2[:3, :3] = T2[:3, :3] @ Rz180
+            T2[:3, 3] = T2[:3, 3] - 2.0 * d_off
             return T2
 
         def _solve_trio(T_app, T_grp, T_ret):
@@ -355,12 +378,14 @@ class IKSolver:
             rr = self.solve(T_ret, q_init=rg.joint_angles_rad or None)
             return (ra, rg, rr)
 
+        T_app_b = _flip(grasp_pose.T_base_gripper_approach)
+        T_grp_b = _flip(grasp_pose.T_base_gripper_grasp)
+        T_ret_b = _flip(grasp_pose.T_base_gripper_retract)
+
         trio_a = _solve_trio(grasp_pose.T_base_gripper_approach,
                              grasp_pose.T_base_gripper_grasp,
                              grasp_pose.T_base_gripper_retract)
-        trio_b = _solve_trio(_flip(grasp_pose.T_base_gripper_approach),
-                             _flip(grasp_pose.T_base_gripper_grasp),
-                             _flip(grasp_pose.T_base_gripper_retract))
+        trio_b = _solve_trio(T_app_b, T_grp_b, T_ret_b)
 
         # Cout = poignet naturel (|wrist_roll|) + CONTINUITE avec q_init.
         # La continuite empeche de basculer entre A et B d'un re-solve a
@@ -382,7 +407,22 @@ class IKSolver:
                 if q0vec is not None else 0.0)
             return wr + pen + cont
 
-        chosen = trio_b if _cost(trio_b) < _cost(trio_a) else trio_a
+        flipped = _cost(trio_b) < _cost(trio_a)
+        chosen = trio_b if flipped else trio_a
+
+        if flipped and persist_choice:
+            grasp_pose.T_base_gripper_approach = T_app_b
+            grasp_pose.T_base_gripper_grasp = T_grp_b
+            grasp_pose.T_base_gripper_retract = T_ret_b
+            if grasp_pose.meta is not None:
+                if off is not None:
+                    grasp_pose.meta["offset_base_xy_mm"] = (-float(off[0]),
+                                                            -float(off[1]))
+                grasp_pose.meta["yaw_rad"] = float(np.arctan2(
+                    T_grp_b[1, 0], T_grp_b[0, 0]))
+                grasp_pose.meta["flipped_180"] = not grasp_pose.meta.get(
+                    "flipped_180", False)
+
         return chosen[0], chosen[1], chosen[2]
 
     def solve_topdown_free_yaw(self, position_xyz, q_init=None):
@@ -517,7 +557,11 @@ if __name__ == "__main__":
     T_zero = solver.chain.fk({j: 0.0 for j in ARM_JOINTS})
     result = solver.solve(T_zero, q_init=None)
     assert result.converged, f"Devrait converger : {result.message}"
-    assert result.n_iterations <= 5, f"Trop d'iterations pour pose zero : {result.n_iterations}"
+    # NB : depuis la selection par CONTINUITE (fc51b09), le resultat retourne
+    # peut venir d'un restart (plus d'iterations que le depart zero). Le
+    # critere pertinent est la convergence + la precision, pas le nb d'iter.
+    assert result.translation_err_mm < 2.0 and result.rotation_err_deg < 2.0, \
+        f"Pose zero imprecise : {result.translation_err_mm:.2f} mm / {result.rotation_err_deg:.2f} deg"
     print(f"  [OK] Pose zero : {result.n_iterations} iter, "
           f"err {result.translation_err_mm:.3f} mm / {result.rotation_err_deg:.3f} deg")
     print()
@@ -572,6 +616,40 @@ if __name__ == "__main__":
     for name, r in [("approach", r_app), ("grasp", r_grp), ("retract", r_ret)]:
         print(f"    {name:<10} converged={r.converged}, "
               f"err {r.translation_err_mm:.1f} mm / {r.rotation_err_deg:.2f} deg")
+    print()
+
+    # ========================================================
+    # Test 6 : CONTRAT de persistance du choix d'orientation.
+    # Apres solve_grasp_pose, FK(solution grasp) doit correspondre a la
+    # matrice ECRITE dans grasp_pose (meme si la variante 180deg a ete
+    # choisie). C'est ce contrat qui garantit que mini-descente / re-IK
+    # ulterieurs visent la meme orientation physique (anti demi-tours).
+    # ========================================================
+    for yaw_test_deg in (0.0, 75.0, -82.0):
+        obj_y = ObjectInstance(label="x",
+                               position_base_m=np.array([0.22, 0.08, 0.02]))
+        gp_y = TopDownGrasp(grasp_lateral_offset_mm=8.0).plan(obj_y)
+        from src.planning.grasp import _rotation_top_down as _rtd, _se3 as _s3
+        yaw_t = np.radians(yaw_test_deg)
+        for attr in ("T_base_gripper_approach", "T_base_gripper_grasp",
+                     "T_base_gripper_retract"):
+            T = getattr(gp_y, attr)
+            T2 = _s3(_rtd(yaw_t), T[:3, 3])
+            setattr(gp_y, attr, T2)
+        ra_y, rg_y, rr_y = solver.solve_grasp_pose(
+            gp_y, q_init={j: 0.0 for j in ARM_JOINTS})
+        T_fk = solver.chain.fk(rg_y.joint_angles_rad)
+        T_persisted = gp_y.T_base_gripper_grasp
+        d_trans_mm = float(np.linalg.norm(T_fk[:3, 3] - T_persisted[:3, 3]) * 1000)
+        # Angle entre les deux orientations (Rodrigues sur R_err)
+        R_err6 = T_fk[:3, :3].T @ T_persisted[:3, :3]
+        ang_deg = float(np.degrees(np.linalg.norm(cv2.Rodrigues(R_err6)[0])))
+        flip_txt = " (retournee 180)" if gp_y.meta.get("flipped_180") else ""
+        print(f"  Test 6 yaw={yaw_test_deg:+.0f}deg{flip_txt} : "
+              f"FK vs matrice persistee = {d_trans_mm:.1f} mm / {ang_deg:.1f} deg")
+        assert d_trans_mm < 25.0 and ang_deg < 20.0, \
+            f"contrat persistance viole : {d_trans_mm:.1f} mm / {ang_deg:.1f} deg"
+    print(f"  [OK] solve_grasp_pose : FK(solution) == matrices persistees")
     print()
 
     print("Tous les tests passent.")
