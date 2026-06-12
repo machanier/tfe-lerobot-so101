@@ -266,34 +266,36 @@ class TopDownGrasp(GraspStrategy):
         if z_top_estime > self.max_object_height_m:
             return None
 
-        # Yaw : aligne pince sur grand axe contour s'il existe.
-        # NOTE IMPORTANTE : yaw_from_contour renvoie un angle dans le repere
-        # IMAGE de la camera source (axe Y vers le bas). Pour l'utiliser
-        # comme rotation autour de Z_base, on doit le PROJETER dans le repere
-        # base via la pose T_base_cam de la camera. Sinon l'alignement
-        # wrist_roll est aleatoire selon de quelle camera vient la detection.
-        # Pour V1 simple : on documente cette limite et on garde yaw=0 par
-        # defaut (la projection rigoureuse demanderait la normale du plan
-        # objet, hors scope V1). Si la perception ne fournit qu'un cube/disque,
-        # yaw=0 est optimal de toute facon.
+        # Yaw : aligne la pince sur le grand axe de l'objet.
+        # SOURCE PREFEREE : le yaw REPERE BASE calcule par la perception
+        # (pose_estimator._estimate_geometry, projection rayon-plan du contour
+        # sur le plan de l'objet). Correct quelle que soit l'orientation des
+        # cameras -> les objets poses EN BIAIS sont geres. La perception
+        # signale aussi la classe de pose :
+        #   "debout"  -> empreinte au sol quasi circulaire, yaw libre (0).
+        #      (Avant : le contour vu DE COTE d'un cylindre debout etait
+        #      allonge verticalement dans l'image -> yaw fantome ~±90deg
+        #      et rotation de poignet inutile. Diagnostic 2026-06-12.)
+        #   "couche"  -> yaw_base_rad = grand axe de l'empreinte.
+        #   "compact" -> pas de grand axe fiable, yaw 0.
+        # FALLBACK (perception sans info de pose) : angle image brut du
+        # contour cam_0/cam_1, comme en V1 (approximation documentee).
         yaw = 0.0
-        if self.align_wrist_roll and obj.source_detections:
-            # Cherche un contour non degenere
-            for det in obj.source_detections:
-                if det.contour is not None and len(det.contour) >= 3:
-                    yaw_image = yaw_from_contour(det.contour)
-                    # Limite V1 : on prend le yaw image tel quel, en supposant
-                    # que les cameras sont alignees avec le repere base
-                    # (X_cam projete sur le plan table ~ X_base). C'est
-                    # approximativement le cas pour cam_0/cam_1 eye-to-hand
-                    # sur la barriere avant, mais pas garanti.
-                    # Pour cam_2 eye-in-hand : on ne devrait PAS utiliser ce
-                    # yaw (orientation cam_2 depend de la pose courante du
-                    # robot). On filtre donc cam_2.
-                    if det.cam_key in ("cam_0", "cam_1"):
-                        yaw = yaw_image
-                        break
-                    # cam_2 : skip, on laisse yaw=0
+        meta_obj = obj.meta or {}
+        if self.align_wrist_roll:
+            if "pose_class" in meta_obj:
+                yaw_base = meta_obj.get("yaw_base_rad")
+                if yaw_base is not None:
+                    yaw = float(yaw_base)
+            elif obj.source_detections:
+                # Legacy V1 : cherche un contour non degenere et prend
+                # l'angle IMAGE tel quel (suppose cameras ~alignees base).
+                for det in obj.source_detections:
+                    if det.contour is not None and len(det.contour) >= 3:
+                        if det.cam_key in ("cam_0", "cam_1"):
+                            yaw = yaw_from_contour(det.contour)
+                            break
+                        # cam_2 : skip, on laisse yaw=0
         R = _rotation_top_down(yaw)
 
         # === A2 : decalage smart vers la pince fixe ===

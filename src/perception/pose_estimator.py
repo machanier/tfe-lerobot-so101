@@ -386,6 +386,197 @@ class PoseEstimator:
         except Exception:
             return None
 
+    def _triangulate_bbox_top(self, det_L, det_R, f_L, f_R):
+        """Triangule le point HAUT-CENTRE des deux bboxes -> sommet 3D de l'objet.
+
+        Le haut de bbox des deux vues correspond approximativement au meme
+        point physique (le sommet) pour deux cameras d'elevation voisine
+        (paire stereo cam_0/cam_1) : erreur typique de quelques mm. C'est la
+        hauteur FIABLE qui remplace le proxy 'hauteur pixels' de
+        _estimate_bbox_3d_m, lequel melange longueur et hauteur quand l'objet
+        pointe vers les cameras (bug 'cylindre // Y saisi trop haut',
+        diagnostic 2026-06-12 : 53mm estimes pour un cylindre de 30mm).
+
+        Returns: position 3D (3,) du sommet en repere base, ou None.
+        """
+        if (det_L is None or det_R is None or f_L is None or f_R is None
+                or det_L.bbox is None or det_R.bbox is None):
+            return None
+        try:
+            d_top_L = Detection2D(
+                cam_key=det_L.cam_key, label=det_L.label,
+                center_px=(0.5 * (det_L.bbox[0] + det_L.bbox[2]),
+                           float(det_L.bbox[1])))
+            d_top_R = Detection2D(
+                cam_key=det_R.cam_key, label=det_R.label,
+                center_px=(0.5 * (det_R.bbox[0] + det_R.bbox[2]),
+                           float(det_R.bbox[1])))
+            X_top = triangulate_stereo(d_top_L, d_top_R, f_L, f_R)
+        except Exception:
+            return None
+        if not np.all(np.isfinite(X_top)):
+            return None
+        if self._bias_m is not None:
+            X_top = X_top - self._bias_m
+        return X_top
+
+    def _footprint_orientation(self, det, frame, z_plane_m: float):
+        """Orientation du grand axe de l'EMPREINTE de l'objet, en repere BASE.
+
+        Projette les points du contour (ou les coins de bbox a defaut) sur le
+        plan horizontal z=z_plane_m par intersection rayon-plan (pixels
+        undistordus d'abord), puis ACP 2D dans le plan XY base.
+
+        Contrairement a yaw_from_contour (angle dans le repere IMAGE), le
+        resultat est independant de l'orientation de la camera -> les objets
+        poses EN BIAIS donnent un yaw correct. Approximation connue : la
+        silhouette inclut des points au-dessus du plan -> legere elongation
+        parasite le long de l'axe de visee (quelques degres de biais au pire).
+
+        Returns:
+            (yaw_rad [-pi/2, pi/2], elongation >= 1, extent_long_m,
+             extent_court_m) ou None si indisponible.
+        """
+        if det is None or frame is None:
+            return None
+        pts = None
+        if det.contour is not None and len(det.contour) >= 6:
+            pts = np.asarray(det.contour, dtype=np.float64).reshape(-1, 2)
+            if len(pts) > 80:                      # sous-echantillonne (vitesse)
+                pts = pts[::max(1, len(pts) // 80)]
+        elif det.bbox is not None:
+            x0, y0, x1, y1 = det.bbox
+            pts = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                           dtype=np.float64)
+        if pts is None or len(pts) < 4:
+            return None
+        try:
+            und = cv2.undistortPoints(pts.reshape(-1, 1, 2), frame.K,
+                                      frame.dist, P=frame.K).reshape(-1, 2)
+            K_inv = np.linalg.inv(frame.K)
+            R = frame.T_base_cam[:3, :3]
+            o = frame.T_base_cam[:3, 3]
+            homog = np.hstack([und, np.ones((len(und), 1))])
+            rays = (R @ (K_inv @ homog.T)).T            # (N, 3) en base
+            dz = rays[:, 2]
+            keep = np.abs(dz) > 1e-9
+            s = (z_plane_m - o[2]) / dz[keep]
+            fwd = s > 0                                  # devant la camera
+            P = o[None, :] + s[fwd, None] * rays[keep][fwd]
+        except Exception:
+            return None
+        if len(P) < 4:
+            return None
+        xy = P[:, :2]
+        d = xy - xy.mean(axis=0)
+        mu20 = float((d[:, 0] ** 2).mean())
+        mu02 = float((d[:, 1] ** 2).mean())
+        mu11 = float((d[:, 0] * d[:, 1]).mean())
+        theta = 0.5 * np.arctan2(2.0 * mu11, mu20 - mu02)
+        ca, sa = np.cos(theta), np.sin(theta)
+        along = d[:, 0] * ca + d[:, 1] * sa
+        perp = -d[:, 0] * sa + d[:, 1] * ca
+        ext_long = float(along.max() - along.min())
+        ext_court = float(perp.max() - perp.min())
+        if ext_long < ext_court:                         # garantit long >= court
+            ext_long, ext_court = ext_court, ext_long
+            theta += np.pi / 2.0
+        while theta > np.pi / 2:
+            theta -= np.pi
+        while theta < -np.pi / 2:
+            theta += np.pi
+        if ext_court < 1e-4:
+            return None
+        return (float(theta), float(ext_long / max(ext_court, 1e-6)),
+                ext_long, ext_court)
+
+    def _estimate_geometry(self, det_L, det_R, f_L, f_R, X_base):
+        """Geometrie 3D enrichie : bbox_3d corrige + classe de pose + yaw base.
+
+        1. HAUTEUR par triangulation du sommet (fiable, remplace le proxy
+           pixels qui surestimait quand l'objet pointe vers les cameras).
+        2. CLASSE : "debout" si hauteur >> largeur d'empreinte horizontale,
+           sinon "couche" (empreinte allongee) ou "compact".
+        3. YAW repere base du grand axe (objets couches, biais inclus) par
+           projection rayon-plan du contour a mi-hauteur.
+
+        Returns:
+            (bbox_3d_m ou None, meta_dict) — meta contient pose_class,
+            yaw_base_rad (None = yaw libre), height_method,
+            footprint_elongation.
+        """
+        meta: dict = {}
+        bbox_old = self._estimate_bbox_3d_m(det_L, f_L, X_base)
+
+        # --- 1. hauteur ---
+        height = None
+        X_top = self._triangulate_bbox_top(det_L, det_R, f_L, f_R)
+        if X_top is not None and 0.005 <= float(X_top[2]) <= 0.25:
+            height = float(X_top[2])               # table a Z=0 (REPERE_BASE.md)
+            meta["height_method"] = "sommet_triangule"
+        if height is None:
+            if bbox_old is None:
+                return None, meta
+            height = float(bbox_old[2])
+            meta["height_method"] = "proxy_bbox"
+
+        # --- 2. classe debout / couche / compact ---
+        # Largeur d'empreinte approx = extent HORIZONTAL image (peu pollue par
+        # la hauteur), le min des deux vues.
+        foot_w = None
+        for det, frm in ((det_L, f_L), (det_R, f_R)):
+            b = self._estimate_bbox_3d_m(det, frm, X_base)
+            if b is not None:
+                foot_w = b[0] if foot_w is None else min(foot_w, b[0])
+        dx = float(bbox_old[0]) if bbox_old else 0.03
+        dy = float(bbox_old[1]) if bbox_old else 0.03
+        if foot_w is not None and height > 1.6 * max(foot_w, 1e-3):
+            meta["pose_class"] = "debout"
+            meta["yaw_base_rad"] = None            # empreinte ~circulaire vue du haut
+            return (dx, dy, height), meta
+
+        # --- 3. objet couche/compact : yaw du grand axe en repere base ---
+        ori = None
+        det_ok, frm_ok = None, None
+        for det, frm in ((det_L, f_L), (det_R, f_R)):
+            ori = self._footprint_orientation(det, frm, z_plane_m=height / 2.0)
+            if ori is not None:
+                det_ok, frm_ok = det, frm
+                break
+        if ori is None:
+            meta["pose_class"] = "inconnu"
+            meta["yaw_base_rad"] = None
+            return (dx, dy, height), meta
+        yaw_b, elong, ext_long, ext_court = ori
+
+        # BORNE PHYSIQUE : un objet pose STABLEMENT repose sur sa plus grande
+        # face -> sa hauteur <= largeur courte de l'empreinte. Le sommet
+        # triangule surestime encore quand l'objet pointe PILE vers les
+        # cameras (le haut de bbox = le bout lointain, pas le meme point dans
+        # les 2 vues) ; l'empreinte, elle, reste fiable. On prend le min, et
+        # on re-projette une fois l'empreinte au bon plan (hauteur corrigee).
+        h_cap = min(height, ext_court)
+        if h_cap < 0.8 * height:
+            ori2 = self._footprint_orientation(det_ok, frm_ok,
+                                               z_plane_m=h_cap / 2.0)
+            if ori2 is not None:
+                yaw_b, elong, ext_long, ext_court = ori2
+                h_cap = min(height, ext_court)
+            meta["height_method"] = (meta.get("height_method", "?")
+                                     + "+borne_empreinte")
+        height = max(0.005, h_cap)
+
+        meta["footprint_elongation"] = round(elong, 2)
+        if elong >= 1.3:
+            meta["pose_class"] = "couche"
+            meta["yaw_base_rad"] = float(yaw_b)
+        else:
+            meta["pose_class"] = "compact"
+            meta["yaw_base_rad"] = None
+        # Empreinte projetee = meilleures dimensions au sol disponibles
+        # (ext_court ~ largeur PERPENDICULAIRE a la prise -> ouverture pince).
+        return (float(ext_long), float(ext_court), float(height)), meta
+
     def build_scene(self,
                     detections_by_cam: dict[str, list[Detection2D]],
                     frames: dict[str, Optional[Frame]]) -> Scene:
@@ -464,16 +655,21 @@ class PoseEstimator:
                 else:
                     score = float(min(det_L.score, det_R.score) *
                                   np.exp(-err / 8.0))
+                    # Geometrie enrichie : hauteur par sommet triangule,
+                    # classe debout/couche, yaw du grand axe en repere base.
+                    bbox3d, geo_meta = self._estimate_geometry(
+                        det_L, det_R, f_L, f_R, X)
                     return ObjectInstance(
                         label=label,
                         position_base_m=X,
                         source_detections=[det_L, det_R],
                         score=score,
-                        bbox_3d_m=self._estimate_bbox_3d_m(det_L, f_L, X),
+                        bbox_3d_m=bbox3d,
                         meta={
                             "method": "stereo_triangulation",
                             "reproj_error_px": err,
                             "reproj_error_per_cam_px": {kL: err_L, kR: err_R},
+                            **geo_meta,
                         },
                     )
         elif det_L is None or det_R is None:
@@ -695,5 +891,72 @@ if __name__ == "__main__":
     print(f"  [OK] Fallback PnP mono : objet a "
           f"({o2.position_base_m[0] * 1000:.1f}, {o2.position_base_m[1] * 1000:.1f}, "
           f"{o2.position_base_m[2] * 1000:.1f}) mm (erreur {err:.2f} mm)")
+
+    # 6. Sommet triangule : cameras OBLIQUES (~50 deg) + objet vertical connu.
+    # C'est la config realiste du poste (cam_0/cam_1 en plongee) ou le proxy
+    # 'hauteur pixels' echoue quand l'objet pointe vers les cameras.
+    def make_lookat(pos, target):
+        pos = np.asarray(pos, dtype=np.float64)
+        target = np.asarray(target, dtype=np.float64)
+        z = target - pos
+        z = z / np.linalg.norm(z)                      # axe optique (OpenCV)
+        x = np.cross(z, np.array([0.0, 0.0, 1.0]))
+        x = x / np.linalg.norm(x)
+        y = np.cross(z, x)                             # y image vers le bas
+        T = np.eye(4)
+        T[:3, 0], T[:3, 1], T[:3, 2], T[:3, 3] = x, y, z, pos
+        return T
+
+    T_L2 = make_lookat([0.05, +0.06, 0.30], [0.25, 0.0, 0.0])
+    T_R2 = make_lookat([0.05, -0.06, 0.30], [0.25, 0.0, 0.0])
+    f_L2 = Frame(cam_key="cam_0", image=img, K=K, dist=dist, T_base_cam=T_L2)
+    f_R2 = Frame(cam_key="cam_1", image=img, K=K, dist=dist, T_base_cam=T_R2)
+
+    def proj(T_cam, X3):
+        uvw = _projection_matrix(K, T_cam) @ np.hstack([X3, 1.0])
+        return uvw[:2] / uvw[2]
+
+    X_center = np.array([0.25, 0.0, 0.03])
+    X_top_true = np.array([0.25, 0.0, 0.06])
+    dets_top = []
+    for f2 in (f_L2, f_R2):
+        uc = proj(f2.T_base_cam, X_center)
+        ut = proj(f2.T_base_cam, X_top_true)
+        dets_top.append(Detection2D(
+            cam_key=f2.cam_key, label="x", center_px=(uc[0], uc[1]),
+            bbox=(ut[0] - 20, ut[1], ut[0] + 20, ut[1] + 90)))
+    est3 = PoseEstimator(load_scene_config=False)
+    X_top_est = est3._triangulate_bbox_top(dets_top[0], dets_top[1], f_L2, f_R2)
+    assert X_top_est is not None
+    errz = abs(X_top_est[2] - X_top_true[2]) * 1000
+    print(f"  [OK] _triangulate_bbox_top : Z sommet = {X_top_est[2]*1000:.1f} mm "
+          f"(vrai 60.0, erreur {errz:.2f} mm)")
+    assert errz < 2.0, f"Z sommet trop faux : {errz:.2f} mm"
+
+    # 7. Yaw d'empreinte en repere BASE : rectangle 90x30 mm tourne de +30 deg
+    # autour de Z, pose sur table (plan z=15mm a mi-hauteur). La projection
+    # rayon-plan doit retrouver le yaw VRAI malgre la camera oblique.
+    yaw_true = np.radians(30.0)
+    c30, s30 = np.cos(yaw_true), np.sin(yaw_true)
+    corners_local = np.array([
+        [-0.045, -0.015], [0.0, -0.015], [+0.045, -0.015], [+0.045, 0.0],
+        [+0.045, +0.015], [0.0, +0.015], [-0.045, +0.015], [-0.045, 0.0],
+    ])
+    contour_px = []
+    for lx, ly in corners_local:
+        wx = 0.25 + c30 * lx - s30 * ly
+        wy = 0.00 + s30 * lx + c30 * ly
+        contour_px.append(proj(T_L2, np.array([wx, wy, 0.015])))
+    det_rect = Detection2D(cam_key="cam_0", label="r", center_px=(0, 0),
+                           contour=np.array(contour_px))
+    ori = est3._footprint_orientation(det_rect, f_L2, z_plane_m=0.015)
+    assert ori is not None
+    yaw_est, elong, ext_l, ext_c = ori
+    print(f"  [OK] _footprint_orientation : yaw = {np.degrees(yaw_est):+.1f} deg "
+          f"(vrai +30), elongation {elong:.2f}, empreinte "
+          f"{ext_l*1000:.0f}x{ext_c*1000:.0f} mm (vraie 90x30)")
+    assert abs(np.degrees(yaw_est) - 30.0) < 4.0
+    assert elong > 2.0
+    assert abs(ext_l - 0.090) < 0.012 and abs(ext_c - 0.030) < 0.010
 
     print("Tous les tests passent.")
