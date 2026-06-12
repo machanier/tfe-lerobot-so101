@@ -228,8 +228,11 @@ class TopDownGrasp(GraspStrategy):
                  # (plutot que d'ouvrir grand pour rien). Formule :
                  # pct = (largeur + 2*marge) / largeur_max_pince * 100.
                  adaptive_gripper_open: bool = True,
-                 gripper_open_margin_mm: float = 5.0,  # marge faible -> ouverture
-                                                        # vraiment adaptee a l'objet
+                 # marge d'ouverture de CHAQUE cote. 12mm pour ABSORBER l'erreur
+                 # de position (~8mm d'IK + calibration) : sans ca, la pince
+                 # ouvre trop juste et le doigt FIXE percute l'objet a la
+                 # descente au lieu de le degager (#3 signale par Maxence).
+                 gripper_open_margin_mm: float = 12.0,
                  gripper_max_opening_mm: float = 50.0,
                  # --- D-Z : ancrage de la profondeur de prise sur la table ---
                  table_z_m: float = 0.0,                 # plan table (repere base)
