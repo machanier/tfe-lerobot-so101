@@ -482,10 +482,18 @@ class PickAndPlacePipeline:
             # naison de ~10deg n'empeche pas le drop). Avec l'IK standard,
             # la pose drop ratait la cible de 5-13 cm (sous-actuation 5/6 DDL).
             from src.planning.grasp import _rotation_top_down, _se3
-            T_drop_above = _se3(_rotation_top_down(0.0), self.drop_above)
-            T_drop_release = _se3(_rotation_top_down(0.0), self.drop_release)
-            r_drop_above = self._ik_drop.solve(T_drop_above, q_init=r_ret.joint_angles_rad)
-            r_drop_release = self._ik_drop.solve(T_drop_release, q_init=r_drop_above.joint_angles_rad)
+            # DEPOSE : yaw LIBRE -> on choisit l'orientation qui donne le
+            # poignet le plus NATUREL (la pince ouvre pour lacher, le yaw n'a
+            # aucune importance). Evite la contorsion / tete a l'envers a la
+            # boite (la pose yaw=0 forcait un poignet retourne pour la boite
+            # lointaine ; verifie au runtime : yaw libre -> wrist_roll ~6deg
+            # au lieu de 156deg). drop_release reprend le meme yaw (transition
+            # douce).
+            r_drop_above, _yaw_drop = self._ik_drop.solve_topdown_free_yaw(
+                self.drop_above, q_init=r_ret.joint_angles_rad)
+            T_drop_release = _se3(_rotation_top_down(_yaw_drop), self.drop_release)
+            r_drop_release = self._ik_drop.solve(
+                T_drop_release, q_init=r_drop_above.joint_angles_rad)
 
             for label, r in [("approach", r_app), ("grasp", r_grp),
                              ("retract", r_ret), ("drop_above", r_drop_above),

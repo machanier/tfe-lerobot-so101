@@ -136,6 +136,7 @@ class IKSolver:
         self.fd_step = float(fd_step)
         self.n_random_restarts = int(n_random_restarts)
         self._rng = np.random.default_rng(random_seed)
+        self._restart_seed = int(random_seed)
         self.joints = list(self.chain.actuated)
         self.n_dof = len(self.joints)
 
@@ -190,32 +191,45 @@ class IKSolver:
         if T_target.shape != (4, 4):
             raise ValueError(f"T_target doit etre 4x4, recu {T_target.shape}")
 
-        # Genere les configurations de depart : q_init + N aleatoires
+        # RNG RE-SEEDE A CHAQUE APPEL : les restarts aleatoires sont identiques
+        # d'un run a l'autre pour une meme pose -> mouvement REPRODUCTIBLE (fini
+        # le "meme situation, comportement different").
+        rng = np.random.default_rng(self._restart_seed)
         starts = []
         if q_init is not None:
             starts.append(self._to_vector(q_init))
         else:
             starts.append(np.zeros(self.n_dof))
-        # Ajout d'un "smart init" : devine selon la position cible
+        # "smart init" : devine selon la position cible
         starts.append(self._smart_init(T_target))
-        # Restarts aleatoires
+        # Restarts aleatoires (deterministes grace au re-seed)
         for _ in range(self.n_random_restarts):
-            q_rand = np.array([
-                self._rng.uniform(lo, hi)
-                for j, (lo, hi) in self.joint_limits.items()
-            ])
+            q_rand = np.array([rng.uniform(lo, hi)
+                               for (lo, hi) in self.joint_limits.values()])
             starts.append(q_rand)
 
-        best_result: Optional[IKResult] = None
+        # On resout TOUS les departs et on collecte les solutions convergees
+        # (plus de "premiere convergee" : c'etait elle qui pouvait etre
+        # enroulee selon le hasard).
+        converged: list[IKResult] = []
+        best_any: Optional[IKResult] = None
         for q0 in starts:
             result = self._solve_once(T_target, q0)
-            if best_result is None or result.residual_norm < best_result.residual_norm:
-                best_result = result
+            if best_any is None or result.residual_norm < best_any.residual_norm:
+                best_any = result
             if result.converged:
-                # Si on a converge, pas la peine de continuer les restarts
-                return result
+                converged.append(result)
 
-        return best_result  # meilleure solution trouvee (peut-etre non converge)
+        if converged:
+            # Parmi les convergees, on garde la PLUS PROCHE de q_init
+            # (continuite articulaire -> mouvement lisse, pas de saut ni de
+            # poignet retourne). Si q_init absent : reference = smart_init.
+            ref = (self._to_vector(q_init) if q_init is not None
+                   else self._smart_init(T_target))
+            return min(converged, key=lambda r: float(np.linalg.norm(
+                self._to_vector(r.joint_angles_rad) - ref)))
+
+        return best_any  # rien n'a converge -> meilleure approche trouvee
 
     def _smart_init(self, T_target: np.ndarray) -> np.ndarray:
         """Heuristique : devine un q_init plausible selon la position cible.
@@ -357,6 +371,32 @@ class IKSolver:
 
         chosen = trio_b if _cost(trio_b) < _cost(trio_a) else trio_a
         return chosen[0], chosen[1], chosen[2]
+
+    def solve_topdown_free_yaw(self, position_xyz, q_init=None):
+        """Resout une pose pince-vers-le-bas a une POSITION donnee, YAW LIBRE.
+
+        Cherche l'orientation (rotation autour de la verticale) qui donne la
+        config la plus NATURELLE (wrist_roll proche du neutre) parmi celles qui
+        atteignent la position. Pour la DEPOSE : seule la position compte (la
+        pince ouvre, l'objet tombe), donc inutile de forcer un yaw qui retourne
+        le poignet (contorsion / tete a l'envers a la boite lointaine).
+
+        Returns: (IKResult, yaw_rad_choisi).
+        """
+        from src.planning.grasp import _rotation_top_down, _se3
+        best = None  # (cost_wrist, result, yaw_rad)
+        for yaw_deg in range(-180, 180, 15):
+            yaw = float(np.radians(yaw_deg))
+            r = self.solve(_se3(_rotation_top_down(yaw), position_xyz), q_init=q_init)
+            if r.translation_err_mm < 15.0:  # position atteinte
+                cost = abs(r.joint_angles_rad.get("wrist_roll", 0.0))
+                if best is None or cost < best[0]:
+                    best = (cost, r, yaw)
+        if best is not None:
+            return best[1], best[2]
+        # Aucune orientation n'atteint la position : fallback yaw=0
+        return self.solve(_se3(_rotation_top_down(0.0), position_xyz),
+                          q_init=q_init), 0.0
 
     # ----- helpers internes -----------------------------------------------
 
