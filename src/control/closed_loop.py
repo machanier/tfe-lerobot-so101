@@ -204,9 +204,14 @@ def refine_grasp_with_cam2(
     # Garde la detection la plus confiante
     det = max(inside, key=lambda d: d.score)
 
-    # Centre detecte vs centre de l'image
+    # Centre detecte vs POINT PRINCIPAL (cx, cy = axe optique), PAS le centre
+    # geometrique (w/2, h/2). Le rayon "ou cam_2 vise" est l'axe optique ; et le
+    # pixel detecte est undistordu plus bas (repere ideal de centre cx,cy). Pour
+    # que la correction = (detecte - vise) soit NON BIAISEE, les deux references
+    # doivent vivre dans le MEME repere -> on utilise cx,cy des deux cotes.
     u, v = det.center_px
-    u_center, v_center = w / 2.0, h / 2.0
+    cx, cy = float(frame_c2.K[0, 2]), float(frame_c2.K[1, 2])
+    u_center, v_center = cx, cy
     du_px = u - u_center  # positif = objet a droite dans l'image
     dv_px = v - v_center  # positif = objet en bas dans l'image
 
@@ -265,12 +270,10 @@ def refine_grasp_with_cam2(
     t = (target_z - o_base[2]) / d_base[2]
     obj_pos_base = o_base + t * d_base  # position 3D detectee de l'objet en repere base
 
-    # Position de l'objet ATTENDUE (= la pose grasp triangulee initialement)
-    # On la deduit de la pose approach + offset Z connu. Plus simple :
-    # la position attendue de l'objet est directement (0, 0, target_z) decalee
-    # de la position xy de cam_2. On utilise la projection inverse du CENTRE
-    # de l'image pour avoir la position visee initialement.
-    d_cam_center = K_inv @ np.array([w / 2.0, h / 2.0, 1.0])
+    # Position de l'objet ATTENDUE : intersection de l'AXE OPTIQUE (point
+    # principal cx,cy, deja sans distorsion par definition) avec le plan objet
+    # = ou cam_2 vise actuellement. Coherent avec le rayon detecte undistordu.
+    d_cam_center = K_inv @ np.array([cx, cy, 1.0])
     d_base_center = R_base_cam2 @ d_cam_center
     t_center = (target_z - o_base[2]) / d_base_center[2]
     expected_pos_base = o_base + t_center * d_base_center  # ou cam_2 vise actuellement
