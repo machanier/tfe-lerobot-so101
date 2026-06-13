@@ -567,23 +567,20 @@ class PoseEstimator:
         height = max(0.005, h_cap)
 
         meta["footprint_elongation"] = round(elong, 2)
-        # CLASSIFICATION 'couche' robuste (2026-06-13). L'ancien critere
-        # elong=ext_long/ext_court >= 1.3 ratait les cylindres //X (essais 3,4
-        # classes 'compact' a tort) : la silhouette d'un objet a sommet ROND
-        # projetee sur la table SUR-ESTIME ext_court (62mm mesure pour D30),
-        # ce qui ecrase le ratio. Critere principal FIABLE : ext_long vs la
-        # HAUTEUR corrigee (height est triangulee+bornee, donc fiable) -> un
-        # objet COUCHE a ext_long >> height. Garde-fou absolu (ext_long-ext_court
-        # > 15mm) pour ne PAS classer 'couche' un cube/disque compact (sinon
-        # rotation de poignet inutile, l'inverse du bug initial).
+        # ORIENTATION (yaw_base) DECOUPLEE de la classe de pose. On fournit le
+        # grand axe (yaw_base) des que l'empreinte a une orientation FIABLE :
+        # nettement allongee (ratio > 1.25 ET difference absolue > 12mm). Sinon
+        # (empreinte ~ronde/carree ou trop bruitee pour trancher) yaw_base=None
+        # -> la pince saisira en yaw LIBRE (rotation minimale), ce qui est correct
+        # pour un rond et sans risque quand l'orientation est incertaine.
+        ax_diff = ext_long - ext_court
+        has_axis = (ax_diff > 0.012) and (ext_long > 1.25 * ext_court)
+        meta["yaw_base_rad"] = float(yaw_b) if has_axis else None
+        # pose_class : info de pose (sert au Z de prise / aux logs). 'couche' =
+        # franchement allonge et plat ; sinon 'compact'.
         elongated = (ext_long > 1.5 * max(height, 1e-3)
-                     and (ext_long - ext_court) > 0.015)
-        if elongated:
-            meta["pose_class"] = "couche"
-            meta["yaw_base_rad"] = float(yaw_b)
-        else:
-            meta["pose_class"] = "compact"
-            meta["yaw_base_rad"] = None
+                     and ax_diff > 0.015)
+        meta["pose_class"] = "couche" if elongated else "compact"
         # Empreinte projetee = meilleures dimensions au sol disponibles
         # (ext_court ~ largeur PERPENDICULAIRE a la prise -> ouverture pince).
         return (float(ext_long), float(ext_court), float(height)), meta

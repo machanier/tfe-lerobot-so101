@@ -116,6 +116,15 @@ def main():
     parser.add_argument("--grasp-squeeze", type=float, default=3.0,
                         help="Mode servo : serrage de maintien (%% de course) ajoute "
                              "apres le contact. Defaut 3.")
+    parser.add_argument("--gripper-max-opening", type=float, default=None,
+                        help="Ouverture MAX REELLE de la pince en mm (mesure terrain, "
+                             "150 sur le poste de Maxence). Sert a calculer l'ouverture "
+                             "adaptative : pince_%% = (largeur_objet + 2*marge) / ce max. "
+                             "Si la pince ouvre trop/pas assez, ajuste ici.")
+    parser.add_argument("--gripper-open-margin", type=float, default=None,
+                        help="Marge d'ouverture de CHAQUE cote de l'objet (mm). Defaut 10. "
+                             "Plus petit = pince plus juste (mais moins de tolerance a "
+                             "l'erreur de visee).")
     parser.add_argument("--no-lift-check", action="store_true",
                         help="Desactive la VERIF POST-LEVEE (P1'). Par defaut, apres une "
                              "fermeture jugee OK le bras remonte a retract et RE-LIT "
@@ -162,6 +171,10 @@ def main():
     config.grasp_close_servo = (args.grasp_close_mode == "servo")
     config.grasp_squeeze_pct = args.grasp_squeeze
     config.lift_verify = (not args.no_lift_check)
+    if args.gripper_max_opening is not None:
+        config.grasp_gripper_max_opening_mm = args.gripper_max_opening
+    if args.gripper_open_margin is not None:
+        config.grasp_gripper_open_margin_mm = args.gripper_open_margin
 
     pipeline = PickAndPlacePipeline(config)
     pipeline.run()

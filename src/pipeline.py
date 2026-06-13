@@ -210,6 +210,14 @@ class PipelineConfig:
     # sans ecraser ; la consigne tenue reste relative a la largeur de l'objet.
     grasp_squeeze_pct: float = 4.0
 
+    # ---------- Ouverture adaptative (calibrage terrain) ----------
+    # OUVERTURE MAX REELLE de la pince en mm (mesuree : 150mm sur le poste de
+    # Maxence). Sert a convertir "largeur objet + marges" -> % d'ouverture.
+    # None = defaut de TopDownGrasp (150). Calibrable via --gripper-max-opening.
+    grasp_gripper_max_opening_mm: Optional[float] = None
+    # Marge d'ouverture de CHAQUE cote (mm). Defaut TopDownGrasp = 10.
+    grasp_gripper_open_margin_mm: Optional[float] = None
+
     # ---------- P4' : stabilisation avant capture cam_2 ----------
     # execute_trajectory rend la main SANS pause finale -> la capture cam_2 du
     # raffinement se faisait pendant que le bras finissait de bouger -> l'objet
@@ -252,6 +260,10 @@ class PickAndPlacePipeline:
         grasp_kwargs = {}
         if self.config.grasp_lateral_offset_mm is not None:
             grasp_kwargs["grasp_lateral_offset_mm"] = self.config.grasp_lateral_offset_mm
+        if self.config.grasp_gripper_max_opening_mm is not None:
+            grasp_kwargs["gripper_max_opening_mm"] = self.config.grasp_gripper_max_opening_mm
+        if self.config.grasp_gripper_open_margin_mm is not None:
+            grasp_kwargs["gripper_open_margin_mm"] = self.config.grasp_gripper_open_margin_mm
         self._grasp_strategy = TopDownGrasp(**grasp_kwargs)
         self._ik = IKSolver()
         # IK SPECIFIQUE A LA DEPOSE : poids de rotation reduit (0.05 vs 0.1
@@ -533,7 +545,8 @@ class PickAndPlacePipeline:
                 print(f"!! Grasp planning a echoue (objet trop haut ?). Annule.")
                 return
             print(f">> Grasp planifie ({grasp_pose.meta.get('strategy')}, "
-                  f"yaw={np.degrees(grasp_pose.meta.get('yaw_rad', 0)):+.0f}deg)")
+                  f"yaw={np.degrees(grasp_pose.meta.get('yaw_rad', 0)):+.0f}deg, "
+                  f"ouverture pince={grasp_pose.gripper_open_pct:.0f}%)")
 
             # ============================================================
             # 5. IK pour les 3 poses + drop
