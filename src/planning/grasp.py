@@ -240,10 +240,11 @@ class TopDownGrasp(GraspStrategy):
                  gripper_close_pct: float = 0.0,
                  align_wrist_roll: bool = True,
                  # CORRECTION DE CONVENTION (deg) ajoutee a l'angle de prise.
-                 # Outil de DIAGNOSTIC/calage : si la pince REELLE se ferme a 90deg
-                 # de ce que le code suppose (doigts perpendiculaires au lieu de
-                 # paralleles au grand axe), passer --grasp-yaw-offset 90 corrige
-                 # tout d'un coup. 0 = convention par defaut (doigts // grand axe).
+                 # 0 ici = convention NOMINALE (tests). La valeur de DEPLOIEMENT
+                 # est dans PipelineConfig.grasp_yaw_offset_deg = 90 : MESURE
+                 # TERRAIN 2026-06-13, la pince SO-101 de Maxence ferme a 90deg de
+                 # la convention nominale (verifie : 90 -> saisies //X et //Y
+                 # reussies du 1er coup, couple 300+ ; 0 echouait systematiquement).
                  yaw_offset_deg: float = 0.0,
                  max_object_height_m: float = 0.12,
                  # --- A2 : decalage smart vers la pince fixe ---
@@ -254,6 +255,11 @@ class TopDownGrasp(GraspStrategy):
                  # Solution : decaler le grasp pour que l'objet finisse
                  # contre le doigt fixe (= le doigt fixe touche un bord
                  # de l'objet, le doigt mobile vient l'ecraser).
+                 # 8 ici = valeur nominale (tests). DEPLOIEMENT : PipelineConfig
+                 # met 0 par defaut (utile surtout pour objets a FACES PLATES type
+                 # cube ; pour un objet ROND ca ne sert pas et un decalage de 8mm
+                 # risque de faire RATER un objet fin). Passer --grasp-lateral-offset
+                 # 8 pour un cube si besoin.
                  grasp_lateral_offset_mm: float = 8.0,
                  # Cote du doigt fixe dans le repere PINCE.
                  # SO-101 de Maxence : doigt fixe cote Y_base+ (gauche du
