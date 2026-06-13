@@ -232,8 +232,13 @@ class TopDownGrasp(GraspStrategy):
                  # de position (~8mm d'IK + calibration) : sans ca, la pince
                  # ouvre trop juste et le doigt FIXE percute l'objet a la
                  # descente au lieu de le degager (#3 signale par Maxence).
-                 gripper_open_margin_mm: float = 12.0,
-                 gripper_max_opening_mm: float = 50.0,
+                 gripper_open_margin_mm: float = 10.0,
+                 # OUVERTURE MAX REELLE de la pince SO-101 de Maxence = 150mm
+                 # (mesure terrain 2026-06-13). AVANT : 50mm (FAUX, 3x trop
+                 # petit) -> la formule d'ouverture saturait a 100% pour tout
+                 # objet >= ~26mm ("la pince ne sait que s'ouvrir au max").
+                 # Avec 150 : un objet de 30mm -> (30+2*10)/150 = 33% ~= 50mm.
+                 gripper_max_opening_mm: float = 150.0,
                  # --- D-Z : ancrage de la profondeur de prise sur la table ---
                  table_z_m: float = 0.0,                 # plan table (repere base)
                  min_grasp_clearance_m: float = 0.005,   # ne jamais saisir sous +5mm
@@ -280,31 +285,34 @@ class TopDownGrasp(GraspStrategy):
         #   "compact" -> pas de grand axe fiable, yaw 0.
         # FALLBACK (perception sans info de pose) : angle image brut du
         # contour cam_0/cam_1, comme en V1 (approximation documentee).
+        # === ORIENTATION DE LA PINCE (wrist_roll), continue et geometrique ===
+        # Regle UNIQUE (pas de cas par objet) : on aligne les machoires EN TRAVERS
+        # du PETIT axe de l'empreinte detectee (= perpendiculaire au grand axe).
+        # La perception fournit yaw_base_rad = angle du grand axe quand l'empreinte
+        # a une orientation FIABLE (allongee) ; sinon None.
+        #   - yaw_base connu  -> yaw = grand axe (machoires en travers du petit cote).
+        #   - empreinte RONDE / indeterminee (yaw_base None) -> yaw LIBRE : l'IK
+        #     choisit l'angle qui fait le MOINS tourner le poignet depuis la pose
+        #     courante (pas de rotation imposee inutile). C'est correct pour un objet
+        #     rond (tout angle saisit pareil) et sans risque pour un objet dont on
+        #     ne connait pas l'orientation (on ne force pas un mauvais angle).
+        #   - pas de geometrie 3D (fallback) -> angle du contour image (V1).
         yaw = 0.0
+        yaw_free = False
         meta_obj = obj.meta or {}
-        # YAW LIBRE : pour un objet DEBOUT (empreinte au sol ~ronde), TOUTE
-        # orientation de prise est equivalente. On le SIGNALE a l'IK (yaw_free)
-        # pour qu'elle choisisse le yaw MINIMISANT le mouvement du poignet
-        # depuis la pose courante, au lieu de forcer yaw=0 -> ce yaw=0 imposait
-        # un wrist_roll a ~0deg alors que la pose de depart est a ~-80deg, d'ou
-        # la rotation de ~90deg INUTILE observee sur les cylindres debout
-        # (essais 1,13,14 du 2026-06-12). 'compact' (cube/disque) reste a yaw=0
-        # (il faut aligner les machoires sur une face, pas tourner librement).
-        yaw_free = (meta_obj.get("pose_class") == "debout")
         if self.align_wrist_roll:
             if "pose_class" in meta_obj:
                 yaw_base = meta_obj.get("yaw_base_rad")
                 if yaw_base is not None:
-                    yaw = float(yaw_base)
+                    yaw = float(yaw_base)        # machoires en travers du petit cote
+                else:
+                    yaw_free = True              # rond/indetermine -> minimiser rotation
             elif obj.source_detections:
-                # Legacy V1 : cherche un contour non degenere et prend
-                # l'angle IMAGE tel quel (suppose cameras ~alignees base).
                 for det in obj.source_detections:
                     if det.contour is not None and len(det.contour) >= 3:
                         if det.cam_key in ("cam_0", "cam_1"):
                             yaw = yaw_from_contour(det.contour)
                             break
-                        # cam_2 : skip, on laisse yaw=0
         R = _rotation_top_down(yaw)
 
         # === A2 : decalage smart vers la pince fixe ===
@@ -347,9 +355,10 @@ class TopDownGrasp(GraspStrategy):
             obj_width_m = min(obj.bbox_3d_m[0], obj.bbox_3d_m[1])
             target_open_mm = obj_width_m * 1000 + 2 * self.gripper_open_margin_mm
             pct = (target_open_mm / self.gripper_max_opening_mm) * 100.0
-            # Clip a [30, 100] : evite des ouvertures trop petites qui empechent
-            # l'insertion + on plafonne a 100%
-            gripper_open = float(np.clip(pct, 30.0, 100.0))
+            # Clip a [20, 100] : assez d'ouverture pour degager l'objet + l'erreur
+            # de visee (~8mm IK + cam), sans ouvrir a fond inutilement. Avec la
+            # max reelle (150mm) l'ouverture DIFFERENCIE enfin les objets.
+            gripper_open = float(np.clip(pct, 20.0, 100.0))
 
         return GraspPose(
             T_base_gripper_approach=T_approach,
