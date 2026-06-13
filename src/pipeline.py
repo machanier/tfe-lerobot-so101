@@ -218,6 +218,18 @@ class PipelineConfig:
     # SE STABILISER avant de lire l'etat + capturer.
     cam2_settle_s: float = 0.25
 
+    # ---------- RAFFINEMENT SIMPLE vs DOUBLE ----------
+    # Si False (defaut, 2026-06-13) : UN SEUL refinement cam_2 a la pose approach
+    # (hauteur sure), puis le bras se REPOSITIONNE A 8cm (lateralement) et
+    # DESCEND TOUT DROIT sur l'objet. Repond a la demande de Maxence : "analyse
+    # avant de descendre", plus de mini-descente + recorrection a basse altitude
+    # qui faisait "descendre un peu, remonter se repositionner, redescendre" et
+    # frolait l'objet. Le 2e refinement etait de toute facon bruite (biais Y).
+    # Si True : ancien comportement a deux etages (approach -> mini-descente 4cm
+    # -> refinement #2 -> descente). Plus precis en theorie, mais source du
+    # va-et-vient observe.
+    closed_loop_two_stage: bool = False
+
 
 # ============================================================
 # Orchestrateur principal
@@ -755,110 +767,80 @@ class PickAndPlacePipeline:
                                     rs_at_approach.joint_angles_rad, r_grp)
                 print()
 
-                # === A4 : Mini-descente + Refinement #2 (cam_2 plus pres) ===
-                # Apres le 1er refinement, on descend a mi-chemin entre approach
-                # et grasp (4cm au-dessus de l'objet), puis on refait un
-                # refinement cam_2. A cette distance, cam_2 voit l'objet de
-                # plus pres -> plus precis. Si l'objet a bouge (ex: pousse par
-                # une petite vibration), on detecte et on recorrige.
-                print(">> A4 : Mini-descente + Refinement #2")
-                T_intermediate = grasp_pose.T_base_gripper_grasp.copy()
-                T_intermediate[2, 3] += 0.04  # 4cm au-dessus du grasp
-                # q_init = pose PHYSIQUE actuelle du robot (rs_at_approach), PAS
-                # r_app (l'approche re-calculee apres correction cam_2, qui peut
-                # avoir saute de bassin IK). Solve() prend la solution la plus
-                # proche -> la mini-descente part de la ou le bras EST -> plus
-                # de "tour" pendant le raffinement (les petites montees/descentes
-                # parasites observees par Maxence).
-                r_intermediate = self._ik.solve(
-                    T_intermediate, q_init=rs_at_approach.joint_angles_rad)
-                self._log_wrist("mini-descente",
-                                rs_at_approach.joint_angles_rad, r_intermediate)
-                # B4 (2026-05-19) : c'est PENDANT cette mini-descente que la
-                # pince s'ouvre (de home_gripper_pct=5% a gripper_open_pct
-                # adapte a la bbox de l'objet). Avant : la pince etait deja
-                # ouverte depuis le debut de l'approche. Maintenant : reste
-                # fermee jusqu'a approach, puis s'ouvre pile au moment de
-                # descendre vers l'objet. Plus economique visuellement et
-                # mecaniquement (moins de risque d'accrochage cables).
-                mini_traj = quintic_trajectory(
-                    rs_at_approach.joint_angles_rad,
-                    r_intermediate.joint_angles_rad,
-                    duration_s=estimate_duration_safe(
+                # === Refinement #2 OPTIONNEL (closed_loop_two_stage) ===
+                # Par defaut DESACTIVE (2026-06-13). La mini-descente + recorrection
+                # a 4cm provoquait le "descend un peu, remonte se repositionner,
+                # redescend" qui frole l'objet (signale par Maxence a repetition),
+                # et le 2e refinement etait bruite (biais Y). On fait desormais UN
+                # SEUL refinement (a approach, hauteur sure) ; la Phase 2 (attempt#1,
+                # include_approach=True) repositionne lateralement A 8cm puis descend
+                # TOUT DROIT sur l'objet -> "analyse avant de descendre".
+                if not self.config.closed_loop_two_stage:
+                    rs_at_intermediate = rs_at_approach
+                    print(">> Un seul refinement (a 8cm) -> repositionnement a 8cm "
+                          "puis DESCENTE DROITE (pas de mini-descente basse altitude)")
+                    print()
+                else:
+                    # --- A4 : Mini-descente + Refinement #2 (cam_2 plus pres) ---
+                    print(">> A4 : Mini-descente + Refinement #2")
+                    T_intermediate = grasp_pose.T_base_gripper_grasp.copy()
+                    T_intermediate[2, 3] += 0.04  # 4cm au-dessus du grasp
+                    r_intermediate = self._ik.solve(
+                        T_intermediate, q_init=rs_at_approach.joint_angles_rad)
+                    self._log_wrist("mini-descente",
+                                    rs_at_approach.joint_angles_rad, r_intermediate)
+                    mini_traj = quintic_trajectory(
                         rs_at_approach.joint_angles_rad,
                         r_intermediate.joint_angles_rad,
-                        max_velocity_rad_s=self.config.max_velocity_rad_s),
-                    gripper_start=self.config.home_gripper_pct,    # B4 : ferme a l'arrivee approach
-                    gripper_end=grasp_pose.gripper_open_pct,        # s'ouvre pendant la mini-descente
-                )
-                print(f"   Mini-descente : {len(mini_traj)} points, "
-                      f"duree {mini_traj.duration_s:.1f}s")
-                controller.execute_trajectory(mini_traj, verbose=False,
-                                              on_step=live_callback)
-                # Refinement #2 — SETTLE avant capture (anti biais vertical).
-                time.sleep(self.config.cam2_settle_s)
-                rs_at_intermediate = self._provider.read_live()
-                refinement2 = refine_grasp_with_cam2(
-                    target_label=self.config.target_label,
-                    detector=self._detector,
-                    multi_camera=mc,
-                    robot_state=rs_at_intermediate,
-                    target_z_base_m=float(grasp_pose.T_base_gripper_grasp[2, 3]),
-                    label_mapping=self._label_mapping,
-                )
-                print(f"   Refinement #2 : {refinement2.message}")
-                # B2 (2026-05-19) : PLAFOND ABSOLU 30mm pour R2,
-                # INDEPENDANT du score HF.
-                #
-                # Justification physique : entre R1 et R2 il s'ecoule la
-                # mini-descente (~0.5s). L'objet ne peut PAS bouger de >30mm
-                # en 0.5s sans qu'on le pousse activement. Une correction
-                # R2 >30mm = forcement une fausse detection (faux positif HF
-                # sur un autre objet, bbox sur bord d'image, etc.).
-                #
-                # Cas concret : essai 3 du 2026-05-19, R2 a propose +80mm
-                # (cam_2 a vu l'objet a Y=-106mm alors qu'il etait a Y=-25mm
-                # avec score 0.69) -> robot envoye au vide.
-                #
-                # Note : la logique P2 dynamique (60/80/100mm selon score)
-                # reste active pour le REFINEMENT RETRY (apres saisie ratee),
-                # ou l'objet PEUT vraiment avoir bouge suite au contact rate.
-                R2_MAX_ABSOLUTE_MM = 30.0
-                # P4 (2026-06-12) : le score HSV est un RATIO D'AIRE (clip
-                # plancher 0.05), pas une confiance. Un score 0.11 = blob
-                # minuscule (souvent une detection pourrie) qui avait pourtant
-                # le droit de corriger 28mm -> run 'completement a cote'.
-                # Double garde : score minimum + plafond PROPORTIONNEL au
-                # score (12mm + 40mm*score, borne par le plafond physique).
-                R2_MIN_SCORE = 0.18
-                score = refinement2.confidence
-                r2_cap_mm = min(R2_MAX_ABSOLUTE_MM, 12.0 + 40.0 * score)
-                if score >= R2_MIN_SCORE and refinement2.delta_norm_mm < r2_cap_mm:
-                    apply_correction_to_grasp_pose(grasp_pose,
-                                                    refinement2.delta_base_m)
-                    print(f"   Correction #2 appliquee "
-                          f"(norme {refinement2.delta_norm_mm:.1f} mm, "
-                          f"plafond {r2_cap_mm:.0f}mm @ score {score:.2f})")
-                    # Re-IK grasp et retract uniquement (approach deja passe)
-                    r_grp = self._ik.solve(
-                        grasp_pose.T_base_gripper_grasp,
-                        q_init=r_intermediate.joint_angles_rad)
-                    r_ret = self._ik.solve(
-                        grasp_pose.T_base_gripper_retract,
-                        q_init=r_grp.joint_angles_rad)
-                    self._log_wrist("re-solve apres correction #2",
-                                    r_intermediate.joint_angles_rad, r_grp)
-                elif score < R2_MIN_SCORE and refinement2.delta_norm_mm > 0.5:
-                    print(f"   [INFO] score cam_2 {score:.2f} < {R2_MIN_SCORE} : "
-                          f"correction #2 ({refinement2.delta_norm_mm:.1f}mm) ignoree "
-                          f"(detection trop peu fiable)")
-                elif refinement2.delta_norm_mm >= r2_cap_mm:
-                    print(f"   [WARN] correction #2 = {refinement2.delta_norm_mm:.1f}mm "
-                          f"> plafond {r2_cap_mm:.0f}mm "
-                          f"(score {score:.2f}, probable fausse detection), ignoree")
-                else:
-                    print(f"   [INFO] objet stable depuis refinement #1 (pas de re-correction)")
-                print()
+                        duration_s=estimate_duration_safe(
+                            rs_at_approach.joint_angles_rad,
+                            r_intermediate.joint_angles_rad,
+                            max_velocity_rad_s=self.config.max_velocity_rad_s),
+                        gripper_start=self.config.home_gripper_pct,
+                        gripper_end=grasp_pose.gripper_open_pct,
+                    )
+                    print(f"   Mini-descente : {len(mini_traj)} points, "
+                          f"duree {mini_traj.duration_s:.1f}s")
+                    controller.execute_trajectory(mini_traj, verbose=False,
+                                                  on_step=live_callback)
+                    time.sleep(self.config.cam2_settle_s)
+                    rs_at_intermediate = self._provider.read_live()
+                    refinement2 = refine_grasp_with_cam2(
+                        target_label=self.config.target_label,
+                        detector=self._detector,
+                        multi_camera=mc,
+                        robot_state=rs_at_intermediate,
+                        target_z_base_m=float(grasp_pose.T_base_gripper_grasp[2, 3]),
+                        label_mapping=self._label_mapping,
+                    )
+                    print(f"   Refinement #2 : {refinement2.message}")
+                    R2_MAX_ABSOLUTE_MM = 30.0
+                    R2_MIN_SCORE = 0.18
+                    score = refinement2.confidence
+                    r2_cap_mm = min(R2_MAX_ABSOLUTE_MM, 12.0 + 40.0 * score)
+                    if score >= R2_MIN_SCORE and refinement2.delta_norm_mm < r2_cap_mm:
+                        apply_correction_to_grasp_pose(grasp_pose,
+                                                        refinement2.delta_base_m)
+                        print(f"   Correction #2 appliquee "
+                              f"(norme {refinement2.delta_norm_mm:.1f} mm, "
+                              f"plafond {r2_cap_mm:.0f}mm @ score {score:.2f})")
+                        r_grp = self._ik.solve(
+                            grasp_pose.T_base_gripper_grasp,
+                            q_init=r_intermediate.joint_angles_rad)
+                        r_ret = self._ik.solve(
+                            grasp_pose.T_base_gripper_retract,
+                            q_init=r_grp.joint_angles_rad)
+                        self._log_wrist("re-solve apres correction #2",
+                                        r_intermediate.joint_angles_rad, r_grp)
+                    elif score < R2_MIN_SCORE and refinement2.delta_norm_mm > 0.5:
+                        print(f"   [INFO] score cam_2 {score:.2f} < {R2_MIN_SCORE} : "
+                              f"correction #2 ({refinement2.delta_norm_mm:.1f}mm) ignoree")
+                    elif refinement2.delta_norm_mm >= r2_cap_mm:
+                        print(f"   [WARN] correction #2 = {refinement2.delta_norm_mm:.1f}mm "
+                              f"> plafond {r2_cap_mm:.0f}mm (probable fausse detection), ignoree")
+                    else:
+                        print(f"   [INFO] objet stable depuis refinement #1")
+                    print()
 
                 # --- Phase 2 : BOUCLE de tentatives de saisie avec FEEDBACK ---
                 # Chaque tentative :
@@ -901,11 +883,14 @@ class PickAndPlacePipeline:
                         grip_open_pct=grasp_pose.gripper_open_pct,
                         grip_close_pct=self.config.grip_close_pct,
                         include_close=not use_servo_close,
-                        # 1ere tentative : on part de la mini-descente (deja sous
-                        # approach) -> descente DIRECTE (anti remontee parasite).
-                        # Retries : le bras est a/au-dessus d'approach -> on garde
-                        # le waypoint approach (descente monotone).
-                        include_approach=(attempt > 1),
+                        # include_approach=True : passe par la pose approach
+                        # corrigee (lateral A 8cm, hauteur sure) PUIS descend tout
+                        # droit sur l'objet -> repositionnement en hauteur, descente
+                        # finale verticale (pas de reposition a basse altitude).
+                        # En mode two_stage attempt#1 on part de la mini-descente
+                        # (deja sous approach) -> descente directe (anti remontee).
+                        include_approach=(attempt > 1
+                                          or not self.config.closed_loop_two_stage),
                     )
                     label_traj = "Descente" if use_servo_close else "Descente + fermeture"
                     print(f"   {label_traj} : {len(traj_grasp)} points, "

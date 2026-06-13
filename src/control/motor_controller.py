@@ -372,85 +372,106 @@ class MotorController:
                                     load_stop: Optional[float] = None,
                                     squeeze_pct: float = 4.0,
                                     step_pct: float = 2.0,
-                                    period_s: float = 0.04,
+                                    period_s: float = 0.05,
                                     confirm_reads: int = 2,
+                                    contact_margin: float = 130.0,
+                                    baseline_reads: int = 4,
+                                    use_position_stall: bool = False,
                                     pos_stall_pct: float = 1.5,
-                                    stall_reads: int = 2,
+                                    stall_reads: int = 3,
                                     floor_margin_pct: float = 3.0,
+                                    min_travel_pct: float = 25.0,
                                     timeout_s: float = 6.0) -> dict:
         """Fermeture ASSERVIE : la pince s'arrete AU CONTACT de l'objet.
 
         Reponse a « comment la pince sait quand s'arreter » : avant, elle ne
         le savait pas (consigne fixe floor_pct, le servo butait en aveugle).
         Maintenant on descend la consigne PAR PAS et on detecte le CONTACT par
-        DEUX signaux (OR) :
-          - STALL DE POSITION : on commande plus ferme mais la position reelle
-            ne suit plus (machoires bloquees par l'objet) -> robuste, ne depend
-            d'AUCUN seuil de couple (essentiel sur pince TPU compliante ou le
-            couple statique tenu est bas). Exige position > floor + marge pour
-            ne pas confondre avec la butee a vide.
-          - COUPLE : Present_Load >= load_stop (signal auxiliaire, utile sur
-            objet dur ou le couple monte vite).
+        le COUPLE (Present_Load), signal PHYSIQUE independant du timing :
 
-        MAINTIEN SANS RELACHER (correctif 2026-06-13) : au contact, on GELE la
-        consigne COURANTE (qui poussait deja dans l'objet) et on serre ENCORE de
-        squeeze_pct (cmd - squeeze), au lieu de recalculer depuis contact_pct
-        (= position bloquee, SUPERIEURE a la consigne a cause du lag servo ->
-        l'ancien 'contact_pct - squeeze' RELACHAIT la prise, couple chutait de
-        ~300 a ~80). Resultat : la pression de maintien est conservee ET il
-        reste un ECART consigne<->objet : si l'objet TOMBE a la levee, les
-        machoires se referment sous contact_pct (detectable par POSITION).
+          - CONTACT = Present_Load >= seuil ADAPTATIF = base_couple + contact_margin
+            (plafonne par load_stop). La base est mesuree sur les premieres
+            lectures EN MOUVEMENT LIBRE (couple a vide ~20-30) -> le seuil
+            s'adapte (~150-180) et separe nettement « machoires libres » de
+            « machoires sur l'objet ». Plus fiable qu'un 300 fixe.
 
-        A vide : aucun contact, la consigne descend a floor_pct (le check aval
-        conclut SAISIE RATEE).
+        STALL DE POSITION DESACTIVE PAR DEFAUT (use_position_stall=False) :
+        teste 2026-06-13, il FAISAIT UN FAUX CONTACT a ~93% (juste apres le
+        debut de la fermeture) parce que le servo ne suit pas la consigne
+        instantanement au demarrage (inertie) -> la pince ne se fermait jamais
+        sur l'objet. Le couple, lui, detecte le VRAI contact (largeur objet).
+        Le stall reste disponible (arme seulement apres min_travel_pct de course)
+        pour calage hardware futur, mais OFF par defaut.
+
+        MAINTIEN SANS RELACHER : au contact on GELE la consigne courante (qui
+        poussait deja dans l'objet) et on serre ENCORE de squeeze_pct
+        (cmd - squeeze), jamais recalcule depuis contact_pct -> garde la pression
+        ET un ECART consigne<->objet pour detecter une chute a la levee (par
+        POSITION : objet tombe -> machoires se referment sous contact_pct).
+
+        A vide : aucun contact, la consigne descend a floor_pct (check aval RATE).
 
         Returns:
-            dict : stopped_on_contact (bool), stop_cmd_pct (consigne tenue, a
-            REUTILISER pour le transport), contact_pct (position reelle bloquee
-            ~= largeur objet, ou None), contact_via ("stall"/"load"/None),
-            final_pct / final_load (apres stabilisation).
+            dict : stopped_on_contact, stop_cmd_pct (consigne tenue),
+            contact_pct (position bloquee ~= largeur objet), contact_via,
+            final_pct / final_load.
         """
         self._require_bus()
         if not self._torque_enabled:
             raise RuntimeError("Couple desactive. Appelle enable_torque() d'abord.")
-        cmd = float(max(start_pct, floor_pct))
+        start_pct = float(max(start_pct, floor_pct))
+        cmd = start_pct
         load_hits = 0
         stall_hits = 0
         prev_pos = self.read_gripper_pct()
+        load_samples = []
+        load_baseline = None
         contact_pct = None
         cmd_at_contact = None
         contact_via = None
         stopped_on_contact = False
+        step_count = 0
         t0 = time.time()
         while True:
             cmd = max(float(floor_pct), cmd - float(step_pct))
             self.set_gripper_pct(cmd)
             time.sleep(period_s)
             pos = self.read_gripper_pct()
+            load = self.read_gripper_load()
+            step_count += 1
+            travelled = start_pct - pos     # combien la pince s'est refermee
 
-            # STALL : on commande nettement plus ferme que la position reelle
-            # (cmd < pos - marge) mais pos ne descend plus -> bloque par l'objet.
-            # Garde-fou : pos doit etre franchement au-dessus du plancher a vide.
-            commanding_closed = cmd < pos - 1.0
-            barely_moved = (prev_pos - pos) < pos_stall_pct
-            above_floor = pos > (float(floor_pct) + floor_margin_pct)
-            if commanding_closed and barely_moved and above_floor:
-                stall_hits += 1
-            else:
-                stall_hits = 0
+            # Baseline de couple = mediane des premieres lectures (mouvement libre)
+            if load >= 0 and step_count <= baseline_reads:
+                load_samples.append(load)
+            if load_baseline is None and step_count >= baseline_reads and load_samples:
+                load_baseline = sorted(load_samples)[len(load_samples) // 2]
 
-            # COUPLE (auxiliaire)
+            # CONTACT PAR COUPLE (seuil adaptatif, plafonne par load_stop)
+            base = load_baseline if load_baseline is not None else 30.0
+            contact_load = base + float(contact_margin)
             if load_stop is not None:
-                load = self.read_gripper_load()
-                if load >= 0 and load >= load_stop:
-                    load_hits += 1
-                else:
-                    load_hits = 0
+                contact_load = min(contact_load, float(load_stop))
+            if step_count > baseline_reads and load >= 0 and load >= contact_load:
+                load_hits += 1
+            else:
+                load_hits = 0
 
-            if stall_hits >= stall_reads:
-                contact_via = "stall"
-            elif load_hits >= confirm_reads:
+            # STALL (OFF par defaut) : arme seulement apres une course minimale
+            # (skip le transitoire de demarrage du servo, cause des faux contacts).
+            if use_position_stall and travelled >= min_travel_pct:
+                commanding_closed = cmd < pos - 4.0
+                barely_moved = (prev_pos - pos) < pos_stall_pct
+                above_floor = pos > (float(floor_pct) + floor_margin_pct)
+                if commanding_closed and barely_moved and above_floor:
+                    stall_hits += 1
+                else:
+                    stall_hits = 0
+
+            if load_hits >= confirm_reads:
                 contact_via = "load"
+            elif use_position_stall and stall_hits >= stall_reads:
+                contact_via = "stall"
             if contact_via is not None:
                 contact_pct = pos
                 cmd_at_contact = cmd
@@ -464,9 +485,7 @@ class MotorController:
             prev_pos = pos
 
         if stopped_on_contact:
-            # GELE la consigne courante (deja sous l'objet) et serre ENCORE :
-            # garde la pression ET garantit un ecart consigne<->objet pour la
-            # detection de chute a la levee.
+            # GELE la consigne courante (deja sous l'objet) et serre ENCORE.
             cmd = max(float(floor_pct), float(cmd_at_contact) - float(squeeze_pct))
             self.set_gripper_pct(cmd)
         time.sleep(0.25)
@@ -475,6 +494,7 @@ class MotorController:
             "stop_cmd_pct": float(cmd),
             "contact_pct": (float(contact_pct) if contact_pct is not None else None),
             "contact_via": contact_via,
+            "load_baseline": (int(load_baseline) if load_baseline is not None else None),
             "final_pct": self.read_gripper_pct(),
             "final_load": self.read_gripper_load(),
         }
