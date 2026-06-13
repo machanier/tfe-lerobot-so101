@@ -228,6 +228,10 @@ class PipelineConfig:
     grasp_gripper_max_opening_mm: Optional[float] = None
     # Marge d'ouverture de CHAQUE cote (mm). Defaut TopDownGrasp = 10.
     grasp_gripper_open_margin_mm: Optional[float] = None
+    # CORRECTION DE CONVENTION (deg) ajoutee a l'angle de prise. Outil de
+    # diagnostic : si la pince REELLE se ferme a 90deg de ce que le code suppose,
+    # --grasp-yaw-offset 90 corrige. 0 = convention par defaut.
+    grasp_yaw_offset_deg: float = 0.0
 
     # ---------- P4' : stabilisation avant capture cam_2 ----------
     # execute_trajectory rend la main SANS pause finale -> la capture cam_2 du
@@ -275,6 +279,8 @@ class PickAndPlacePipeline:
             grasp_kwargs["gripper_max_opening_mm"] = self.config.grasp_gripper_max_opening_mm
         if self.config.grasp_gripper_open_margin_mm is not None:
             grasp_kwargs["gripper_open_margin_mm"] = self.config.grasp_gripper_open_margin_mm
+        if self.config.grasp_yaw_offset_deg:
+            grasp_kwargs["yaw_offset_deg"] = self.config.grasp_yaw_offset_deg
         self._grasp_strategy = TopDownGrasp(**grasp_kwargs)
         self._ik = IKSolver()
         # IK SPECIFIQUE A LA DEPOSE : poids de rotation reduit (0.05 vs 0.1
@@ -546,6 +552,14 @@ class PickAndPlacePipeline:
                                 else f"yaw_base={np.degrees(yb):+.0f}deg")
             if geo_bits:
                 print(f"   geometrie : {', '.join(geo_bits)}")
+            # DIAGNOSTIC orientation : angle vu PAR CHAQUE camera. Si cam_0 et
+            # cam_1 s'accordent ET correspondent a l'objet reel -> perception OK.
+            # Si elles collent toujours a ~0deg quelle que soit la pose de l'objet
+            # -> detection a ameliorer. (A comparer a l'orientation REELLE que tu vois.)
+            yc0, yc1 = target.meta.get("yaw_cam0_deg"), target.meta.get("yaw_cam1_deg")
+            if yc0 is not None or yc1 is not None:
+                print(f"   [diag orientation] angle objet vu par cam_0={yc0}deg, "
+                      f"cam_1={yc1}deg  (compare a l'angle REEL que tu observes)")
             print()
 
             # ============================================================

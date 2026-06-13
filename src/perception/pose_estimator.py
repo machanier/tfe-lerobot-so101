@@ -536,13 +536,21 @@ class PoseEstimator:
             return (dx, dy, height), meta
 
         # --- 3. objet couche/compact : yaw du grand axe en repere base ---
+        # DIAGNOSTIC : on calcule l'orientation vue par CHAQUE camera separement
+        # et on la stocke (yaw_cam0_deg / yaw_cam1_deg). Si les deux cameras
+        # donnent le meme angle ET qu'il correspond a l'objet reel -> perception
+        # fiable. Si elles divergent ou collent toujours a ~0deg -> detection a
+        # ameliorer. (Permet de distinguer 'perception fausse' de 'convention 90deg'.)
         ori = None
         det_ok, frm_ok = None, None
-        for det, frm in ((det_L, f_L), (det_R, f_R)):
-            ori = self._footprint_orientation(det, frm, z_plane_m=height / 2.0)
-            if ori is not None:
-                det_ok, frm_ok = det, frm
-                break
+        for name, det, frm in (("yaw_cam0_deg", det_L, f_L),
+                               ("yaw_cam1_deg", det_R, f_R)):
+            o = self._footprint_orientation(det, frm, z_plane_m=height / 2.0)
+            if o is not None:
+                meta[name] = round(float(np.degrees(o[0])), 0)
+                if ori is None:
+                    ori = o
+                    det_ok, frm_ok = det, frm
         if ori is None:
             meta["pose_class"] = "inconnu"
             meta["yaw_base_rad"] = None

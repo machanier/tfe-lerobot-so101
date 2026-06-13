@@ -192,6 +192,8 @@ def reorient_grasp_pose(grasp_pose, new_yaw_rad: float,
     offset_mm = float(meta.get("lateral_offset_mm", 0.0))
     old_off = meta.get("offset_base_xy_mm", (0.0, 0.0))
     old_off = np.array([float(old_off[0]) / 1000.0, float(old_off[1]) / 1000.0, 0.0])
+    # Applique la meme correction de convention que la pose initiale (diagnostic 90deg)
+    new_yaw_rad = float(new_yaw_rad) + float(meta.get("yaw_offset_rad", 0.0))
     R = _rotation_top_down(float(new_yaw_rad))
     opp = -np.asarray(fixed_finger_dir_gripper, dtype=np.float64)
     new_off = R @ opp * (offset_mm / 1000.0)
@@ -237,6 +239,12 @@ class TopDownGrasp(GraspStrategy):
                  gripper_open_pct: float = 100.0,
                  gripper_close_pct: float = 0.0,
                  align_wrist_roll: bool = True,
+                 # CORRECTION DE CONVENTION (deg) ajoutee a l'angle de prise.
+                 # Outil de DIAGNOSTIC/calage : si la pince REELLE se ferme a 90deg
+                 # de ce que le code suppose (doigts perpendiculaires au lieu de
+                 # paralleles au grand axe), passer --grasp-yaw-offset 90 corrige
+                 # tout d'un coup. 0 = convention par defaut (doigts // grand axe).
+                 yaw_offset_deg: float = 0.0,
                  max_object_height_m: float = 0.12,
                  # --- A2 : decalage smart vers la pince fixe ---
                  # Le SO-101 a une pince ASYMETRIQUE : un doigt fixe, un
@@ -281,6 +289,7 @@ class TopDownGrasp(GraspStrategy):
         self.gripper_open_pct = gripper_open_pct
         self.gripper_close_pct = gripper_close_pct
         self.align_wrist_roll = align_wrist_roll
+        self.yaw_offset_deg = float(yaw_offset_deg)
         self.max_object_height_m = max_object_height_m
         self.grasp_lateral_offset_mm = grasp_lateral_offset_mm
         self.fixed_finger_dir_gripper = np.asarray(fixed_finger_dir_gripper,
@@ -345,6 +354,11 @@ class TopDownGrasp(GraspStrategy):
                         if det.cam_key in ("cam_0", "cam_1"):
                             yaw = yaw_from_contour(det.contour)
                             break
+        # Correction de convention (diagnostic 90deg) : appliquee a un angle
+        # ALIGNE seulement (pas en yaw libre, ou l'angle n'a pas de sens).
+        yaw_offset_rad = np.radians(self.yaw_offset_deg)
+        if not yaw_free:
+            yaw = yaw + yaw_offset_rad
         R = _rotation_top_down(yaw)
 
         # === A2 : decalage smart vers la pince fixe ===
@@ -406,6 +420,9 @@ class TopDownGrasp(GraspStrategy):
                 "yaw_free": yaw_free,
                 "pose_class": meta_obj.get("pose_class"),
                 "object_center_xy_m": (float(x), float(y)),
+                "yaw_offset_rad": float(yaw_offset_rad),
+                "yaw_cam0_deg": meta_obj.get("yaw_cam0_deg"),
+                "yaw_cam1_deg": meta_obj.get("yaw_cam1_deg"),
                 "approach_height_m": self.approach_height_m,
                 "grasp_offset_m": self.grasp_offset_m,
                 "retract_height_m": self.retract_height_m,
