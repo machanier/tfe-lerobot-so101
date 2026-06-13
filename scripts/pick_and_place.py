@@ -125,11 +125,11 @@ def main():
                         help="Marge d'ouverture de CHAQUE cote de l'objet (mm). Defaut 10. "
                              "Plus petit = pince plus juste (mais moins de tolerance a "
                              "l'erreur de visee).")
-    parser.add_argument("--grasp-yaw-offset", type=float, default=0.0,
-                        help="DIAGNOSTIC : ajoute X degres a l'angle de prise. Si la pince "
-                             "se ferme a 90deg de l'objet (le long de la longueur au lieu du "
-                             "diametre), teste --grasp-yaw-offset 90 : si ca aligne enfin, la "
-                             "convention pince etait tournee de 90deg (on figera la correction).")
+    parser.add_argument("--grasp-yaw-offset", type=float, default=None,
+                        help="Correction de convention pince (deg). DEFAUT 90 (cale pour ce "
+                             "montage : la pince ferme a 90deg de la convention nominale). "
+                             "Passe 0 pour revenir au comportement nominal, ou une autre valeur "
+                             "si la pince est remontee differemment.")
     parser.add_argument("--no-lift-check", action="store_true",
                         help="Desactive la VERIF POST-LEVEE (P1'). Par defaut, apres une "
                              "fermeture jugee OK le bras remonte a retract et RE-LIT "
@@ -180,7 +180,8 @@ def main():
         config.grasp_gripper_max_opening_mm = args.gripper_max_opening
     if args.gripper_open_margin is not None:
         config.grasp_gripper_open_margin_mm = args.gripper_open_margin
-    config.grasp_yaw_offset_deg = args.grasp_yaw_offset
+    if args.grasp_yaw_offset is not None:
+        config.grasp_yaw_offset_deg = args.grasp_yaw_offset
 
     pipeline = PickAndPlacePipeline(config)
     pipeline.run()

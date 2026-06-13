@@ -169,9 +169,10 @@ class PipelineConfig:
     # Seuil de COUPLE (Present_Load, magnitude brute Feetech 0-1023) au-dessus
     # duquel on considere la pince comme TENANT un objet, en COMPLEMENT (OR) de
     # la marge position. Signal fiable independant de la taille (cylindre fin
-    # inclus), sans occlusion. None = desactive (comportement actuel). A caler
-    # avec les valeurs loggees (tenu vs vide). Activable via --grasp-load-threshold.
-    grasp_load_threshold: Optional[float] = None
+    # inclus), sans occlusion. DEFAUT 300 (cale terrain 2026-06-13) : sert de
+    # plafond au seuil de CONTACT adaptatif de la fermeture asservie. Reglable
+    # via --grasp-load-threshold (None = pas de plafond, contact 100%% adaptatif).
+    grasp_load_threshold: Optional[float] = 300.0
     # Nombre max de RETRY apres echec (0 = pas de retry, 1 = 1 essai + 1 retry).
     max_grasp_retries: int = 1
     # Pause apres fermeture pince avant de LIRE la position (laisser le servo
@@ -183,10 +184,11 @@ class PipelineConfig:
     # grasp pour que l'objet finisse contre le doigt fixe (le mobile vient
     # l'ecraser), sinon le doigt fixe percute l'objet et le pousse avant la
     # fermeture -> prise "de travers". Calibre a 8mm pour le cube 30mm.
-    # None = on garde le defaut de TopDownGrasp (8.0mm). A REGLER PAR OBJET :
-    # un rectangle/cylindre plus large peut demander une autre valeur pour une
-    # prise bien "carree". Exposable via --grasp-lateral-offset.
-    grasp_lateral_offset_mm: Optional[float] = None
+    # DEFAUT DEPLOIEMENT 0 (2026-06-13, demande de Maxence) : le decalage sert a
+    # "carrer" un objet a FACES PLATES (cube) contre le doigt fixe ; pour un objet
+    # ROND (cylindre) il ne sert pas et risque de faire rater un objet fin.
+    # Passer --grasp-lateral-offset 8 pour un cube. None -> defaut TopDownGrasp(8).
+    grasp_lateral_offset_mm: Optional[float] = 0.0
 
     # ---------- P1' : verification POST-LEVEE (anti faux positifs) ----------
     # Le couple A LA FERMETURE peut mentir : effleurement du sommet, morsure
@@ -228,10 +230,11 @@ class PipelineConfig:
     grasp_gripper_max_opening_mm: Optional[float] = None
     # Marge d'ouverture de CHAQUE cote (mm). Defaut TopDownGrasp = 10.
     grasp_gripper_open_margin_mm: Optional[float] = None
-    # CORRECTION DE CONVENTION (deg) ajoutee a l'angle de prise. Outil de
-    # diagnostic : si la pince REELLE se ferme a 90deg de ce que le code suppose,
-    # --grasp-yaw-offset 90 corrige. 0 = convention par defaut.
-    grasp_yaw_offset_deg: float = 0.0
+    # CORRECTION DE CONVENTION (deg) ajoutee a l'angle de prise. DEFAUT 90 :
+    # mesure terrain 2026-06-13, la pince de Maxence ferme a 90deg de la convention
+    # nominale du code (verifie sans ambiguite). Override via --grasp-yaw-offset
+    # (ex: 0 pour la convention nominale, autre valeur si pince remontee autrement).
+    grasp_yaw_offset_deg: Optional[float] = 90.0
 
     # ---------- P4' : stabilisation avant capture cam_2 ----------
     # execute_trajectory rend la main SANS pause finale -> la capture cam_2 du
@@ -279,7 +282,7 @@ class PickAndPlacePipeline:
             grasp_kwargs["gripper_max_opening_mm"] = self.config.grasp_gripper_max_opening_mm
         if self.config.grasp_gripper_open_margin_mm is not None:
             grasp_kwargs["gripper_open_margin_mm"] = self.config.grasp_gripper_open_margin_mm
-        if self.config.grasp_yaw_offset_deg:
+        if self.config.grasp_yaw_offset_deg is not None:
             grasp_kwargs["yaw_offset_deg"] = self.config.grasp_yaw_offset_deg
         self._grasp_strategy = TopDownGrasp(**grasp_kwargs)
         self._ik = IKSolver()
