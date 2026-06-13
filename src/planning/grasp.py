@@ -179,6 +179,38 @@ def yaw_from_contour(contour: Optional[np.ndarray]) -> float:
     return float(theta)
 
 
+def reorient_grasp_pose(grasp_pose, new_yaw_rad: float,
+                        fixed_finger_dir_gripper: tuple = (0, -1, 0)):
+    """Reoriente une GraspPose top-down sur un NOUVEAU yaw (machoires en travers
+    du petit axe), en conservant la POSITION de l'objet et l'offset lateral A2.
+
+    Utilise quand cam_2 (vue proche, au-dessus) mesure l'orientation de l'objet
+    plus fiablement que la stereo oblique : on remplace l'orientation de prise
+    par celle vue par cam_2 avant de descendre. Modifie grasp_pose en place.
+    """
+    meta = grasp_pose.meta or {}
+    offset_mm = float(meta.get("lateral_offset_mm", 0.0))
+    old_off = meta.get("offset_base_xy_mm", (0.0, 0.0))
+    old_off = np.array([float(old_off[0]) / 1000.0, float(old_off[1]) / 1000.0, 0.0])
+    R = _rotation_top_down(float(new_yaw_rad))
+    opp = -np.asarray(fixed_finger_dir_gripper, dtype=np.float64)
+    new_off = R @ opp * (offset_mm / 1000.0)
+    for attr in ("T_base_gripper_approach", "T_base_gripper_grasp",
+                 "T_base_gripper_retract"):
+        T = np.array(getattr(grasp_pose, attr), dtype=np.float64, copy=True)
+        center_xy = T[:3, 3] - old_off          # retire l'ancien offset -> centre objet
+        T[:3, :3] = R
+        T[0, 3] = center_xy[0] + new_off[0]
+        T[1, 3] = center_xy[1] + new_off[1]
+        # T[2,3] (hauteur) inchange
+        setattr(grasp_pose, attr, T)
+    if grasp_pose.meta is not None:
+        grasp_pose.meta["yaw_rad"] = float(new_yaw_rad)
+        grasp_pose.meta["offset_base_xy_mm"] = (float(new_off[0] * 1000),
+                                                float(new_off[1] * 1000))
+        grasp_pose.meta["flipped_180"] = False  # on repart d'une orientation fraiche
+
+
 class TopDownGrasp(GraspStrategy):
     """Saisie verticale par le haut. Strategie heuristique simple.
 
