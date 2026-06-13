@@ -1030,22 +1030,36 @@ class PickAndPlacePipeline:
                         time.sleep(self.config.grasp_settle_pause_s)
                         lift_pct = controller.read_gripper_pct()
                         lift_load = controller.read_gripper_load()
-                        # JUGEMENT PAR POSITION (robuste, independant du couple) :
-                        # objet TENU => les machoires restent bloquees a la
-                        # largeur de l'objet (~contact_pct) ; objet TOMBE => elles
-                        # se referment SOUS contact_pct vers la consigne de
-                        # serrage (grace a l'ecart consigne<->objet garanti par le
-                        # squeeze). tol=2.5% > bruit de lecture position.
-                        if contact_ref is not None:
-                            held = lift_pct >= contact_ref - 2.5
-                        elif load_thr is not None and lift_load >= 0:
-                            held = lift_load >= load_thr
-                        else:
-                            held = lift_pct > gripper_now - 1.5
-                        tag_l = ("OBJET TENU (saisie confirmee)" if held
+                        # JUGEMENT POST-LEVEE par DEUX preuves (OR), 2026-06-13 :
+                        #   (1) COUPLE : tenir un objet contre la gravite demande
+                        #       un couple SOUTENU nettement au-dessus du couple a
+                        #       VIDE (baseline ~24). Essai 3 du 2026-06-13 : tenu
+                        #       -> couple 200, lache -> couple 24. Discriminant net.
+                        #   (2) POSITION : les machoires restent BLOQUEES par
+                        #       l'objet AU-DESSUS de la consigne de serrage hold_cmd
+                        #       (si l'objet tombe, elles se referment jusqu'a hold_cmd).
+                        # On compare a hold_cmd (consigne de maintien), PAS a
+                        # contact_pct (premier contact) : un objet qui se comprime
+                        # en etant serre descend SOUS contact_pct tout en restant
+                        # tenu -> l'ancien critere (contact_pct-2.5) le declarait
+                        # PERDU a tort (faux negatif essai 3).
+                        baseline_load = (self._gripper_baseline[1]
+                                         if getattr(self, "_gripper_baseline", None)
+                                         else 24)
+                        held_by_load = (lift_load >= 0
+                                        and lift_load >= baseline_load + 90)
+                        held_by_pos = (hold_cmd is not None
+                                       and lift_pct >= hold_cmd + 3.0)
+                        held = held_by_load or held_by_pos
+                        why = []
+                        if held_by_load: why.append("couple")
+                        if held_by_pos: why.append("position")
+                        why_txt = (" [" + "+".join(why) + "]") if held else ""
+                        tag_l = ("OBJET TENU (saisie confirmee)" + why_txt if held
                                  else "OBJET PERDU -> faux positif attrape")
-                        print(f"   [verif levee] pince={lift_pct:.1f}%, "
-                              f"couple={lift_load}  -->  {tag_l}")
+                        print(f"   [verif levee] pince={lift_pct:.1f}% (maintien "
+                              f"{hold_cmd:.1f}%), couple={lift_load} (vide ~{baseline_load})"
+                              f"  -->  {tag_l}")
                         entry["lift_pct"] = lift_pct
                         entry["lift_load"] = lift_load
                         entry["held_after_lift"] = held
