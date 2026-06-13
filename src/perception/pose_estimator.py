@@ -567,7 +567,18 @@ class PoseEstimator:
         height = max(0.005, h_cap)
 
         meta["footprint_elongation"] = round(elong, 2)
-        if elong >= 1.3:
+        # CLASSIFICATION 'couche' robuste (2026-06-13). L'ancien critere
+        # elong=ext_long/ext_court >= 1.3 ratait les cylindres //X (essais 3,4
+        # classes 'compact' a tort) : la silhouette d'un objet a sommet ROND
+        # projetee sur la table SUR-ESTIME ext_court (62mm mesure pour D30),
+        # ce qui ecrase le ratio. Critere principal FIABLE : ext_long vs la
+        # HAUTEUR corrigee (height est triangulee+bornee, donc fiable) -> un
+        # objet COUCHE a ext_long >> height. Garde-fou absolu (ext_long-ext_court
+        # > 15mm) pour ne PAS classer 'couche' un cube/disque compact (sinon
+        # rotation de poignet inutile, l'inverse du bug initial).
+        elongated = (ext_long > 1.5 * max(height, 1e-3)
+                     and (ext_long - ext_court) > 0.015)
+        if elongated:
             meta["pose_class"] = "couche"
             meta["yaw_base_rad"] = float(yaw_b)
         else:
@@ -640,12 +651,13 @@ class PoseEstimator:
                 # Calibrable via configs/perception/bias_correction.json.
                 if self._bias_m is not None:
                     X = X - self._bias_m
-                in_ws = self._in_workspace(X)
+                ws_reason = self._workspace_reject(X)
+                in_ws = ws_reason is None
                 pos_mm = X * 1000
                 if not in_ws:
                     reject_reason = (
-                        f"stereo OK (reproj {err:.1f}px) MAIS position hors workspace "
-                        f"({pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f}) mm"
+                        f"stereo OK (reproj {err:.1f}px) MAIS rejet : {ws_reason} "
+                        f"-- position ({pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f}) mm"
                     )
                 elif err > self.config.max_reproj_error_px:
                     reject_reason = (
@@ -701,24 +713,43 @@ class PoseEstimator:
         return None
 
     def _in_workspace(self, X: np.ndarray) -> bool:
+        return self._workspace_reject(X) is None
+
+    def _workspace_reject(self, X: np.ndarray):
+        """Retourne None si la position est valide, sinon une raison PRECISE
+        (bornes Z code / portee / bornes scene.json / zone d'exclusion <label>).
+        Permet un diagnostic clair (avant : tout etait note 'hors workspace',
+        meme un rejet par zone d'exclusion -> trompait le debug, cf essais 13/14).
+        """
         x, y, z = float(X[0]), float(X[1]), float(X[2])
         # Bornes Z par defaut (de la config code)
         if not (self.config.min_z_base_m <= z <= self.config.max_z_base_m):
-            return False
+            return f"Z={z*1000:.0f}mm hors bornes code [{self.config.min_z_base_m*1000:.0f},{self.config.max_z_base_m*1000:.0f}]"
         # SO-101 a un bras de ~30 cm : tout ce qui est au-dela de 1 m est aberrant.
         if (x * x + y * y + z * z) > 1.0:
-            return False
+            return f"portee {np.linalg.norm([x,y,z])*1000:.0f}mm > 1m (aberrant)"
         # Bornes workspace de scene.json (si dispo)
         if self._workspace_bounds is not None:
             wb = self._workspace_bounds
-            if not (wb["x_min"] <= x <= wb["x_max"]): return False
-            if not (wb["y_min"] <= y <= wb["y_max"]): return False
-            if not (wb["z_min"] <= z <= wb["z_max"]): return False
+            if not (wb["x_min"] <= x <= wb["x_max"]): return f"X={x*1000:.0f}mm hors bornes scene [{wb['x_min']*1000:.0f},{wb['x_max']*1000:.0f}]"
+            if not (wb["y_min"] <= y <= wb["y_max"]): return f"Y={y*1000:.0f}mm hors bornes scene [{wb['y_min']*1000:.0f},{wb['y_max']*1000:.0f}]"
+            if not (wb["z_min"] <= z <= wb["z_max"]): return f"Z={z*1000:.0f}mm hors bornes scene [{wb['z_min']*1000:.0f},{wb['z_max']*1000:.0f}]"
         # Zones d'exclusion : la position ne doit etre dans AUCUNE zone.
+        # CARVE-OUT TABLE (2026-06-13) : la zone 'robot_arm_envelope' (box
+        # englobant le bras replie) couvre x[0,0.20] z[0,0.30] et avalait donc
+        # les objets reels POSES sur la table devant le robot (crash 'NON
+        # DETECTE' essais 13/14 : cylindre a (199,44,35)mm rejete alors que la
+        # triangulation etait excellente, reproj 4.2px). Un objet pose sur la
+        # table (z bas) n'est jamais le bras (qui est sureleve quand replie) ->
+        # on n'applique PAS cette enveloppe sous TABLE_OBJECT_Z_M. Les autres
+        # zones (base robot) restent strictes.
+        TABLE_OBJECT_Z_M = 0.06
         for zone in self._exclusion_zones:
+            if zone.get("label") == "robot_arm_envelope" and z < TABLE_OBJECT_Z_M:
+                continue
             if self._point_in_zone((x, y, z), zone):
-                return False
-        return True
+                return f"dans zone d'exclusion '{zone.get('label', '?')}'"
+        return None
 
     @staticmethod
     def _point_in_zone(p: tuple[float, float, float], zone: dict) -> bool:

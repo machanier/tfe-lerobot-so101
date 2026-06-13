@@ -319,6 +319,7 @@ class IKSolver:
     def solve_grasp_pose(self, grasp_pose,
                          q_init: Optional[dict[str, float]] = None,
                          persist_choice: bool = True,
+                         lock_orientation: bool = False,
                          ) -> tuple[IKResult, IKResult, IKResult]:
         """Resout l'IK pour les 3 poses d'un GraspPose (approach/grasp/retract).
 
@@ -328,17 +329,16 @@ class IKSolver:
         PERSISTANCE DU CHOIX D'ORIENTATION (persist_choice=True) : si la
         variante retournee de 180deg est choisie, les matrices de grasp_pose
         sont REECRITES avec cette orientation. CONTRAT : apres l'appel,
-        FK(solution) == grasp_pose.T_base_gripper_* — toute resolution
-        ulterieure (mini-descente, re-IK apres refinement #2, retry) qui
-        repart de ces matrices vise donc la MEME orientation physique.
-        Sans ca, les cibles alternaient entre les 2 orientations d'un solve
-        a l'autre -> demi-tours aller-retour du poignet pendant la descente
-        (mini-descentes de ~9s au lieu de ~1s, diagnostic 2026-06-12).
+        FK(solution) == grasp_pose.T_base_gripper_*.
 
-        Args:
-            grasp_pose : src.planning.grasp.GraspPose.
-            q_init     : configuration initiale pour l'approach (defaut : zero).
-            persist_choice : ecrit l'orientation choisie dans grasp_pose.
+        LOCK D'ORIENTATION (lock_orientation=True) : on NE re-explore PAS la
+        symetrie 180deg ; on resout les matrices TELLES QUELLES. A utiliser a
+        TOUS les re-solves (apres refinement cam_2, au retry) une fois
+        l'orientation engagee : sinon le cout (penalite de non-convergence
+        ASYMETRIQUE entre A et B en top-down sous-actionne) pouvait faire
+        BASCULER le choix d'un re-solve a l'autre -> demi-tour 180deg du poignet
+        (essai 10 du 2026-06-12 : retry -153deg -> +18deg). Le 1er solve garde
+        lock_orientation=False (il choisit l'orientation), les suivants True.
 
         Returns:
             (result_approach, result_grasp, result_retract)
@@ -346,6 +346,17 @@ class IKSolver:
         from src.planning.grasp import GraspPose  # import local pour eviter cycle
         if not isinstance(grasp_pose, GraspPose):
             raise TypeError(f"Attendu GraspPose, recu {type(grasp_pose).__name__}")
+
+        # LOCK : orientation deja engagee -> resoudre les matrices telles quelles
+        # (les corrections cam_2 ne touchent que la translation, donc l'orientation
+        # persistee reste valide). Stabilite garantie entre re-solves.
+        if lock_orientation:
+            ra = self.solve(grasp_pose.T_base_gripper_approach, q_init=q_init)
+            rg = self.solve(grasp_pose.T_base_gripper_grasp,
+                            q_init=ra.joint_angles_rad or None)
+            rr = self.solve(grasp_pose.T_base_gripper_retract,
+                            q_init=rg.joint_angles_rad or None)
+            return ra, rg, rr
 
         # === Symetrie 180deg de la pince ===
         # Une prise a l'orientation R est IDENTIQUE a R tournee de 180deg autour
@@ -424,6 +435,77 @@ class IKSolver:
                     "flipped_180", False)
 
         return chosen[0], chosen[1], chosen[2]
+
+    def solve_grasp_pose_free_yaw(self, grasp_pose,
+                                  q_init: Optional[dict[str, float]] = None,
+                                  ) -> tuple[IKResult, IKResult, IKResult]:
+        """Resout un GraspPose a YAW LIBRE (objet DEBOUT, empreinte ronde).
+
+        Pour un objet rond, toute orientation de prise grippe de la meme facon.
+        On BALAYE le yaw et on retient celui dont la solution MINIMISE le
+        mouvement articulaire depuis q_init (continuite) -> le poignet reste pres
+        de la pose de depart au lieu de tourner ~90deg pour rien (cylindres
+        debout, essais 1,13,14 du 2026-06-12). On vise le CENTRE de l'objet
+        (offset lateral A2 sans objet pour un rond) et on PERSISTE l'orientation
+        choisie dans grasp_pose -> les re-solves ulterieurs (lock_orientation)
+        la conservent.
+
+        Returns: (approach, grasp, retract).
+        """
+        from src.planning.grasp import GraspPose, _rotation_top_down, _se3
+        if not isinstance(grasp_pose, GraspPose):
+            raise TypeError(f"Attendu GraspPose, recu {type(grasp_pose).__name__}")
+
+        # Centre objet + hauteurs depuis la pose courante (on enleve l'offset
+        # lateral : inutile/non oriente pour un objet rond).
+        T_g = grasp_pose.T_base_gripper_grasp
+        z_grasp = float(T_g[2, 3])
+        meta = grasp_pose.meta or {}
+        cxy = meta.get("object_center_xy_m")
+        if cxy is not None:
+            cx, cy = float(cxy[0]), float(cxy[1])
+        else:
+            off = meta.get("offset_base_xy_mm", (0.0, 0.0))
+            cx = float(T_g[0, 3]) - float(off[0]) / 1000.0
+            cy = float(T_g[1, 3]) - float(off[1]) / 1000.0
+        h_app = float(grasp_pose.T_base_gripper_approach[2, 3]) - z_grasp
+        h_ret = float(grasp_pose.T_base_gripper_retract[2, 3]) - z_grasp
+        q0 = self._to_vector(q_init) if q_init is not None else None
+
+        best = None  # (cost, yaw, trio, mats)
+        for yaw_deg in range(-180, 180, 15):
+            yaw = float(np.radians(yaw_deg))
+            R = _rotation_top_down(yaw)
+            T_app = _se3(R, [cx, cy, z_grasp + h_app])
+            T_grp = _se3(R, [cx, cy, z_grasp])
+            T_ret = _se3(R, [cx, cy, z_grasp + h_ret])
+            ra = self.solve(T_app, q_init=q_init)
+            rg = self.solve(T_grp, q_init=ra.joint_angles_rad or None)
+            if not rg.joint_angles_rad or rg.translation_err_mm > 12.0:
+                continue
+            rr = self.solve(T_ret, q_init=rg.joint_angles_rad or None)
+            # Cout = mouvement articulaire (continuite avec la pose courante)
+            # -> minimise la rotation du poignet ET du reste du bras.
+            if q0 is not None:
+                cost = float(np.linalg.norm(self._to_vector(rg.joint_angles_rad) - q0))
+            else:
+                cost = abs(rg.joint_angles_rad.get("wrist_roll", 0.0))
+            if best is None or cost < best[0]:
+                best = (cost, yaw, (ra, rg, rr), (T_app, T_grp, T_ret))
+
+        if best is None:
+            # Aucun yaw n'atteint la position : repli sur le solveur standard.
+            return self.solve_grasp_pose(grasp_pose, q_init=q_init)
+
+        _, yaw, trio, mats = best
+        # PERSISTE l'orientation choisie (offset lateral neutralise pour un rond).
+        grasp_pose.T_base_gripper_approach, grasp_pose.T_base_gripper_grasp, \
+            grasp_pose.T_base_gripper_retract = mats
+        if grasp_pose.meta is not None:
+            grasp_pose.meta["yaw_rad"] = yaw
+            grasp_pose.meta["offset_base_xy_mm"] = (0.0, 0.0)
+            grasp_pose.meta["yaw_committed_deg"] = float(np.degrees(yaw))
+        return trio
 
     def solve_topdown_free_yaw(self, position_xyz, q_init=None):
         """Resout une pose pince-vers-le-bas a une POSITION donnee, YAW LIBRE.
