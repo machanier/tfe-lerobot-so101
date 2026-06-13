@@ -210,6 +210,17 @@ class PipelineConfig:
     # sans ecraser ; la consigne tenue reste relative a la largeur de l'objet.
     grasp_squeeze_pct: float = 4.0
 
+    # ---------- Correction d'ORIENTATION par cam_2 ----------
+    # Si True (defaut) : a la pose approach, cam_2 (proche, quasi au-dessus)
+    # mesure le grand axe de l'objet et REORIENTE la prise (machoires en travers
+    # du petit cote) avant de descendre. Plus fiable que la stereo oblique
+    # cam_0/cam_1 dont le masque HSV est faible sur les objets fins. Repond au
+    # probleme recurrent 'la pince n'est pas alignee avec l'objet'.
+    cam2_reorient: bool = True
+    # Elongation MIN vue par cam_2 pour faire confiance a son orientation (en
+    # dessous = objet ~rond/ambigu, on ne reoriente pas).
+    cam2_reorient_min_elong: float = 1.5
+
     # ---------- Ouverture adaptative (calibrage terrain) ----------
     # OUVERTURE MAX REELLE de la pince en mm (mesuree : 150mm sur le poste de
     # Maxence). Sert a convertir "largeur objet + marges" -> % d'ouverture.
@@ -767,14 +778,31 @@ class PickAndPlacePipeline:
                           "Suspect, on NE corrige PAS (peut etre fausse detection).")
                 else:
                     apply_correction_to_grasp_pose(grasp_pose, refinement.delta_base_m)
-                    print(f"   Correction appliquee (norme {refinement.delta_norm_mm:.1f} mm)")
-                    # Refaire l'IK pour les poses corrigees. lock_orientation :
-                    # l'orientation est deja engagee (correction = translation
-                    # seule) -> ne PAS re-explorer la symetrie 180deg (anti
-                    # bascule du poignet entre re-solves).
+                    print(f"   Correction position appliquee (norme {refinement.delta_norm_mm:.1f} mm)")
+                    # CORRECTION D'ORIENTATION par cam_2 (2026-06-13). cam_2 est
+                    # proche et quasi au-dessus de l'objet -> son grand axe est
+                    # plus FIABLE que la stereo oblique cam_0/cam_1 (dont le masque
+                    # HSV est faible sur le cylindre fin). Si cam_2 voit un objet
+                    # CLAIREMENT allonge, on REORIENTE la prise sur son petit axe
+                    # avant de descendre (reponse au probleme 'pince pas alignee').
+                    reoriented = False
+                    if (self.config.cam2_reorient
+                            and refinement.yaw_base_cam2 is not None
+                            and refinement.elong_cam2 >= self.config.cam2_reorient_min_elong):
+                        from src.planning.grasp import reorient_grasp_pose
+                        old_yaw = np.degrees(grasp_pose.meta.get("yaw_rad", 0.0))
+                        reorient_grasp_pose(grasp_pose, refinement.yaw_base_cam2)
+                        new_yaw = np.degrees(refinement.yaw_base_cam2)
+                        print(f"   cam_2 REORIENTE la prise : yaw {old_yaw:+.0f}deg "
+                              f"-> {new_yaw:+.0f}deg (objet vu allonge x{refinement.elong_cam2:.1f} "
+                              f"par cam_2, plus fiable que la stereo)")
+                        reoriented = True
+                    # Re-IK. Si on a reoriente : NON verrouille (l'axe a change ->
+                    # re-choisir la meilleure des 2 orientations 180 pour la
+                    # continuite). Sinon verrouille (anti bascule).
                     r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
                         grasp_pose, q_init=rs_at_approach.joint_angles_rad,
-                        lock_orientation=True)
+                        lock_orientation=(not reoriented))
                     print(f"   IK re-resolue avec poses corrigees.")
                     self._log_wrist("re-solve apres correction #1",
                                     rs_at_approach.joint_angles_rad, r_grp)

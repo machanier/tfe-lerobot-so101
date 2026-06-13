@@ -87,6 +87,11 @@ class RefinementResult:
     target_label: str
     method: str
     message: str = ""
+    # Orientation du grand axe de l'objet (repere base) vue par cam_2 (proche,
+    # quasi au-dessus -> blob plus gros et plus net que la stereo oblique).
+    # None si l'empreinte n'est pas assez allongee pour trancher.
+    yaw_base_cam2: Optional[float] = None
+    elong_cam2: float = 1.0
 
     @property
     def delta_norm_mm(self) -> float:
@@ -96,6 +101,64 @@ class RefinementResult:
 # ============================================================
 # Module principal
 # ============================================================
+
+
+def long_axis_base_from_contour(contour, K, dist, T_base_cam,
+                                z_plane_m: float):
+    """Angle du GRAND AXE de l'objet en repere BASE, depuis un contour image.
+
+    Projette le contour (undistordu) sur le plan z=z_plane par intersection
+    rayon-plan, puis ACP 2D dans le plan XY base. Identique a
+    PoseEstimator._footprint_orientation mais autonome (utilise pour cam_2).
+
+    cam_2 etant PROCHE et quasi au-dessus de l'objet a la pose approach, son
+    blob est plus gros et plus net que la stereo oblique cam_0/cam_1 -> axe
+    plus fiable. Returns (yaw_rad in [-pi/2,pi/2], elongation>=1) ou None.
+    """
+    if contour is None:
+        return None
+    pts = np.asarray(contour, dtype=np.float64).reshape(-1, 2)
+    if len(pts) < 6:
+        return None
+    if len(pts) > 80:
+        pts = pts[::max(1, len(pts) // 80)]
+    try:
+        und = cv2.undistortPoints(pts.reshape(-1, 1, 2), K, dist, P=K).reshape(-1, 2)
+        K_inv = np.linalg.inv(K)
+        R = T_base_cam[:3, :3]
+        o = T_base_cam[:3, 3]
+        homog = np.hstack([und, np.ones((len(und), 1))])
+        rays = (R @ (K_inv @ homog.T)).T
+        dz = rays[:, 2]
+        keep = np.abs(dz) > 1e-9
+        s = (z_plane_m - o[2]) / dz[keep]
+        fwd = s > 0
+        P = o[None, :] + s[fwd, None] * rays[keep][fwd]
+    except Exception:
+        return None
+    if len(P) < 6:
+        return None
+    xy = P[:, :2]
+    d = xy - xy.mean(axis=0)
+    mu20 = float((d[:, 0] ** 2).mean())
+    mu02 = float((d[:, 1] ** 2).mean())
+    mu11 = float((d[:, 0] * d[:, 1]).mean())
+    theta = 0.5 * np.arctan2(2.0 * mu11, mu20 - mu02)
+    ca, sa = np.cos(theta), np.sin(theta)
+    along = d[:, 0] * ca + d[:, 1] * sa
+    perp = -d[:, 0] * sa + d[:, 1] * ca
+    ext_long = float(along.max() - along.min())
+    ext_court = float(perp.max() - perp.min())
+    if ext_long < ext_court:
+        ext_long, ext_court = ext_court, ext_long
+        theta += np.pi / 2.0
+    while theta > np.pi / 2:
+        theta -= np.pi
+    while theta < -np.pi / 2:
+        theta += np.pi
+    if ext_court < 1e-4:
+        return None
+    return float(theta), float(ext_long / max(ext_court, 1e-6))
 
 
 def _bbox_touches_border(bbox, img_w: float, img_h: float,
@@ -285,6 +348,15 @@ def refine_grasp_with_cam2(
     # On a notre vraie correction ray-plane
     dx_cam_m, dy_cam_m = float(delta_base[0]), float(delta_base[1])  # pour info debug
 
+    # ORIENTATION vue par cam_2 : grand axe de l'objet en repere base, depuis le
+    # contour (proche + quasi au-dessus -> plus net que la stereo oblique).
+    yaw_cam2 = None
+    elong_cam2 = 1.0
+    ori = long_axis_base_from_contour(det.contour, K, frame_c2.dist,
+                                      T_base_cam2, target_z)
+    if ori is not None:
+        yaw_cam2, elong_cam2 = ori
+
     if verbose:
         print(f"   [closed_loop] cam_2 a Z_base={z_cam2_base*1000:.1f}mm, "
               f"objet attendu Z={target_z*1000:.1f}mm")
@@ -306,6 +378,8 @@ def refine_grasp_with_cam2(
                  f"{delta_base[1]*1000:+.1f}, 0) mm  "
                  f"(pixel Δu={du_px:+.0f}px Δv={dv_px:+.0f}px, "
                  f"projection ray-plane)"),
+        yaw_base_cam2=yaw_cam2,
+        elong_cam2=elong_cam2,
     )
 
 
