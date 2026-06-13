@@ -61,9 +61,10 @@ correspondent au \textbf{plancher de bruit de répétabilité du SO-101}
         stylo.
 \end{itemize}
 
-\textbf{Solution prévue Sprint 4} : replanification en boucle fermée. La
+\textbf{Solution mise en œuvre} : replanification en boucle fermée. La
 caméra eye-in-hand (\texttt{cam\_2}) confirme la position de l'objet quand
-le bras s'en approche, et corrige la trajectoire si nécessaire.
+le bras s'en approche, et corrige la trajectoire (et désormais aussi
+l'orientation de prise) si nécessaire.
 
 \section{Choix académiques discutables}
 \label{sec:disc_choix}
@@ -89,6 +90,22 @@ rapport à l'espace SE(3) de l'effecteur (6 DDL). Conséquence : tous les
 \textit{top-down}, on contraint l'orientation à un seul DDL libre
 (\texttt{wrist\_roll}), donc 4 DDL contraints par la pose désirée +
 1 DDL libre $\rightarrow$ \textbf{le système est bien posé}.
+
+\paragraph{Conséquence pratique : le \textit{side grasp} n'est pas atteignable.}
+Les trois articulations de tangage (\texttt{shoulder\_lift}, \texttt{elbow\_flex},
+\texttt{wrist\_flex}) plient toutes dans un même plan vertical. Le bras peut donc
+orienter la pince \emph{dans ce plan} (verticale, inclinée, voire horizontale
+frontale), mais pas pointer l'approche \emph{hors} de ce plan. Une prise latérale
+« vraie » --- pince horizontale se refermant autour du flanc vertical d'un objet
+--- a été évaluée numériquement et se révèle \textbf{structurellement
+infaisable} sur ce bras : sur un échantillonnage large de configurations, la
+meilleure approche latérale laisse une erreur de cinématique inverse de l'ordre
+de 38--60~mm (contre $<1$~mm pour un top-down accessible). Seule l'approche
+frontale radiale est marginale ($\sim$9~mm, non convergée), sans avantage sur le
+top-down. La saisie par le haut n'est donc pas un choix de simplicité mais la
+\textbf{seule famille d'approche fiable} sur le SO-101 ; cela borne aussi
+l'ensemble des objets saisissables (un objet trop haut ou trop éloigné en
+position debout sort de l'espace préhensible).
 
 \section{Comparaison des deux paradigmes (modulaire vs imitation)}
 \label{sec:disc_paradigmes}
@@ -130,8 +147,7 @@ rapport à l'espace SE(3) de l'effecteur (6 DDL). Conséquence : tous les
 \todoF{À compléter en fin de projet. Pistes envisageables :}
 \begin{itemize}
   \item Ajout de SAM 2 (segmentation) pour améliorer le grasp planner.
-  \item Implémenter le \textit{side grasp} (V2 du planning).
-  \item Étendre la replanification (Sprint 4) avec un véritable RRT.
+  \item Étendre la replanification en boucle fermée avec un véritable RRT.
   \item Active vision : sélectionner le meilleur point de vue en fonction
         de l'occlusion (objectif 2 du cahier des charges, partiellement
         couvert).
