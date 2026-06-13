@@ -407,6 +407,8 @@ class IKSolver:
         # l'orientation deja prise.
         q0vec = self._to_vector(q_init) if q_init is not None else None
 
+        wr_hi = self.joint_limits.get("wrist_roll", (-np.pi, np.pi))[1]
+
         def _cost(trio):
             rg = trio[1]
             if not rg.joint_angles_rad:
@@ -416,7 +418,15 @@ class IKSolver:
             cont = (float(np.linalg.norm(
                 self._to_vector(rg.joint_angles_rad) - q0vec))
                 if q0vec is not None else 0.0)
-            return wr + pen + cont
+            # Penalite forte si le poignet frole sa butee (une orientation collee
+            # a +/-164deg risque de clipper a un re-solve apres correction).
+            near_limit = 3.0 if wr > wr_hi - np.radians(12) else 0.0
+            # CONTINUITE DOMINANTE : les 2 orientations (symetrie 180deg de la
+            # pince) saisissent l'objet de facon IDENTIQUE, donc on prend celle
+            # qui BOUGE LE MOINS le poignet depuis la pose courante (anti rotation
+            # ~90deg inutile sur les objets couches, signale par Maxence). |wrist|
+            # ne reste qu'un faible tiebreaker.
+            return pen + near_limit + 1.5 * cont + 0.25 * wr
 
         flipped = _cost(trio_b) < _cost(trio_a)
         chosen = trio_b if flipped else trio_a
