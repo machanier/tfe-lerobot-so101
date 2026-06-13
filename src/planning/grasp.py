@@ -282,6 +282,15 @@ class TopDownGrasp(GraspStrategy):
         # contour cam_0/cam_1, comme en V1 (approximation documentee).
         yaw = 0.0
         meta_obj = obj.meta or {}
+        # YAW LIBRE : pour un objet DEBOUT (empreinte au sol ~ronde), TOUTE
+        # orientation de prise est equivalente. On le SIGNALE a l'IK (yaw_free)
+        # pour qu'elle choisisse le yaw MINIMISANT le mouvement du poignet
+        # depuis la pose courante, au lieu de forcer yaw=0 -> ce yaw=0 imposait
+        # un wrist_roll a ~0deg alors que la pose de depart est a ~-80deg, d'ou
+        # la rotation de ~90deg INUTILE observee sur les cylindres debout
+        # (essais 1,13,14 du 2026-06-12). 'compact' (cube/disque) reste a yaw=0
+        # (il faut aligner les machoires sur une face, pas tourner librement).
+        yaw_free = (meta_obj.get("pose_class") == "debout")
         if self.align_wrist_roll:
             if "pose_class" in meta_obj:
                 yaw_base = meta_obj.get("yaw_base_rad")
@@ -353,6 +362,9 @@ class TopDownGrasp(GraspStrategy):
             meta={
                 "strategy": "TopDownGrasp",
                 "yaw_rad": yaw,
+                "yaw_free": yaw_free,
+                "pose_class": meta_obj.get("pose_class"),
+                "object_center_xy_m": (float(x), float(y)),
                 "approach_height_m": self.approach_height_m,
                 "grasp_offset_m": self.grasp_offset_m,
                 "retract_height_m": self.retract_height_m,
@@ -424,7 +436,7 @@ if __name__ == "__main__":
     print(f"  [OK] TopDownGrasp.plan (offset=0) : 3 poses verticales pour cube a (15, 0, 3) cm")
 
     # 3bis. TopDownGrasp avec decalage smart : le grasp est decale d'offset
-    # mm dans la direction OPPOSEE au doigt fixe + grasp Z 1/4 sous centre.
+    # mm dans la direction OPPOSEE au doigt fixe ; Z = ancrage table + H/2.
     strategy_smart = TopDownGrasp(approach_height_m=0.08, retract_height_m=0.10,
                                     grasp_lateral_offset_mm=8.0)
     gp_smart = strategy_smart.plan(obj)  # cube 30mm bbox, centre Z=0.03
@@ -432,9 +444,9 @@ if __name__ == "__main__":
     # le repere base est (0, -0.008, 0). Donc grasp Y = -0.008.
     assert abs(gp_smart.T_base_gripper_grasp[1, 3] - (-0.008)) < 1e-6, \
         f"grasp Y attendu -0.008 (decalage smart), recu {gp_smart.T_base_gripper_grasp[1, 3]}"
-    # Avec Fix 7 : grasp Z = centre - hauteur/4 = 0.03 - 0.03/4 = 0.0225
-    assert abs(gp_smart.T_base_gripper_grasp[2, 3] - 0.0225) < 1e-6, \
-        f"grasp Z attendu 0.0225 (1/4 sous centre), recu {gp_smart.T_base_gripper_grasp[2, 3]}"
+    # Ancrage D-Z : grasp Z = table_z_m + hauteur/2 = 0 + 0.03/2 = 0.015
+    assert abs(gp_smart.T_base_gripper_grasp[2, 3] - 0.015) < 1e-6, \
+        f"grasp Z attendu 0.015 (table + H/2), recu {gp_smart.T_base_gripper_grasp[2, 3]}"
     print(f"  [OK] TopDownGrasp.plan (offset smart 8mm + Z=1/4 sous centre)")
 
     # 4. Filtre objet trop haut : gobelet de 15 cm -> plan() = None
