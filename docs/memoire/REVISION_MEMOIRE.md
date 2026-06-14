@@ -136,6 +136,24 @@ Actuellement il dit « IK à créer au Sprint 3 », « trajectoire à compléter
 
 ---
 
+## 4bis. Retours de Maxence après relecture de ce brief (IMPORTANT)
+- **2 commentaires manquent** dans mon décodage (§1) : l'extraction a fusionné/raté
+  2 bulles. Elles se situent **après le commentaire #5** (mon décompte) → ce sont les
+  « #6 » et « #7 » de Maxence. À récupérer manuellement dans Aperçu.
+- **Décalage de numérotation** : à partir de là, « mon #N » = « son #(N+2) ».
+- **Ancrages donnés par Maxence** (tous dans le ch.2 État de l'art) :
+  - le commentaire que j'ai noté « #6 » (« Le rapport / lien avec ? ») → **section 2.4.2**.
+  - « #9 » (« à voir si réellement réalisé ») → **section 2.5**.
+  - « #11 » (« pas véridique ») → **section 2.7**.
+  - « #8 » : Maxence ne le retrouve pas → probablement un des 2 commentaires manquants.
+  → Donc une **bonne partie des commentaires portent sur le ch.2 (état de l'art)** :
+  manque de liaisons, maths énoncées sans être démontrées, et passages à vérifier.
+- **Correction de cadrage (side-grasp / 6 DDL)** : la formulation « structurellement
+  infaisable » était trop forte. Version juste (déjà corrigée dans 07) : la prise
+  latérale est **mal conditionnée / pas fiable** sur 5 DDL (38--60 mm), **pas
+  catégoriquement impossible** ; le bras atteint beaucoup d'orientations dans son
+  plan ; un bras **6 DDL** lèverait la contrainte. Garder ce ton nuancé partout.
+
 ## 5. Ordre de travail recommandé (session dédiée)
 1. Localiser précisément les bulles #6, #8, #9, #11 (page + passage) dans Aperçu.
 2. Réécrire **ch.06** au présent depuis le code réel (le plus « non véridique »).

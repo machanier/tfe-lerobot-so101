@@ -91,21 +91,23 @@ rapport à l'espace SE(3) de l'effecteur (6 DDL). Conséquence : tous les
 (\texttt{wrist\_roll}), donc 4 DDL contraints par la pose désirée +
 1 DDL libre $\rightarrow$ \textbf{le système est bien posé}.
 
-\paragraph{Conséquence pratique : le \textit{side grasp} n'est pas atteignable.}
+\paragraph{Conséquence pratique : la prise latérale est mal conditionnée.}
 Les trois articulations de tangage (\texttt{shoulder\_lift}, \texttt{elbow\_flex},
-\texttt{wrist\_flex}) plient toutes dans un même plan vertical. Le bras peut donc
-orienter la pince \emph{dans ce plan} (verticale, inclinée, voire horizontale
-frontale), mais pas pointer l'approche \emph{hors} de ce plan. Une prise latérale
-« vraie » --- pince horizontale se refermant autour du flanc vertical d'un objet
---- a été évaluée numériquement et se révèle \textbf{structurellement
-infaisable} sur ce bras : sur un échantillonnage large de configurations, la
-meilleure approche latérale laisse une erreur de cinématique inverse de l'ordre
-de 38--60~mm (contre $<1$~mm pour un top-down accessible). Seule l'approche
-frontale radiale est marginale ($\sim$9~mm, non convergée), sans avantage sur le
-top-down. La saisie par le haut n'est donc pas un choix de simplicité mais la
-\textbf{seule famille d'approche fiable} sur le SO-101 ; cela borne aussi
-l'ensemble des objets saisissables (un objet trop haut ou trop éloigné en
-position debout sort de l'espace préhensible).
+\texttt{wrist\_flex}) plient toutes dans un même plan vertical. Le bras atteint
+donc un large éventail d'orientations \emph{dans ce plan} (verticale, inclinée,
+voire horizontale frontale), mais ne peut pas pointer l'approche \emph{hors} de
+ce plan. Une prise latérale « vraie » --- pince horizontale se refermant autour
+du flanc vertical d'un objet --- a été évaluée numériquement et se révèle
+\textbf{mal conditionnée} sur ce bras : sur un échantillonnage large de
+configurations, la meilleure approche latérale laisse une erreur de cinématique
+inverse de l'ordre de 38--60~mm (contre $<1$~mm pour un top-down accessible),
+et seule l'approche frontale radiale est marginale ($\sim$9~mm, non convergée),
+sans avantage sur le top-down. Sans être catégoriquement impossible, cette
+famille de prises n'est donc \textbf{pas fiable} sur 5~DDL : la saisie par le
+haut s'impose comme l'approche robuste, ce qui borne aussi l'ensemble des objets
+saisissables (un objet trop haut ou trop éloigné en position debout sort de
+l'espace préhensible). Un bras à 6~DDL lèverait cette contrainte en rendant
+l'orientation d'approche libre.
 
 \section{Comparaison des deux paradigmes (modulaire vs imitation)}
 \label{sec:disc_paradigmes}
