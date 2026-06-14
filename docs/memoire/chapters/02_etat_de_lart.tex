@@ -1,164 +1,329 @@
 \chapter{État de l'art}
 \label{ch:etat_de_lart}
 
+La pipeline visée dans ce travail (perception $\rightarrow$ planification
+$\rightarrow$ contrôle) enchaîne des problèmes classiques de la robotique de
+manipulation, chacun outillé par une littérature mature. Plutôt que de les
+présenter comme un catalogue indépendant, ce chapitre suit l'ordre dans lequel
+ils se posent réellement le long de la chaîne perception-action. On part de ce
+qui relie les caméras au robot (la calibration \textit{hand-eye}), puis on
+remonte à la reconstruction 3D qu'elle rend possible (triangulation et estimation
+de pose monoculaire), au niveau sémantique qui désigne \emph{quel} objet saisir
+(détection), à la décision de \emph{comment} le saisir (\textit{grasp planning})
+et de \emph{comment y aller} (planification de trajectoires). On termine par le
+paradigme concurrent de l'\textit{imitation learning}, qui propose de court-circuiter
+toute cette chaîne par un réseau de neurones, afin de situer honnêtement le
+positionnement de ce travail. Chaque maillon de cette chaîne motive le suivant :
+c'est ce fil conducteur que les transitions de ce chapitre rendent explicite.
+
 \section{Calibration caméra-robot (\textit{hand-eye})}
 \label{sec:eda_handeye}
 
-La calibration \textit{hand-eye} consiste à déterminer la transformation
-rigide $T_{\text{base}}^{\text{cam}}$ entre le repère d'une caméra et le repère
-de la base d'un robot manipulateur. Le problème classique a été formulé par
-Tsai et Lenz~\cite{tsai_new_1989} sous la forme matricielle
-$\mathbf{A}\mathbf{X} = \mathbf{X}\mathbf{B}$, où $\mathbf{A}$ et
-$\mathbf{B}$ sont des transformations relatives entre poses successives.
-Horaud et Dornaika~\cite{horaud_hand-eye_1995} ont étendu la méthode aux
-quaternions. Plus récemment, Li \textit{et al.}~\cite{li_3d_2025} ont proposé
-une méthode 3D dite \textit{look-at-base-once} pour la robotique collaborative.
+Avant toute reconstruction 3D, il faut savoir \emph{où} se trouvent les caméras
+par rapport au robot : sans cette relation, une position détectée dans l'image
+ne peut pas être traduite en une commande articulaire. C'est l'objet de la
+calibration \textit{hand-eye}, qui consiste à déterminer la transformation
+rigide $T_{\text{base}}^{\text{cam}} \in SE(3)$ entre le repère d'une caméra et
+le repère de la base du robot manipulateur.
 
-Deux configurations sont possibles :
+\paragraph{Formulation $\mathbf{A}\mathbf{X} = \mathbf{X}\mathbf{B}$.}
+Le problème ne se résout pas en mesurant directement $T_{\text{base}}^{\text{cam}}$,
+qui est inaccessible, mais en exploitant le \emph{mouvement} du robot. Notons
+$\mathbf{X} = T_{\text{base}}^{\text{cam}}$ l'inconnue rigide et constante que
+l'on cherche. On déplace le robot entre deux poses $i$ et $j$ et l'on observe une
+mire fixe. Côté robot, la pose de l'effecteur est lue par la cinématique directe ;
+le mouvement relatif entre les deux poses est
+\[
+  \mathbf{B} = \big(T_{\text{base}}^{\text{eff}}(j)\big)^{-1}\, T_{\text{base}}^{\text{eff}}(i),
+\]
+et il est connu sans erreur de vision. Côté caméra, on mesure la pose de la mire
+dans chaque image, ce qui donne le mouvement relatif vu par la caméra,
+\[
+  \mathbf{A} = T_{\text{cam}}^{\text{mire}}(j)\, \big(T_{\text{cam}}^{\text{mire}}(i)\big)^{-1}.
+\]
+La mire ne bouge pas et la transformation caméra-effecteur reste rigide : en
+écrivant que les deux chemins menant d'une pose à l'autre coïncident, on obtient
+la contrainte fondamentale
+\[
+  \mathbf{A}\,\mathbf{X} = \mathbf{X}\,\mathbf{B}.
+\]
+Chaque paire de mouvements fournit une telle équation ; il en faut au moins deux
+autour d'axes de rotation non parallèles pour fixer $\mathbf{X}$ de manière unique.
+Cette formulation et sa résolution efficace sont dues à Tsai et
+Lenz~\cite{tsai_new_1989}, qui découplent d'abord la partie rotation puis en
+déduisent la translation.
+
+\paragraph{Lien avec l'équation de Sylvester.}
+En séparant rotation et translation, la partie rotationnelle de
+$\mathbf{A}\mathbf{X} = \mathbf{X}\mathbf{B}$ s'écrit
+$R_A R_X = R_X R_B$. C'est une équation de \emph{Sylvester} homogène en l'inconnue
+$R_X$ : par vectorisation, $R_A R_X - R_X R_B = 0$ devient un système linéaire
+$M\,\mathrm{vec}(R_X) = 0$ dont la solution vit dans le noyau de
+$M$~\cite{noauthor_equation_2025}. C'est ce caractère linéaire-en-l'inconnue qui
+rend le problème résoluble de façon stable. Horaud et
+Dornaika~\cite{horaud_hand-eye_1995} reformulent la même contrainte avec des
+quaternions unitaires, ce qui garantit automatiquement que $R_X$ reste une
+rotation propre et améliore le conditionnement. Plus récemment, Li \textit{et al.}~\cite{li_3d_2025}
+proposent une variante 3D \textit{look-at-base-once} adaptée aux robots
+collaboratifs, où l'on observe directement la base plutôt qu'une mire externe.
+
+\paragraph{Deux configurations.} La transformation à estimer dépend de l'endroit
+où la caméra est montée :
 \begin{description}
-  \item[\textbf{eye-to-hand}] La caméra est fixée dans le monde et observe
-        le robot. On résout pour $T_{\text{base}}^{\text{cam}}$, constante
-        dans le temps.
+  \item[\textbf{eye-to-hand}] La caméra est fixée dans le monde et observe le
+        robot. On résout pour $T_{\text{base}}^{\text{cam}}$, constante dans le
+        temps.
   \item[\textbf{eye-in-hand}] La caméra est montée sur l'effecteur. On résout
-        pour $T_{\text{gripper}}^{\text{cam}}$, et l'on compose avec la pose
-        courante de l'effecteur ($T_{\text{base}}^{\text{gripper}}(t)$) pour
-        obtenir $T_{\text{base}}^{\text{cam}}(t)$.
+        pour $T_{\text{gripper}}^{\text{cam}}$, puis on compose avec la pose
+        courante de l'effecteur $T_{\text{base}}^{\text{gripper}}(t)$ (donnée par
+        la cinématique directe du chapitre~\ref{ch:control_eval}) pour obtenir
+        $T_{\text{base}}^{\text{cam}}(t)$.
 \end{description}
-
-Dans ce travail, les deux configurations sont utilisées simultanément
-(chapitre~\ref{ch:architecture}).
+Les deux montages ne s'opposent pas : ils se complètent, le premier offrant une
+vue large et stable de la scène, le second une vue rapprochée mobilisable au
+moment de la saisie. Ce travail les utilise simultanément, et leur coopération est
+détaillée au chapitre~\ref{ch:architecture}. Une fois la relation caméra-robot
+établie, chaque pixel devient porteur d'une information géométrique exploitable :
+reste à reconstruire la position 3D des objets, ce qui est l'objet de la section
+suivante.
 
 \section{Triangulation stéréo et géométrie projective}
 \label{sec:eda_triangulation}
 
-Le manuel de référence de Hartley et
-Zisserman~\cite{hartley_multiple_2018} expose la géométrie projective
-sous-jacente à la triangulation multi-vues. Étant donné un point 3D
-$\mathbf{X}$ et deux caméras de matrices de projection $P_1, P_2$, les
-projections image $\mathbf{x}_1, \mathbf{x}_2$ satisfont $\mathbf{x}_i \sim
-P_i \mathbf{X}$. La triangulation inverse ce problème : connaissant
-$\mathbf{x}_1, \mathbf{x}_2$ et $P_1, P_2$, on cherche $\mathbf{X}$
-minimisant l'erreur de reprojection.
+Connaître $T_{\text{base}}^{\text{cam}}$ permet d'exprimer les caméras dans le
+repère du robot ; il faut maintenant inverser la projection, c'est-à-dire
+remonter d'observations 2D vers une position 3D. Le manuel de référence de Hartley
+et Zisserman~\cite{hartley_multiple_2018} expose la géométrie projective
+sous-jacente. Une caméra de matrice de projection $P \in \mathbb{R}^{3\times 4}$
+envoie un point 3D homogène $\mathbf{X} = (X,Y,Z,1)^\top$ sur le pixel homogène
+$\mathbf{x}$ selon $\mathbf{x} \sim P\,\mathbf{X}$, où $\sim$ note l'égalité à un
+facteur d'échelle près (la profondeur perdue à la projection). Avec deux caméras
+calibrées $P_1, P_2$ et les deux observations correspondantes
+$\mathbf{x}_1, \mathbf{x}_2$, le problème de \emph{triangulation} consiste à
+retrouver le $\mathbf{X}$ dont les deux projections coïncident avec les mesures.
 
-L'algorithme \textit{Direct Linear Transform} (DLT)~\cite[chap.~12]{hartley_multiple_2018}
-formule le problème linéairement à partir des équations $\mathbf{x}_i \times
-P_i \mathbf{X} = 0$, donnant un système surdéterminé résolu par décomposition
-en valeurs singulières. C'est cette méthode qui est implémentée dans
-\texttt{cv2.triangulatePoints} d'OpenCV, utilisée au chapitre~\ref{ch:perception}.
+\paragraph{Du facteur d'échelle inconnu à un système linéaire.}
+La relation $\mathbf{x} \sim P\,\mathbf{X}$ n'est pas une égalité exacte à cause
+du facteur d'échelle inconnu. On l'élimine en remarquant que $\mathbf{x}$ et
+$P\,\mathbf{X}$ sont colinéaires, donc leur produit vectoriel s'annule :
+\[
+  \mathbf{x}_i \times (P_i\,\mathbf{X}) = \mathbf{0}.
+\]
+En notant $\mathbf{p}_i^{(k)}$ la $k$-ième ligne de $P_i$ et
+$\mathbf{x}_i = (u_i, v_i, 1)^\top$, chaque vue fournit deux équations linéaires
+indépendantes en $\mathbf{X}$ :
+\[
+  u_i\,\mathbf{p}_i^{(3)} - \mathbf{p}_i^{(1)} = 0,
+  \qquad
+  v_i\,\mathbf{p}_i^{(3)} - \mathbf{p}_i^{(2)} = 0,
+\]
+(la troisième est combinaison linéaire des deux autres). Empilées sur les deux
+caméras, ces équations forment un système homogène $A\,\mathbf{X} = \mathbf{0}$
+avec $A \in \mathbb{R}^{4\times 4}$. C'est l'algorithme \textit{Direct Linear
+Transform} (DLT)~\cite[chap.~12]{hartley_multiple_2018}.
+
+\paragraph{Résolution par SVD.} En présence de bruit, le système n'a pas de
+solution exacte non triviale ; on cherche le $\mathbf{X}$ unitaire qui minimise
+$\lVert A\,\mathbf{X}\rVert$. La solution est le vecteur singulier droit de $A$
+associé à la plus petite valeur singulière, obtenu par décomposition en valeurs
+singulières (SVD). C'est exactement ce que calcule
+\texttt{cv2.triangulatePoints} d'OpenCV, utilisé au chapitre~\ref{ch:perception}.
+La géométrie de cette construction a une conséquence directe sur la précision :
+l'incertitude en profondeur croît comme le carré de la distance et l'inverse de la
+\textit{baseline} stéréo, ce qui motivera, au chapitre~\ref{ch:perception},
+d'ancrer la profondeur de saisie sur le plan de la table plutôt que sur le $Z$
+brut de la stéréo. La triangulation suppose toutefois deux vues concordantes ;
+lorsqu'une seule caméra observe l'objet, il faut un autre mécanisme, abordé
+ci-après.
 
 \section{Estimation de pose monoculaire (PnP)}
 \label{sec:eda_pnp}
 
-Pour estimer la pose d'un objet rigide depuis une seule caméra, à condition
-que sa géométrie soit connue, on résout le \textit{Perspective-n-Point}
-(PnP)~\cite{}. Lepetit \textit{et al.} ont proposé une formulation efficace
-\textit{EPnP}~\cite{} en $O(n)$, devenue le standard de fait dans OpenCV via
-\texttt{cv2.solvePnP}. Pour les surfaces planaires (4 points coplanaires), la
-solution \textit{IPPE} (Infinitesimal Plane-based Pose Estimation) gère
-l'ambiguïté planaire bien connue, mais avec un risque de \textit{flip} si
-l'objet est quasi parallèle au plan image~\cite[][\textit{Planar case}]{}.
+La triangulation tombe en défaut dès qu'un objet n'est vu que par une caméra,
+situation fréquente avec la caméra \textit{eye-in-hand} en approche rapprochée.
+Il faut alors une voie de repli monoculaire. Si la géométrie de l'objet est
+connue, on peut estimer sa pose depuis une seule image en résolvant le
+\textit{Perspective-n-Point} (PnP) : étant donné $n$ correspondances entre des
+points 3D du modèle et leurs projections 2D, on cherche la pose
+$(R, \mathbf{t}) \in SE(3)$ qui aligne les projections du modèle sur les
+observations. Lepetit \textit{et al.}~\cite{lepetit_epnp_2009} proposent une
+formulation efficace \textit{EPnP} en $O(n)$ : ils expriment les $n$ points comme
+combinaisons barycentriques de quatre points de contrôle virtuels, ce qui réduit
+le problème à l'estimation de ces seuls quatre points et évite le coût des
+méthodes itératives. C'est devenu le standard de fait dans OpenCV via
+\texttt{cv2.solvePnP}.
 
-\todoF{Compléter les références bibliographiques Lepetit et IPPE dans biblio.bib.}
+Pour les surfaces planaires (4 points coplanaires, typiques d'une face d'objet),
+la solution \textit{IPPE} (Infinitesimal Plane-based Pose Estimation) traite
+l'ambiguïté planaire bien connue : une cible plane quasi parallèle au plan image
+admet deux poses également plausibles, et l'estimateur peut basculer de l'une à
+l'autre (\textit{flip}). Cette limite est documentée et constitue une source
+d'erreur à surveiller au chapitre~\ref{ch:perception}, où PnP sert précisément de
+\textit{fallback} monoculaire sur la caméra eye-in-hand. Disposer d'une position
+3D, par triangulation ou par PnP, ne suffit cependant pas : encore faut-il savoir
+\emph{quel} objet de la scène elle désigne. C'est le rôle de la détection.
 
-\section{Détection d'objets : du seuillage classique aux foundation models}
+\section{Détection d'objets : du seuillage classique aux \textit{foundation models}}
 \label{sec:eda_detection}
+
+La géométrie répond à \og où~\fg{} ; la détection répond à \og quoi~\fg{}. Le
+passage de l'une à l'autre est ce qui transforme une scène de points 3D anonymes
+en une cible nommée que le robot peut chercher à saisir. On présente ici trois
+familles, par sophistication croissante, en suivant le chemin qui mène d'un
+seuillage couleur déterministe à des modèles de fondation à vocabulaire ouvert.
 
 \subsection{Détection par seuillage couleur (méthode classique)}
 
 La segmentation par couleur dans l'espace HSV (\textit{Hue, Saturation, Value})
 est une technique classique présentée dans tout manuel de Computer
-Vision~\cite[chap.~6]{}. Le passage RGB$\to$HSV décorrèle la teinte ($H$) de
-la luminosité ($V$), rendant le seuillage plus robuste aux variations
-d'éclairage. La méthode est \emph{déterministe, rapide et reproductible}, mais
-limitée par sa nature pixel-locale : aucune notion de forme, de contexte ou
-d'identité d'objet n'est encodée.
+Vision~\cite[chap.~3]{forsyth_computer_2012}. Le passage RGB$\to$HSV décorrèle la
+teinte ($H$) de la luminosité ($V$), ce qui rend le seuillage plus robuste aux
+variations d'éclairage qu'un seuillage direct dans RGB. La méthode est
+\emph{déterministe, rapide et reproductible}, mais elle reste pixel-locale :
+aucune notion de forme, de contexte ou d'identité d'objet n'y est encodée, et
+elle achoppe sur les surfaces achromatiques (le noir, $V \approx 0$, et le blanc,
+$S \approx 0$, ne sont pas des couleurs au sens HSV). Cette absence totale de
+sémantique est précisément ce que les approches apprises viennent combler.
 
 \subsection{Détection apprise (\textit{closed-vocabulary})}
 
-Les détecteurs entraînés type YOLO, Faster R-CNN ou DETR apprennent à
-détecter une liste fixe de classes (\textit{closed-vocabulary}, ex. 80 classes
-de COCO). Ils nécessitent un \textbf{dataset annoté} (typiquement
-$\sim$50-200 images par classe pour un fine-tuning).
+Là où le seuillage ignore l'identité des objets, les détecteurs appris
+l'apprennent explicitement à partir d'exemples annotés. Les architectures type
+YOLO, Faster R-CNN ou DETR apprennent à détecter une liste \emph{fixe} de classes
+(\textit{closed-vocabulary}, par exemple les 80 classes de COCO). Elles encodent
+forme et contexte, mais au prix d'un \textbf{dataset annoté} (typiquement
+$\sim$50--200 images par classe pour un \textit{fine-tuning}), et le vocabulaire
+reste figé à l'entraînement : ajouter un objet impose de réannoter et de
+réentraîner. C'est ce double verrou, coût d'annotation et vocabulaire fermé, que
+le paradigme suivant lève.
 
 \subsection{Détection \textit{open-vocabulary}}
 
-L'\textit{open-vocabulary detection} permet de détecter des objets décrits par
-une requête textuelle libre, sans réentraînement. Le modèle est un
-\textit{Vision-Language Model} (VLM) pré-entraîné sur des paires
-(image, légende) à très grande échelle. Les architectures de référence sont
-OWL-ViT~\cite{} et son évolution OWL-ViTv2~\cite{}, ainsi que
-Grounding-DINO~\cite{}. Ces modèles permettent de détecter "any object on
-the table" ou "a metallic robotic arm with a gripper" sans dataset spécifique.
+L'\textit{open-vocabulary detection} supprime le besoin de réentraînement en
+acceptant une requête textuelle libre comme cible. Le détecteur est un
+\textit{Vision-Language Model} (VLM) pré-entraîné sur des paires (image, légende)
+à très grande échelle, ce qui aligne un espace visuel et un espace textuel
+communs : une description suffit alors à désigner un objet sans dataset
+spécifique. Les architectures de référence sont OWL-ViT~\cite{minderer_owlvit_2022}
+et son évolution OWL-ViTv2~\cite{minderer_owlv2_2023}, qui améliore l'entraînement
+par auto-étiquetage à grande échelle, ainsi que
+Grounding-DINO~\cite{liu_grounding_dino_2024}. Ces modèles détectent
+\textit{\og any object on the table~\fg} ou \textit{\og a metallic robotic arm
+with a gripper~\fg} sans annotation préalable. C'est ce paradigme qui est adopté
+en V2 dans ce travail (chapitre~\ref{ch:perception},
+section~\ref{sec:perception_v2}), via le modèle
+\texttt{google/owlv2-base-patch16-ensemble} hébergé sur Hugging Face, choisi
+notamment parce qu'il repose sur la même bibliothèque \texttt{transformers} que
+les politiques LeRobot évoquées plus loin. Savoir où est l'objet et de quel objet
+il s'agit ne dit pas encore comment refermer la pince dessus : c'est la question
+du \textit{grasp planning}.
 
-C'est ce paradigme qui est adopté en V2 dans ce travail
-(chapitre~\ref{ch:perception}, section~\ref{sec:perception_v2}), via le modèle
-\texttt{google/owlv2-base-patch16-ensemble} hébergé sur Hugging Face.
-
-\todoF{Compléter les citations OWL-ViT, OWL-ViTv2, Grounding-DINO dans biblio.bib
-(actuellement présentes mais sans clés \texttt{cite\{...\}} précises).}
-
-\section{Grasp planning}
+\section{\textit{Grasp planning}}
 \label{sec:eda_grasp}
 
-Le \textit{grasp planning} consiste à déterminer une pose de pince (position +
-orientation) permettant de saisir un objet de manière stable. Le survey de
-référence est celui de Bohg \textit{et al.}~\cite{bohg_data-driven_2014}, qui
-distingue trois familles :
+Désigner l'objet ne donne pas la \emph{pose de pince} qui le saisira de manière
+stable : il faut décider d'une position et d'une orientation d'effecteur. Le
+\textit{grasp planning} répond à cette question, et le survey de référence de Bohg
+\textit{et al.}~\cite{bohg_data-driven_2014} en distingue trois familles :
 \begin{enumerate}
-  \item \textbf{Approches heuristiques} : règles géométriques simples (ex.
-        top-down sur le centroïde) ; rapides à mettre en œuvre, justifiables
-        analytiquement.
-  \item \textbf{Approches \textit{contact-based}} : recherche de paires de
-        points antipodaux sur le maillage 3D de l'objet.
-  \item \textbf{Approches \textit{data-driven}} : apprentissage à partir de
-        démonstrations ou de simulations massives.
+  \item \textbf{Approches heuristiques} : règles géométriques simples (par
+        exemple une approche \textit{top-down} sur le centroïde), rapides à mettre
+        en œuvre et justifiables analytiquement.
+  \item \textbf{Approches \textit{contact-based}} : recherche de paires de points
+        antipodaux sur le maillage 3D de l'objet.
+  \item \textbf{Approches \textit{data-driven}} : apprentissage de la qualité de
+        prise à partir de démonstrations ou de simulations massives.
 \end{enumerate}
-
-Dans ce travail, l'approche heuristique \textit{top-down} est adoptée pour la
-V1 (chapitre~\ref{ch:planning}), suivant la recommandation du cahier des
-charges (règles heuristiques et critères géométriques).
+Dans ce travail, c'est l'approche heuristique \textit{top-down} qui est retenue et
+\emph{effectivement implémentée} (chapitre~\ref{ch:planning}) : la pince pointe
+verticalement vers le bas et l'orientation du poignet (\textit{yaw}) est choisie
+en fonction de l'empreinte de l'objet, l'ouverture de la pince étant adaptée à sa
+largeur. Ce choix n'est pas seulement le plus simple ; il est aussi le mieux
+conditionné pour un bras à 5 articulations rotoïdes comme le SO-101, ce que la
+discussion du chapitre~\ref{ch:control_eval} reprendra en détail. Une pose de
+saisie cible définie, encore faut-il y conduire l'effecteur de manière sûre :
+c'est l'objet de la planification de trajectoires.
 
 \section{Planification de trajectoires}
 \label{sec:eda_planning}
 
-L'ouvrage de référence est celui de LaValle~\cite{lavalle_planning_2006},
-\textit{Planning Algorithms}, qui présente les algorithmes classiques :
-RRT, RRT*, PRM, A* sur grilles. Pour un bras à 5 DDL comme le SO-101 dans
-un environnement modéré, des algorithmes locaux (interpolation dans
-l'espace articulaire avec vérification de collision) suffisent dans un premier
-temps ; RRT est envisagé comme extension pour la replanification en présence
-d'obstacles.
+Une fois la pose de saisie connue, il reste à amener l'effecteur depuis sa
+configuration courante jusqu'à cette pose sans collision et avec un mouvement
+exploitable par les moteurs. L'ouvrage de référence de
+LaValle~\cite{lavalle_planning_2006}, \textit{Planning Algorithms}, présente les
+algorithmes classiques de planification de chemin : RRT, RRT*, PRM et A* sur
+grilles, conçus pour explorer des espaces de configuration encombrés. Ces méthodes
+résolvent le problème \emph{géométrique} (trouver un chemin sans collision) ; il
+faut ensuite un profil \emph{temporel} respectant les limites de vitesse et
+d'accélération du robot. Pour un bras à 5 DDL dans un environnement modéré, une
+interpolation locale dans l'espace articulaire, assortie d'une vérification de
+collision et d'un profil temporel lissé, suffit à produire un mouvement sûr ; les
+planificateurs d'échantillonnage comme RRT restent une extension naturelle pour la
+replanification en présence d'obstacles. Le choix précis du profil temporel
+(polynôme quintique, vitesse et accélération nulles aux extrémités) est explicité
+au chapitre~\ref{ch:control_eval}. Cette chaîne perception $\rightarrow$ planification
+$\rightarrow$ contrôle constitue l'architecture modulaire classique ; un paradigme
+concurrent propose au contraire de la remplacer par un unique réseau appris, qu'il
+faut examiner pour positionner honnêtement ce travail.
 
-\section{Imitation learning et politiques apprises}
+\section{\textit{Imitation learning} et politiques apprises}
 \label{sec:eda_il}
 
-L'\textit{imitation learning} (IL) propose une approche \textbf{end-to-end} où
-un réseau de neurones apprend directement la fonction
+Là où les sections précédentes décomposent la tâche en modules explicites,
+l'\textit{imitation learning} (IL) propose une approche \textbf{end-to-end} : un
+réseau de neurones apprend directement la fonction
 $\text{image} + \text{état} \rightarrow \text{action moteur}$ à partir de
-démonstrations téléopérées. Les architectures principales sont :
+démonstrations téléopérées, sans calibration, sans triangulation et sans
+planificateur explicite. Les architectures principales sont :
 \begin{itemize}
-  \item \textbf{ACT} (Action Chunking with Transformers)~\cite{} : prédiction
-        d'une séquence d'actions à chaque pas.
-  \item \textbf{Diffusion Policy}~\cite{chi_visuomotor_nodate} : génération
-        des actions par un modèle de diffusion.
-  \item \textbf{SmolVLA}~\cite{shukor_smolvla_2025} : Vision-Language-Action,
-        accepte une instruction textuelle (\textit{"grab the red cube"}) et
-        produit une trajectoire.
+  \item \textbf{ACT} (Action Chunking with Transformers)~\cite{zhao_act_2023} :
+        prédiction d'une séquence (\textit{chunk}) d'actions à chaque pas, ce qui
+        réduit l'accumulation d'erreurs sur l'horizon.
+  \item \textbf{Diffusion Policy}~\cite{chi_visuomotor_nodate} : génération des
+        actions par un modèle de diffusion conditionné sur l'observation.
+  \item \textbf{SmolVLA}~\cite{shukor_smolvla_2025} : modèle
+        Vision-Language-Action qui accepte une instruction textuelle
+        (\textit{\og grab the red cube~\fg}) et produit une trajectoire,
+        explicitement pensé pour du matériel abordable.
 \end{itemize}
-
-La stack officielle LeRobot~\cite{} (Hugging Face) implémente ces trois
-politiques pour le SO-101 et fournit un dataset officiel de pick-and-place
-(\texttt{lerobot/svla\_so101\_pickplace}, 50 épisodes).
+La stack officielle LeRobot~\cite{noauthor_imitation_nodate} (Hugging Face)
+implémente ces politiques pour le SO-101 et fournit un dataset de pick-and-place
+(\texttt{lerobot/svla\_so101\_pickplace}, 50 épisodes), avec des recettes
+d'entraînement documentées~\cite{research_train_2025}. L'IL et l'architecture
+modulaire ne sont donc pas deux objets théoriques abstraits : ce sont deux façons
+\emph{concrètes et reproductibles} de résoudre la même tâche de pick-and-place sur
+le même robot, ce qui rend leur mise en perspective d'autant plus naturelle.
 
 \section{Positionnement de ce travail}
 \label{sec:eda_positionnement}
 
-Ce travail s'inscrit à l'intersection des deux paradigmes contemporains :
-l'\textbf{architecture modulaire classique} (perception $\rightarrow$
-planning $\rightarrow$ contrôle), imposée par le cahier des charges, et
-l'\textbf{imitation learning end-to-end} promu par LeRobot. La contribution
-principale est une \textbf{comparaison empirique} de ces deux paradigmes sur
-le même robot (SO-101), les mêmes objets et les mêmes métriques
-(chapitre~\ref{ch:control_eval}).
+Ce travail se situe à l'intersection des deux paradigmes contemporains qui
+viennent d'être présentés : l'\textbf{architecture modulaire classique}
+(perception $\rightarrow$ planification $\rightarrow$ contrôle), cadre fixé par le
+cahier des charges, et l'\textbf{imitation learning end-to-end} promu par LeRobot.
+Ma motivation première n'a pas été de prouver que l'interaction autonome en
+environnement encombré serait un verrou scientifique ouvert ; elle a été de
+\emph{construire et explorer} une pipeline modulaire complète, reproductible et
+open-source sur du matériel low-cost (SO-101 / LeRobot), puis de la situer face au
+paradigme appris.
 
-\todoF{Compléter cette comparaison empirique après les expériences (Sprint 5).}
+\todoF{Voix de Maxence : préciser ici, en première personne, ce qui m'a
+personnellement attiré dans la construction d'une pipeline modulaire complète
+plutôt que dans une politique apprise (compréhension de chaque maillon,
+débogabilité, reproductibilité open-source). 2--3 phrases.}
+
+À ce stade, la \textbf{comparaison empirique} de ces deux paradigmes sur le même
+robot, les mêmes objets et les mêmes métriques constitue une \emph{perspective}
+de ce travail, et non une contribution déjà réalisée : la campagne expérimentale
+formelle (chapitre~\ref{ch:control_eval}) n'est pas conduite à ce jour, et aucune
+mesure comparative V1 / V2 / SmolVLA n'est donc disponible. La présenter comme un
+résultat acquis serait inexact ; elle est ici cadrée comme un positionnement et
+une direction d'évaluation.
+
+\todoF{Comparaison empirique modulaire vs imitation learning : à présenter comme
+perspective tant que la campagne formelle (script \texttt{experiment\_campaign.py})
+n'est pas exécutée. Ne renseigner les tableaux chiffrés qu'avec des mesures réelles.}
+
+Le cadre étant posé et les deux paradigmes situés, le chapitre suivant décrit
+l'architecture matérielle et logicielle effectivement construite pour donner corps
+à cette pipeline modulaire.

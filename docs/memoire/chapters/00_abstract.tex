@@ -1,9 +1,37 @@
-\todoF{Résumé d'environ 200-300 mots à rédiger en fin de projet. Doit contenir :
-contexte (robotique low-cost, environnement encombré), problématique (perception
-multi-caméras + planification + contrôle), méthode (architecture modulaire
-classique vs imitation learning), résultats principaux (chiffres mesurés), et
-conclusion. À traduire aussi en anglais (\textit{Abstract}) pour la convention
-académique.}
+Les bras robotiques low-cost se démocratisent, mais la chaîne logicielle qui leur
+permet de percevoir, planifier puis agir reste souvent dispersée ou enfouie dans
+des solutions propriétaires. Plutôt que de partir d'une politique apprise de bout
+en bout, ce travail explore la voie complémentaire d'une \emph{pipeline modulaire
+explicite}, entièrement \emph{open-source} et reproductible, construite sur le
+bras SO-101 et l'écosystème LeRobot. L'objectif est d'assembler une chaîne
+complète perception~$\rightarrow$~planification~$\rightarrow$~contrôle et de la
+mettre en perspective avec le paradigme end-to-end de l'apprentissage par
+imitation, dans le cadre du cahier des charges, qui vise à terme la saisie en
+environnement encombré.
+
+La problématique articule trois maillons. La \emph{perception} repose sur trois
+caméras (deux en stéréo \textit{eye-to-hand}, une \textit{eye-in-hand}),
+calibrées en intrinsèque (méthode de Zhang) et en \textit{hand-eye}, avec deux
+détecteurs comparés~: une version V1 par seuillage HSV, et une version V2
+\textit{open-vocabulary} fondée sur OWL-ViTv2. Les positions 3D proviennent d'une
+triangulation stéréo (DLT) ancrée sur le plan de la table, raffinée en boucle
+fermée par la caméra embarquée. La \emph{planification} comprend une stratégie de
+saisie top-down adaptée à la géométrie de l'objet, une cinématique directe issue
+de l'URDF, une cinématique inverse en pur NumPy (Gauss--Newton amorti par
+Levenberg--Marquardt) et des trajectoires articulaires quintiques. Le
+\emph{contrôle} pilote les servos Feetech avec une fermeture de pince asservie au
+couple.
+
+Sur le plan des résultats, la pipeline \textit{pick-and-place} fonctionne de bout
+en bout~; une validation \emph{préliminaire et informelle} confirme des saisies
+répétées d'un objet de référence. \todoF{Insérer les chiffres quantitatifs
+(taux de réussite, nombre de replanifications, précision de prise, comparaison
+V1/V2/SmolVLA) une fois la campagne expérimentale formelle réalisée~; aucun
+chiffre n'est inventé ici.} Ce mémoire montre ainsi qu'une chaîne perception-action
+modulaire, transparente et accessible est réalisable sur du matériel low-cost.
+
+\todoF{Fournir la traduction anglaise de ce résumé (\textit{Abstract}) pour la
+convention académique.}
 
 \bigskip
 

@@ -1,11 +1,29 @@
 \chapter{Architecture}
 \label{ch:architecture}
 
+Le chapitre précédent a posé les fondations théoriques (géométrie multi-vues,
+calibration, détection, planification de saisie) sur lesquelles repose ce
+travail. Avant de plonger dans chaque maillon, il faut décrire la forme du tout :
+comment ces briques sont assemblées, par quels contrats elles communiquent, et
+selon quelles conventions elles partagent une même représentation du monde. Ce
+chapitre présente donc l'architecture telle qu'elle a été \emph{effectivement
+réalisée et testée} --- les trois modules existent, sont auto-testés, et
+s'enchaînent en un pipeline opérationnel. Il fixe aussi le vocabulaire
+géométrique (repères, conventions de pose) réutilisé dans tout le reste du
+mémoire, de sorte que les chapitres suivants puissent se concentrer sur le
+contenu algorithmique sans avoir à redéfinir ce cadre.
+
 \section{Vue d'ensemble}
 \label{sec:archi_vue}
 
-Le système est structuré en trois modules indépendants reliés par des
-interfaces stables (figure~\ref{fig:archi}~--- \todo{ajouter diagramme}) :
+La problématique du cahier des charges --- décider dynamiquement où regarder et
+comment saisir, en orchestrant perception, planification et contrôle --- impose
+naturellement une décomposition en trois étages. Plutôt que de coder un
+monolithe, j'ai donc structuré le système en \textbf{trois modules indépendants}
+reliés par des interfaces stables. Ce découpage n'est pas qu'esthétique : il
+calque l'architecture logicielle sur la décomposition perception--planification--%
+contrôle que le cahier des charges impose, et il rend chaque étage testable et
+remplaçable isolément.
 
 \begin{enumerate}
   \item \textbf{Perception} (chapitre~\ref{ch:perception}) :
@@ -13,135 +31,257 @@ interfaces stables (figure~\ref{fig:archi}~--- \todo{ajouter diagramme}) :
         $\rightarrow$ reconstruction 3D dans le repère base du robot.
   \item \textbf{Planning} (chapitre~\ref{ch:planning}) :
         position 3D de l'objet $\rightarrow$ pose de pince
-        (approach, grasp, retract) + ouverture/fermeture.
+        (\textit{approach}, \textit{grasp}, \textit{retract})
+        + ouverture/fermeture.
   \item \textbf{Control} (chapitre~\ref{ch:control_eval}) :
         pose de pince désirée $\rightarrow$ cinématique inverse (IK)
         $\rightarrow$ trajectoire articulaire $\rightarrow$ commandes moteur.
 \end{enumerate}
 
+Le flux nominal est descendant (perception $\rightarrow$ planning $\rightarrow$
+control), mais le pipeline réel referme une \textbf{boucle de perception}
+(figure~\ref{fig:archi}) : à la pose d'approche, la caméra eye-in-hand
+\texttt{cam\_2} ré-observe l'objet et corrige la cible avant la descente finale
+(chapitre~\ref{ch:control_eval}). Cette rétroaction répond directement à
+l'objectif de replanification en boucle fermée du cahier des charges, et c'est
+elle qui justifie de traiter l'architecture comme un cycle et non comme une
+simple chaîne.
+
 \begin{figure}[hbtp]
 \centering
 \rule{0.8\textwidth}{0.25\textwidth}
 \caption{Architecture logicielle : perception $\rightarrow$ planning
-$\rightarrow$ control, avec replanification en boucle fermée.
-\todoF{Remplacer par un vrai diagramme (TikZ ou outil externe).}}
+$\rightarrow$ control, avec raffinement \texttt{cam\_2} en boucle fermée à la
+pose d'approche.
+\todoF{Remplacer ce placeholder par un vrai diagramme d'architecture (TikZ ou
+outil externe) : les trois modules, les dataclasses qui circulent entre eux
+(\texttt{Frame}, \texttt{Scene}, \texttt{GraspPose}), et la flèche de retour
+\texttt{cam\_2} de la pose d'approche vers le planning.}}
 \label{fig:archi}
 \end{figure}
+
+Les sections qui suivent déroulent ce squelette du contrat vers le concret :
+d'abord les structures de données qui circulent entre modules
+(section~\ref{sec:archi_interfaces}), puis les interfaces abstraites qui rendent
+les approches interchangeables (section~\ref{sec:archi_abc}), le repère
+géométrique commun (section~\ref{sec:archi_reperes}), la fine couche qui touche
+au matériel (section~\ref{sec:archi_hw_sw}), les deux modes d'exécution
+(section~\ref{sec:archi_modes}) et enfin la stratégie de dépendances
+(section~\ref{sec:archi_deps}).
 
 \section{Interfaces stables (\textit{dataclasses})}
 \label{sec:archi_interfaces}
 
-Le découplage entre modules est matérialisé par des structures de données
-typées (\textit{dataclasses} Python) qui définissent le contrat. Modifier la
-signature d'une structure est un changement majeur ; ajouter un champ optionnel
-est rétrocompatible.
+Pour que trois modules puissent évoluer indépendamment, encore faut-il qu'ils
+s'accordent sur ce qu'ils s'échangent. Ce contrat est matérialisé par des
+structures de données typées (\textit{dataclasses} Python) : chacune définit
+exactement ce qu'un étage produit et ce que l'étage suivant consomme. La règle
+de compatibilité est simple et explicite --- modifier la signature d'une
+structure est un changement majeur (il casse les consommateurs), alors
+qu'ajouter un champ optionnel reste rétrocompatible. C'est cette discipline qui a
+permis d'enrichir progressivement la perception (ajout de l'orientation, de la
+classe de pose) sans réécrire le planning.
 
 \begin{description}
-  \item[\texttt{Frame}] image + matrice intrinsèque $K$ + distorsion +
-        $T_{\text{base}}^{\text{cam}}$ + timestamp.
+  \item[\texttt{Frame}] image + matrice intrinsèque $K$ + coefficients de
+        distorsion + pose $T_{\text{base}}^{\text{cam}}$ + horodatage. C'est
+        l'unité d'observation que produit la couche caméra.
   \item[\texttt{Detection2D}] détection brute dans le plan image (label,
-        centre pixel, bounding box, contour optionnel, score).
+        centre pixel, \textit{bounding box}, contour optionnel, score). Sortie du
+        détecteur, encore ignorante de la 3D.
   \item[\texttt{ObjectInstance}] objet reconstruit en 3D dans le repère base
         (position en mètres, orientation optionnelle, dimensions estimées,
-        détections source, score).
+        classe de pose, détections sources, score). C'est ici que la 2D devient
+        géométrie métrique exploitable.
   \item[\texttt{Scene}] état instantané = liste d'\texttt{ObjectInstance}
-        + liste d'obstacles + timestamp. Consommée par le module de planning.
+        + liste d'obstacles + horodatage. C'est la frontière nette entre
+        perception et planning : le planning ne voit jamais un pixel, seulement
+        une \texttt{Scene}.
   \item[\texttt{GraspPose}] séquence \textit{approach} $\rightarrow$
-        \textit{grasp} $\rightarrow$ \textit{retract} (3 matrices SE(3))
-        + ouvertures/fermetures de pince.
+        \textit{grasp} $\rightarrow$ \textit{retract} (trois matrices $SE(3)$)
+        + ouvertures/fermetures de pince. C'est le contrat entre planning et
+        control : le control n'a pas à savoir \emph{pourquoi} cette pose, juste
+        à l'atteindre.
 \end{description}
+
+En faisant transiter ces structures et rien d'autre, chaque module reste une
+boîte dont les bords sont connus. Reste à pouvoir varier \emph{ce qu'il y a
+dedans} : c'est l'objet des interfaces abstraites.
 
 \section{Interfaces abstraites (\textit{Strategy pattern})}
 \label{sec:archi_abc}
 
-Pour permettre la comparaison empirique de différentes approches sur le même
-pipeline, deux interfaces abstraites sont définies :
+Une motivation centrale de ce travail est de pouvoir \emph{comparer} des
+approches sur un même pipeline --- typiquement la détection couleur classique
+face à un détecteur appris. Pour que cette comparaison soit honnête, il faut que
+tout reste identique \emph{sauf} le composant étudié. C'est exactement le rôle du
+patron \textit{Strategy}~\cite{gamma_design_1994} : encapsuler une famille
+d'algorithmes derrière une interface commune et les rendre interchangeables sans
+toucher au code qui les utilise. J'ai donc défini deux interfaces abstraites
+(classes de base abstraites Python, ABC) :
 
 \begin{description}
   \item[\texttt{ObjectDetector} (ABC)] avec deux implémentations concrètes :
-        \texttt{HSVDetector} (V1 déterministe) et \texttt{HFDetector} (V2
-        basé sur OWL-ViTv2). Voir chapitre~\ref{ch:perception}.
-  \item[\texttt{GraspStrategy} (ABC)] avec l'implémentation
-        \texttt{TopDownGrasp} (V1). Voir chapitre~\ref{ch:planning}.
+        \texttt{HSVDetector} (V1, seuillage couleur déterministe) et
+        \texttt{HFDetector} (V2, détection \textit{open-vocabulary} basée sur
+        OWL-ViTv2). Voir chapitre~\ref{ch:perception}.
+  \item[\texttt{GraspStrategy} (ABC)] avec l'implémentation \texttt{TopDownGrasp}
+        (saisie verticale heuristique). Voir chapitre~\ref{ch:planning}.
 \end{description}
 
-Ce pattern (Gamma \textit{et al.}, \textit{Design Patterns}, 1994) garantit
-que le pipeline reste identique quand on change de détecteur ou de stratégie
-de saisie, permettant des expériences A/B rigoureuses.
+L'intérêt concret : le pipeline reste \emph{strictement le même} qu'on lui passe
+un \texttt{HSVDetector} ou un \texttt{HFDetector}, ce qui rend toute différence
+de résultat imputable au seul détecteur. C'est la condition pour qu'une
+comparaison V1/V2 ait un sens. À ce stade cette comparaison empirique reste à
+mener (chapitre~\ref{ch:discussion}) ; ce que l'architecture garantit, c'est
+qu'elle pourra l'être sans réingénierie. De même, n'avoir aujourd'hui qu'une
+seule \texttt{GraspStrategy} concrète (\texttt{TopDownGrasp}) n'enferme rien : le
+point d'extension est en place si une autre stratégie devenait pertinente.
+
+Ces contrats logiciels supposent toutefois un accord plus profond : que tous les
+modules parlent de positions \emph{dans le même repère}. C'est l'objet de la
+section suivante.
 
 \section{Repères et conventions}
 \label{sec:archi_reperes}
+
+Une \texttt{Scene} ne veut rien dire si on ne sait pas dans quel repère ses
+positions sont exprimées, ni avec quelle convention. Pire, une erreur de repère
+est silencieuse : le code tourne, les chiffres semblent plausibles, et le robot
+vise pourtant à côté. Cette section fixe donc sans ambiguïté l'origine, les axes
+et l'unité partagés par toute la chaîne. \emph{(Le brouillon de ce mémoire
+plaçait la table à $Z = -32$ mm ; cette valeur provenait d'une lecture erronée et
+est ici corrigée.)}
 
 \subsection{Repère base du robot}
 
 L'origine du repère \textbf{base} du SO-101 est définie par le fichier URDF
 (\texttt{configs/so101\_new\_calib.urdf}, provenant du dépôt officiel
-TheRobotStudio/SO-ARM100). Elle correspond au centre du pivot du premier
-moteur (\texttt{shoulder\_pan}).
+TheRobotStudio/SO-ARM100), qui est notre \emph{seule source de vérité
+géométrique}. Cette origine est le repère \texttt{base\_link} de l'URDF : le
+\textbf{centre géométrique de la plaque mécanique inférieure} du robot, posée à
+plat sur la table.
 
 \begin{itemize}
   \item Axe $X$ : devant le robot (vers les caméras eye-to-hand).
-  \item Axe $Y$ : à gauche, vue d'au-dessus (convention main droite).
+  \item Axe $Y$ : à gauche, vue de dessus (convention main droite).
   \item Axe $Z$ : vers le haut.
   \item Unité : mètres (SI).
 \end{itemize}
 
-Sur le poste expérimental, la surface de la table est mesurée à $Z = -32$ mm
-(voir annexe~\ref{ann:calibration}, section~\ref{ann:repere_mesure}).
+Deux conséquences pratiques découlent de ce choix d'origine, et toutes deux
+importent pour la suite.
+
+\emph{Niveau de la table.} Puisque la plaque de base repose directement sur la
+table, le plan de la table est à $Z \approx 0$. Un objet de hauteur $h$ posé sur
+la table a donc son \textbf{centre à $Z = +h/2$}. C'est cette relation, et non un
+$Z$ absolu mesuré par la stéréo, que le planning utilise pour ancrer la
+profondeur de saisie (chapitre~\ref{ch:planning}) : la table est une référence
+exacte, la stéréo est bruitée.
+
+\emph{Position du premier moteur.} Le centre du pivot du premier moteur
+(\texttt{shoulder\_pan}) n'est pas à l'origine : l'URDF le place à
+$(X, Y, Z) = (+38{,}8,\ 0,\ +62{,}4)$~mm depuis \texttt{base\_link}. La plaque de
+base, et non l'axe d'épaule, est donc le point zéro de tout le système.
+
+Ce repère a été validé contre la cinématique du robot : en configuration zéro
+(tous les moteurs à $0$\textdegree), la cinématique directe place le centre de la
+pince à $(+391{,}4,\ 0,\ +226{,}5)$~mm depuis \texttt{base\_link}, ce qui est
+mesurable au mètre et confirme la cohérence entre repère théorique et repère
+physique. Le détail de la procédure de vérification figure en
+annexe~\ref{ann:calibration}.
 
 \subsection{Convention $T_{A}^{B}$}
 
-On note $T_{A}^{B}$ la pose du repère $B$ exprimée dans $A$ (équivalente à la
-matrice qui transforme un point exprimé dans $B$ vers $A$). Par exemple,
-$T_{\text{base}}^{\text{cam}}$ = pose de la caméra dans le repère base du
-robot. Cette convention est cohérente avec OpenCV
-(\texttt{cv2.calibrateHandEye}) et l'URDF.
+On note $T_{A}^{B}$ la pose du repère $B$ exprimée dans $A$, c'est-à-dire la
+matrice $SE(3)$ qui transforme les coordonnées d'un point écrites dans $B$ vers
+$A$. Ainsi $T_{\text{base}}^{\text{cam}}$ est la pose de la caméra dans le repère
+base : c'est l'inconnue que la calibration hand-eye estime, et c'est le champ que
+porte chaque \texttt{Frame}. Cette convention est cohérente avec OpenCV
+(\texttt{cv2.calibrateHandEye}) et avec l'URDF, ce qui évite toute inversion
+parasite au passage d'une bibliothèque à l'autre.
+
+Avec un repère commun et une convention de pose fixés, on peut maintenant
+expliciter où, exactement, le logiciel touche le matériel.
 
 \section{Lien hardware--logiciel}
 \label{sec:archi_hw_sw}
 
-La couche d'interface matérielle est minimale et concentrée dans deux
-modules :
+Tout le reste de l'architecture est \emph{purement algorithmique} et donc
+testable sans robot ni caméra. Pour préserver cette propriété, j'ai
+volontairement confiné l'interface matérielle à une couche mince, concentrée
+dans deux modules :
 
 \begin{description}
-  \item[\texttt{src/perception/camera\_io.py}] ouvre les 3 caméras via
-        \texttt{cv2.VideoCapture}, force le codec MJPG pour la bande passante
-        USB (voir D10, chapitre~\ref{ch:perception}), gère la synchronisation
-        par \texttt{grab}/\texttt{retrieve}.
-  \item[\texttt{src/perception/robot\_state.py}] communique avec le bus
-        Feetech via \texttt{FeetechMotorsBus} (lib \texttt{lerobot.motors}),
-        avec gestion de retry et fallback en cas de paquet corrompu.
+  \item[\texttt{src/perception/camera\_io.py}] ouvre les trois caméras via
+        \texttt{cv2.VideoCapture}, force le codec MJPG pour tenir dans la bande
+        passante USB (chapitre~\ref{ch:perception}), et synchronise les flux par
+        \texttt{grab}/\texttt{retrieve}.
+  \item[\texttt{src/perception/robot\_state.py}] communique avec le bus Feetech
+        via \texttt{FeetechMotorsBus} (bibliothèque \texttt{lerobot.motors}),
+        avec gestion de \textit{retry} et repli en cas de paquet corrompu.
 \end{description}
 
-Tous les autres modules sont \textbf{purement algorithmiques} et peuvent être
-testés sans matériel (tests synthétiques dans \texttt{tests/perception/}).
+Ce confinement n'est pas un détail d'organisation : c'est lui qui rend possible
+le mode \textit{replay} décrit ci-dessous, et qui permet d'exécuter la totalité
+des tests sur une machine sans matériel branché (tests synthétiques dans
+\texttt{tests/perception/}). En isolant les deux seuls points de contact
+physique, on rend le \emph{cœur} du système indépendant de la disponibilité du
+robot.
 
 \section{Mode développement \textit{live} vs \textit{replay}}
 \label{sec:archi_modes}
 
-L'architecture supporte deux modes d'exécution :
+Cette frontière matériel/logiciel se traduit directement par deux modes
+d'exécution, qui sont l'envers et l'endroit du même pipeline :
 
 \begin{itemize}
-  \item \textbf{Live} : caméras et robot connectés en temps réel.
+  \item \textbf{Live} : caméras et robot connectés, capture en temps réel.
   \item \textbf{Replay} : rejeu d'un jeu de données enregistré
         (\texttt{scripts/record\_perception\_frames.py}) au format
-        \texttt{manifest.json} + images PNG. Permet le développement et le
-        test du pipeline sans matériel, et garantit la
-        \textbf{reproductibilité expérimentale} des résultats du mémoire.
+        \texttt{manifest.json} + images PNG.
 \end{itemize}
+
+Le mode \textit{replay} a deux vertus. D'une part il permet de développer et de
+déboguer le pipeline \emph{sans matériel}, ce qui accélère considérablement
+l'itération. D'autre part, et c'est plus important pour un mémoire, il garantit
+la \textbf{reproductibilité expérimentale} : rejouer un même enregistrement
+produit exactement la même \texttt{Scene}, donc les mêmes décisions de saisie.
+Cette reproductibilité est cohérente avec un autre choix de conception détaillé
+plus loin --- le générateur aléatoire de l'IK est re-graîné à chaque appel pour
+que le mouvement reste déterministe (chapitre~\ref{ch:control_eval}).
 
 \section{Gestion des dépendances}
 \label{sec:archi_deps}
 
-Les dépendances sont scindées en deux catégories :
+Reste une dernière dimension de l'architecture, plus pragmatique : ce qu'il faut
+installer pour faire tourner quoi. Plutôt qu'un bloc de dépendances unique, je
+les ai scindées en deux catégories, ce qui reflète la distinction V1/V2 vue à la
+section~\ref{sec:archi_abc} :
+
 \begin{description}
-  \item[Cœur] \texttt{opencv-python}, \texttt{numpy}, \texttt{lerobot}
-        (motors et datasets). Requis.
+  \item[Cœur] \texttt{opencv-python}, \texttt{numpy}, \texttt{lerobot} (motors et
+        datasets). Requis. C'est tout ce qu'exige le pipeline V1 complet
+        (détection HSV, triangulation, IK, contrôle), entièrement en NumPy/OpenCV.
   \item[Extension V2] \texttt{transformers}, \texttt{torch}, \texttt{pillow}.
-        Requis uniquement pour le \texttt{HFDetector} ; le pipeline V1
-        (HSV) fonctionne sans.
+        Requis uniquement par le \texttt{HFDetector} (OWL-ViTv2).
 \end{description}
 
-Cette modularité (V2 optionnelle) permet de cloner et d'installer le projet
-en quelques minutes pour la partie classique, et d'ajouter le V2 au besoin
-($\sim$1.5 Go de poids supplémentaires).
+Le bénéfice est double. D'abord, la reproductibilité : on clone et installe le
+projet en quelques minutes pour toute la partie classique, sans télécharger un
+modèle de fondation. Ensuite, la cohérence d'écosystème : la bibliothèque
+\texttt{transformers} de l'extension V2 est la \emph{même} que celle qu'utilisent
+les politiques LeRobot (SmolVLA, ACT), de sorte que le détecteur appris ne
+fragmente pas la pile logicielle mais s'y inscrit. L'extension reste optionnelle
+parce que le V1 doit pouvoir tourner seul --- c'est la condition pour qu'il serve
+de \emph{baseline} face au V2.
+
+\bigskip
+
+L'ossature est désormais en place : trois modules, des contrats de données
+stables, des stratégies interchangeables, un repère commun corrigé, une fine
+couche matérielle et une installation modulaire. Tout ceci ne reste cependant
+qu'une charpente vide tant que le premier étage ne la remplit pas. Le chapitre
+suivant ouvre donc la boîte \textbf{Perception} : comment, à partir de trois
+images RGB, on reconstruit la position et l'orientation 3D d'un objet dans le
+repère base que nous venons de définir.

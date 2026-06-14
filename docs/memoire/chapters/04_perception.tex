@@ -1,12 +1,27 @@
 \chapter{Perception}
 \label{ch:perception}
 
-Ce chapitre détaille le module de perception, dont l'objectif minimal est :
-\textit{transformer une image multi-caméras en une position 3D de l'objet
-cible dans le repère base du robot}.
+Le chapitre précédent a posé le matériel et la chaîne cinématique du SO-101 ;
+il reste à doter le robot d'une vue du monde. Ce chapitre décrit le module de
+perception, dont l'objectif minimal est précis : \emph{transformer trois images
+multi-caméras en une position 3D de l'objet cible, exprimée dans le repère base
+du robot}, accompagnée d'une description géométrique suffisante pour décider
+\emph{comment} le saisir. C'est la première brique de la boucle
+perception--planification--contrôle : tant que la position de l'objet n'est pas
+connue dans le repère du bras, ni la planification de saisie
+(chapitre~\ref{ch:planning}) ni le contrôle ne peuvent commencer. Nous suivons
+ici la construction de ce module dans l'ordre où elle s'est imposée :
+d'abord calibrer les caméras (sans quoi aucune mesure n'a de sens
+métrique), puis détecter l'objet dans le plan image, puis remonter à sa
+position 3D, et enfin enrichir cette position d'une orientation et d'une classe
+de pose exploitables par la saisie.
 
 \section{Pipeline général}
 \label{sec:perc_pipeline}
+
+Avant d'entrer dans le détail de chaque étape, il est utile d'en avoir la vue
+d'ensemble. Le flux de données va de trois images brutes à une scène 3D
+structurée, en quatre transformations successives :
 
 \begin{equation}
   \underbrace{\text{3 images RGB}}_{\text{capteur}}
@@ -19,21 +34,41 @@ cible dans le repère base du robot}.
   \label{eq:perception_pipeline}
 \end{equation}
 
-Le pipeline est implémenté dans \texttt{src/perception/} avec cinq modules :
-\texttt{scene}, \texttt{robot\_state}, \texttt{camera\_io}, \texttt{detector},
-\texttt{pose\_estimator}. Voir l'annexe~\ref{ann:code_structure} pour le
-détail.
+Le pipeline est implémenté dans \texttt{src/perception/} et organisé en cinq
+modules de responsabilité unique : \texttt{scene} (structures de données
+partagées), \texttt{robot\_state} (lecture de la configuration articulaire),
+\texttt{camera\_io} (acquisition et chargement des calibrations),
+\texttt{detector} (détection 2D, V1 et V2) et \texttt{pose\_estimator}
+(reconstruction 3D et géométrie de l'objet). Voir
+l'annexe~\ref{ann:code_structure} pour le détail. Chacune des sections qui
+suivent prend en charge un maillon de l'équation~\eqref{eq:perception_pipeline},
+en partant de l'amont : la calibration, qui donne un sens métrique à tout le
+reste.
 
 \section{Calibration et modèles caméra}
 \label{sec:perc_calibration}
 
+La triangulation ne produit des millimètres corrects que si l'on connaît, pour
+chaque caméra, son modèle interne (focale, distorsion) \emph{et} sa pose dans le
+repère du robot. Ces deux inconnues se déterminent en deux temps : la
+calibration \emph{intrinsèque}, qui modélise l'optique, puis la calibration
+\emph{extrinsèque} ou \emph{hand-eye}, qui relie la caméra au bras. Nous les
+traitons dans cet ordre, car l'extrinsèque réutilise les paramètres
+intrinsèques.
+
 \subsection{Calibration intrinsèque}
 
 La calibration intrinsèque détermine la matrice $K$ (focales $f_x, f_y$ et
-centre optique $c_x, c_y$) ainsi que les coefficients de distorsion d'une
-caméra. Pour les trois caméras du poste, la calibration a été réalisée avec
-le damier $9 \times 6$ asymétrique (carré de 22~mm) et l'algorithme standard
-d'OpenCV (\texttt{cv2.calibrateCamera}, basé sur Zhang 2000~\cite{}).
+centre optique $c_x, c_y$) ainsi que les coefficients de distorsion radiale et
+tangentielle d'une caméra. Le principe, dû à Zhang~\cite{zhang_flexible_2000},
+consiste à observer une mire planaire connue (un damier) sous plusieurs
+orientations : chaque vue fournit une homographie entre le plan du damier et le
+plan image, et l'ensemble de ces homographies contraint suffisamment $K$ pour la
+résoudre par moindres carrés, puis pour raffiner conjointement $K$, la
+distorsion et les poses par minimisation de l'erreur de reprojection
+(Levenberg--Marquardt). C'est exactement ce que réalise
+\texttt{cv2.calibrateCamera}, employé ici pour les trois caméras du poste avec
+le damier $9 \times 6$ asymétrique (carrés de 22~mm).
 
 Résultats (erreur de reprojection moyenne) :
 \begin{center}
@@ -48,35 +83,71 @@ Caméra & Erreur de reprojection \\
 \end{tabular}
 \end{center}
 
-Toutes inférieures à 0.5 px : calibration de qualité.
+Toutes les erreurs sont inférieures à 0.5~px, seuil usuel d'une calibration de
+qualité : le modèle optique reproduit la position des coins du damier au
+cinquième de pixel près. Cette précision intrinsèque est nécessaire mais non
+suffisante ; il reste à savoir \emph{où} chaque caméra se trouve par rapport au
+robot, ce qui est l'objet de la calibration \emph{hand-eye}.
 
 \subsection{Calibration extrinsèque (\textit{hand-eye})}
 
-La calibration \textit{hand-eye} a été réalisée avec
-\texttt{cv2.calibrateHandEye} (méthode PARK, puis HORAUD pour le solveur
-robuste). Une difficulté majeure a été résolue durant le Sprint 1 :
+\paragraph{Le problème et sa formulation.} On cherche la transformation rigide
+inconnue $X \in SE(3)$ qui relie le repère caméra au repère qu'elle accompagne
+(la pince pour un montage eye-in-hand, la base pour un montage eye-to-hand). On
+ne peut pas la mesurer directement ; on l'obtient par \emph{mouvements
+relatifs}. Entre deux poses, le robot se déplace d'une transformation $A$ connue
+(par la cinématique directe) tandis que la caméra observe la mire se déplacer
+d'une transformation $B$ mesurée (par la pose de la mire dans chaque image). La
+chaîne rigide impose alors l'\emph{équation de Sylvester} :
+\begin{equation}
+  A\,X = X\,B,
+  \label{eq:axxb}
+\end{equation}
+qui est la forme canonique du problème hand-eye. En décomposant $A$, $B$ et $X$
+en partie rotation et partie translation, l'équation~\eqref{eq:axxb} se scinde
+en une contrainte sur les seules rotations, $R_A R_X = R_X R_B$, résolue
+d'abord, puis une contrainte linéaire sur la translation une fois $R_X$
+connue~\cite{tsai_new_1989,horaud_hand-eye_1995}. La référence d'OpenCV pour
+l'identité~\eqref{eq:axxb} et sa résolution est~\cite{noauthor_equation_2025}.
+La fonction \texttt{cv2.calibrateHandEye} (méthode PARK pour la résolution
+initiale) implémente exactement cette démarche ; il restait à la fiabiliser sur
+notre matériel, ce qui a demandé deux décisions de conception.
 
-\paragraph{Décision D2 (damier asymétrique $9 \times 6$).} L'algorithme
-\texttt{cv2.findChessboardCorners} détecte un damier $7 \times 7$ carré dans
-\textbf{4 orientations équivalentes} (rotations $0\textdegree{}, 90\textdegree{}, 180\textdegree{}, 270\textdegree{}$ du
-coin de référence). Le solveur \textit{hand-eye} reçoit alors des poses
-incohérentes entre elles, ce qui fait exploser les résidus. Solution adoptée :
-damier asymétrique $9 \times 6$, qui supprime l'ambiguïté à 4-fold (l'asymétrie
-ne laisse que l'ambiguïté 2-fold, gérée par le solveur robuste).
+\paragraph{Décision~D2 (damier asymétrique $9 \times 6$).} Un premier essai
+avec un damier carré faisait exploser les résidus, sans cause évidente côté
+solveur. Le diagnostic a montré que le problème venait de la détection des
+coins : \texttt{cv2.findChessboardCorners} renvoie un damier carré dans
+\textbf{4 orientations équivalentes} (rotations de
+$0^\circ, 90^\circ, 180^\circ, 270^\circ$ du coin de
+référence). Le solveur~\eqref{eq:axxb} recevait alors des poses $B$ tournées
+aléatoirement de quarts de tour, donc \emph{mutuellement incohérentes}. La
+correction adoptée a été géométrique plutôt que logicielle : un damier
+\textbf{asymétrique} $9 \times 6$ brise les symétries de quart de tour ; il ne
+subsiste qu'une ambiguïté à 2-fold (demi-tour), gérée en aval par le solveur
+robuste.
 
-\paragraph{Décision D3 (solveur \textit{hand-eye} robuste).} Le pipeline
-implémenté dans \texttt{src/calibration/handeye.py} effectue :
+\paragraph{Décision~D3 (solveur \textit{hand-eye} robuste).} Même avec une
+détection désambiguïsée, quelques poses restaient aberrantes (flou de
+détection, mise au point, vibration). Plutôt que de les éliminer à la main, le
+pipeline de \texttt{src/calibration/handeye.py} les détecte automatiquement.
+L'idée directrice : la transformation entre la mire et son support
+($T_{\text{gripper}}^{\text{target}}$ en eye-to-hand,
+$T_{\text{base}}^{\text{target}}$ en eye-in-hand) \emph{devrait} être constante
+par construction ; une pose qui s'en écarte est une pose à rejeter. Concrètement~:
 \begin{enumerate}
-  \item Résolution initiale (méthode PARK) sur toutes les poses.
-  \item Identification du cluster majoritaire des transformations
-        $T_{\text{gripper}}^{\text{target}}$ (eye-to-hand) ou
-        $T_{\text{base}}^{\text{target}}$ (eye-in-hand) qui devraient être
-        constantes par construction.
-  \item Réalignement de chaque pose : choix de la correction géométrique
-        (rotation + décalage d'origine du damier) qui rapproche du cluster.
-  \item Rejet itératif des 10\% poses les plus aberrantes, jusqu'à
-        stabilisation ou seuil minimum de 20 poses.
+  \item résolution initiale (méthode PARK) sur toutes les poses ;
+  \item identification du \emph{cluster majoritaire} de cette transformation
+        censée être constante ;
+  \item réalignement de chaque pose vers ce cluster (choix de la correction
+        géométrique --- rotation et décalage d'origine de la mire --- la plus
+        proche, ce qui absorbe au passage l'ambiguïté 2-fold résiduelle) ;
+  \item rejet itératif des 10\,\% de poses les plus aberrantes, jusqu'à
+        stabilisation ou seuil minimum de 20 poses (on retient typiquement
+        20 à 25 poses sur 60 à 70 capturées).
 \end{enumerate}
+Un cas particulier a dû être réglé sur le moteur \texttt{wrist\_roll} : sa
+course chevauchait la couture $0/4095$ de l'encodeur 12 bits, ce qui rendait ses
+angles incohérents ; un recalcul du \texttt{Homing\_Offset} a recentré sa plage.
 
 Résultats finaux :
 \begin{center}
@@ -91,180 +162,288 @@ Caméra & Translation moy./max & Rotation moy./max \\
 \end{tabular}
 \end{center}
 
-Les résidus \texttt{cam\_0/cam\_1} correspondent au \textbf{plancher de bruit
-du SO-101} ($\sim$5-10 mm de répétabilité d'après la spec constructeur). Ils
-seront compensés par la replanification en boucle fermée (objectif 4 du
-cahier des charges). La cam\_2 (eye-in-hand) atteint une meilleure précision
-car le setup physique est plus rigide (damier fixe sur la scène, pas de
-wobble de collage sur la pince).
+Les résidus de \texttt{cam\_0}/\texttt{cam\_1} ($\sim$6~mm en moyenne)
+correspondent au \textbf{plancher de bruit de répétabilité du SO-101}
+($\sim$5--10~mm d'après la spécification constructeur) : ils ne traduisent pas
+une calibration imparfaite mais la limite physique d'un bras low-cost, et seront
+absorbés par la replanification en boucle fermée (objectif~4 du cahier des
+charges). La \texttt{cam\_2} (eye-in-hand) atteint une meilleure précision parce
+que son montage est plus rigide : la mire est fixée sur la scène, sans le jeu de
+collage qui affecte un montage embarqué sur la pince.
 
-\todoF{Ajouter une figure illustrant les poses de calibration capturées.}
+\paragraph{Décision~D11 (calibration stéréo conjointe).} Les deux caméras
+eye-to-hand étant calibrées \emph{indépendamment}, leurs deux poses
+$T_{\text{base}}^{\text{cam}_0}$ et $T_{\text{base}}^{\text{cam}_1}$ portaient
+chacune leur propre erreur de quelques millimètres, et rien ne garantissait
+qu'elles soient \emph{cohérentes entre elles}. Or la triangulation stéréo, qui
+intersecte deux rayons, est précisément sensible à l'écart \emph{relatif} entre
+les deux caméras. Symptôme observé : une incohérence stéréo de $21{,}46$~mm et un
+biais pratique en $Y$ d'environ $+40$~mm, que j'avais d'abord masqué par une
+compensation manuelle (\texttt{bias\_correction.json}, soustraction constante
+d'environ $+30$~mm en $Y$). Cette compensation traitait le symptôme, pas la
+cause. La correction de fond consiste à ne plus calibrer les deux caméras
+séparément : \texttt{cv2.stereoCalibrate} (avec \texttt{FIX\_INTRINSIC},
+puisque les intrinsèques sont déjà acquis) mesure directement la transformation
+relative $T_{\text{cam}_0}^{\text{cam}_1}$, dont on déduit
+\begin{equation}
+  T_{\text{base}}^{\text{cam}_1}
+    = T_{\text{base}}^{\text{cam}_0}\;T_{\text{cam}_0}^{\text{cam}_1},
+  \label{eq:stereo_compose}
+\end{equation}
+de sorte que les deux calibrations sont \emph{cohérentes par construction}. Le
+résultat valide le raisonnement : la cohérence stéréo passe de $21{,}46$ à
+$1{,}95$~mm ($-91\,\%$) et le biais pratique en $Y$ d'environ $+40$ à
+$+14$~mm. La compensation manuelle est devenue inutile et a été désactivée
+(le fichier \texttt{bias\_correction.json} est à zéro). La \emph{baseline}
+stéréo ainsi déduite est de $\sim$103--109~mm, valeur qui jouera un rôle
+central dans l'analyse de sensibilité de la profondeur
+(section~\ref{sec:depth_sensitivity}).
+
+\todoF{Ajouter une figure illustrant les poses de calibration capturées (mire
+$9 \times 6$ vue par les trois caméras).}
+
+Les caméras sont désormais calibrées et mutuellement cohérentes ; on peut leur
+faire confiance pour mesurer. Reste à \emph{détecter} l'objet dans l'image,
+problème de tout autre nature --- non plus géométrique mais sémantique --- que
+nous abordons en deux versions successives.
 
 \section{Détection 2D : version V1 (HSV)}
 \label{sec:perc_v1}
 
 \subsection{Principe}
 
-Le \texttt{HSVDetector} implémente une détection par seuillage dans l'espace
-HSV. L'espace HSV décorrèle la \textit{teinte} ($H$) de la \textit{luminosité}
-($V$), ce qui le rend plus robuste aux variations d'éclairage que RGB.
-Pipeline par image :
+La première version privilégie la simplicité et l'absence de dépendance lourde :
+détecter chaque objet par sa \emph{couleur}. Le \texttt{HSVDetector} opère un
+seuillage dans l'espace HSV, qui décorrèle la \textit{teinte} ($H$) de la
+\textit{luminosité} ($V$) et se montre de ce fait plus robuste aux variations
+d'éclairage que RGB~\cite{forsyth_computer_2012}. Pipeline par image :
 \begin{enumerate}
-  \item Conversion BGR $\rightarrow$ HSV.
-  \item Pour chaque \texttt{ObjectSpec} : masque \texttt{cv2.inRange} sur la
-        plage HSV calibrée.
-  \item Opérations morphologiques : \textit{opening} (suppression du bruit)
-        puis \textit{closing} (remplissage des trous).
-  \item Extraction des contours (\texttt{cv2.findContours}) puis filtrage par
-        aire.
-  \item Calcul du centroïde par les moments image.
+  \item conversion BGR $\rightarrow$ HSV ;
+  \item pour chaque \texttt{ObjectSpec} : masque \texttt{cv2.inRange} sur la
+        plage HSV calibrée ;
+  \item morphologie : \textit{opening} (suppression du bruit) puis
+        \textit{closing} (remplissage des trous) ;
+  \item extraction des contours (\texttt{cv2.findContours}) et filtrage par
+        aire ;
+  \item calcul du centroïde par les moments image.
 \end{enumerate}
 
 \subsection{Calibration des plages HSV}
 
-L'utilisateur lance \texttt{scripts/calibrate\_hsv.py} qui ouvre une caméra
-et permet d'\textbf{échantillonner} les pixels par clic souris. Pour chaque
-clic, un patch $7 \times 7$ pixels est extrait et ajouté à un cumul par label.
-À la sauvegarde, des plages statistiques (percentiles 2-98 par défaut) sont
-calculées.
+Pour fixer ces plages, l'utilisateur lance \texttt{scripts/calibrate\_hsv.py},
+qui ouvre une caméra et permet d'\textbf{échantillonner} les pixels par clic
+souris. Chaque clic extrait un patch $7 \times 7$ pixels ajouté à un cumul par
+label ; à la sauvegarde, des plages statistiques (percentiles 2--98 par défaut)
+sont calculées. Cette procédure interactive a immédiatement révélé une
+difficulté que la théorie HSV explique parfaitement.
 
-\paragraph{Décision D8 (\textit{color\_mode} pour noir/blanc/gris).} La
-première calibration expérimentale a révélé que noir et blanc ne sont
-\textbf{pas des couleurs en HSV} : pour le noir, $V \approx 0$ rend $H$ et
-$S$ mathématiquement indéterminés ; pour le blanc, $S \approx 0$ rend $H$
-indéterminé. Sans correction, le seuillage par $H$ sur un objet noir donnait
-$H \in [103, 168]$, couvrant simultanément le bleu et le violet $\rightarrow$
-confusions massives.
-
-Solution implémentée : \texttt{HSVRange.color\_mode} prend 4 valeurs
-(\texttt{chromatic}, \texttt{black}, \texttt{white}, \texttt{gray}) qui
-adaptent les bornes utilisées. La détection du mode est automatique dans
-\texttt{calibrate\_hsv.py} via la médiane de $S$ et $V$ des pixels
-échantillonnés.
+\paragraph{Décision~D8 (\textit{color\_mode} pour noir/blanc/gris).}
+L'hypothèse de départ --- « un objet a une teinte » --- s'est révélée fausse
+pour le noir et le blanc. En HSV, le noir ($V \approx 0$) rend $H$ et $S$
+mathématiquement indéterminés, et le blanc ($S \approx 0$) rend $H$ indéterminé~:
+ce ne sont pas des couleurs au sens de la teinte~\cite{forsyth_computer_2012}.
+Concrètement, le seuillage par $H$ sur un objet noir donnait $H \in [103, 168]$,
+couvrant à la fois le bleu et le violet, d'où des confusions massives. La
+correction consiste à traiter ces cas à part : \texttt{HSVRange.color\_mode}
+prend quatre valeurs (\texttt{chromatic}, \texttt{black}, \texttt{white},
+\texttt{gray}) qui adaptent les bornes utilisées (on seuille sur $V$ pour le
+noir, sur $S$ pour le blanc, plutôt que sur une teinte indéfinie). Le mode est
+détecté automatiquement dans \texttt{calibrate\_hsv.py} à partir des médianes de
+$S$ et $V$ des pixels échantillonnés.
 
 \subsection{Limites identifiées du V1}
 
-L'évaluation expérimentale a mis en évidence plusieurs \textbf{limites
-fondamentales} du seuillage HSV pur :
+Cette correction a fiabilisé les cas achromatiques, mais l'évaluation
+expérimentale a fait apparaître des \textbf{limites plus profondes}, qu'aucun
+réglage de seuils ne lève :
 
 \begin{description}
-  \item[\textbf{Confusion couleurs proches}] le cube orange est confondu
-        avec la pince orange du robot (même teinte physique).
+  \item[\textbf{Confusion couleurs proches}] le cube orange est confondu avec le
+        filament orange du robot --- même teinte physique, indiscernable en HSV.
   \item[\textbf{Confusion fond/objet}] le mug blanc est confondu avec le sol
         blanc de la scène.
-  \item[\textbf{Aucune compréhension de forme}] le HSV ne raisonne que sur
-        des pixels, pas sur l'identité ou la géométrie de l'objet.
-  \item[\textbf{Sensibilité éclairage}] les plages calibrées sous un
-        éclairage donné dérivent quand l'éclairage change.
+  \item[\textbf{Aucune compréhension de forme}] le HSV raisonne pixel par pixel,
+        sans aucune notion d'identité ni de géométrie de l'objet.
+  \item[\textbf{Sensibilité à l'éclairage}] les plages calibrées sous un
+        éclairage donné dérivent dès qu'il change.
 \end{description}
 
-Ces limites sont \textbf{irréductibles} par ajustement des seuils. Une
-\textbf{décision D9} pallie partiellement la première en introduisant des
-\textbf{zones d'exclusion} géométriques (cylindre autour de la base robot)
-dans \texttt{configs/scene.json}, filtrant toute détection 3D qui tombe sur
-le robot. Mais les autres limites motivent le passage à un détecteur appris,
-détaillé en section~\ref{sec:perception_v2}.
+Ces limites sont \textbf{irréductibles} par ajustement des seuils. Une première
+parade, la \textbf{décision~D9}, atténue la confusion avec le robot en
+introduisant des \textbf{zones d'exclusion} géométriques (un cylindre autour de
+la base, déclaré dans \texttt{configs/scene.json}) : toute détection 3D qui
+tombe sur le robot est rejetée a posteriori. C'est un palliatif géométrique
+d'un problème sémantique, et il ne couvre pas la confusion fond/objet ni la
+dérive d'éclairage. Ces limites résiduelles ont motivé un changement de
+paradigme de détection, détaillé en section~\ref{sec:perception_v2}.
 
 \section{Détection 2D : version V2 (\textit{open-vocabulary})}
 \label{sec:perception_v2}
 
+La section précédente s'est conclue sur un constat : le seuillage couleur ne
+sait pas \emph{ce qu'il regarde}. La V2 remplace donc la couleur par un détecteur
+appris qui raisonne sur le contenu sémantique de l'image à partir de
+descriptions textuelles.
+
 \subsection{Choix du modèle : OWL-ViTv2}
 
 Le V2 (\texttt{HFDetector}) utilise le modèle
-\texttt{google/owlv2-base-patch16-ensemble}~\cite{} hébergé sur Hugging Face.
-C'est un \textit{Vision-Language Model} (VLM) qui prend en entrée une image
-et une \textbf{liste de descriptions textuelles}, et renvoie pour chaque
-description les bboxes des régions correspondantes.
+\texttt{google/owlv2-base-patch16-ensemble} ($\sim$180~M paramètres, $\sim$600~Mo),
+un détecteur \textit{open-vocabulary} de la famille
+OWL-ViT~\cite{minderer_owlv2_2023}. Il prend en entrée une image et une
+\textbf{liste de descriptions textuelles}, et renvoie pour chaque description les
+\emph{bounding boxes} des régions visuellement les plus proches, assorties d'un
+score (seuil retenu : 0.15). Servi sur le GPU MPS du MacBook M4, il tourne à
+$\sim$3--5~FPS.
 
-\paragraph{Décision D13 (passage anticipé au V2).} Initialement prévu pour le
-Sprint 5 (comparaison finale), le \texttt{HFDetector} a été implémenté dès le
-Sprint 2 car les limites empiriques du V1 ont rendu impossible une validation
-expérimentale fiable du pipeline géométrique sous-jacent. Le V2 fournit dès
-maintenant une perception robuste, permettant de progresser sur les Sprints 3
-et 4.
+\paragraph{Décision~D13 (passage anticipé au V2).} Initialement, ce détecteur
+appris était prévu comme l'objet d'une \emph{comparaison finale}, en fin de
+projet. Il a fallu l'avancer. Le V1 ne se contentait pas d'être imparfait : ses
+confusions (cube orange / filament, mug / sol) rendaient \emph{impossible} de
+valider de façon fiable le pipeline géométrique en aval --- impossible de
+savoir si une erreur 3D venait de la triangulation ou simplement d'une mauvaise
+détection 2D. J'ai donc implémenté le \texttt{HFDetector} dès le début du
+projet, pour disposer d'une détection assez fiable et débloquer le travail sur
+la triangulation, l'orientation et le contrôle. Le calendrier de comparaison
+formelle V1/V2 s'en trouve décalé (cf.\ chapitre~\ref{ch:control_eval}), mais le
+reste de la pipeline a pu avancer sur des bases saines.
 
-\paragraph{Cohérence d'écosystème.} Le modèle est servi par la lib
-\texttt{transformers} de Hugging Face, qui est la \emph{même} lib utilisée
-par les politiques d'imitation learning de LeRobot (SmolVLA, ACT, $\pi_0$).
-Pas de fragmentation de dépendances.
+\paragraph{Cohérence d'écosystème.} Le modèle est servi par la bibliothèque
+\texttt{transformers} de Hugging Face --- la \emph{même} que celle des
+politiques d'imitation learning de LeRobot (SmolVLA, ACT, $\pi_0$). Ce choix
+évite toute fragmentation des dépendances et garde ouverte la comparaison
+ultérieure avec le paradigme end-to-end.
 
 \subsection{Descriptions textuelles enrichies}
 
-OWL-ViTv2 raisonne sur la \textbf{similarité visuelle-textuelle}. Les
-descriptions enrichies (couleur + forme + matériau + caractéristique
-distinctive) améliorent significativement la discrimination par rapport à
-des labels minimalistes. Exemples retenus dans
-\texttt{configs/perception/hf\_specs.json} :
-
+OWL-ViTv2 raisonne par \textbf{similarité visuelle--textuelle}. La qualité de la
+détection dépend donc directement de la richesse des descriptions : enrichir le
+texte (couleur + forme + matière + caractéristique distinctive) améliore
+nettement la discrimination par rapport à des labels minimalistes. Exemples
+retenus dans \texttt{configs/perception/hf\_specs.json} :
 \begin{itemize}
   \item \texttt{"a small bright orange plastic cube"} (au lieu de
-        \texttt{"orange cube"}).
-  \item \texttt{"a metallic robotic arm with a gripper"} (distingue le
-        cube orange du bras du robot par \texttt{plastic} vs \texttt{metallic}).
-  \item \texttt{"a small white ceramic mug with a handle"} (la mention
-        \texttt{handle} aide à séparer le mug du fond blanc).
+        \texttt{"orange cube"}) ;
+  \item \texttt{"a metallic robotic arm with a gripper"} : la mention
+        \texttt{metallic} sépare le bras du cube orange en \texttt{plastic} ;
+  \item \texttt{"a small white ceramic mug with a handle"} : la mention
+        \texttt{handle} aide à distinguer le mug du fond blanc.
 \end{itemize}
+Le détecteur lève ainsi les deux confusions qui bloquaient le V1, là où le
+seuillage couleur n'avait aucun levier.
 
 \subsection{Limites identifiées du V2}
 
+Le gain est réel, mais le V2 introduit ses propres faiblesses, qu'il faut
+documenter pour ne pas le survendre :
 \begin{description}
-  \item[\textbf{Faux positifs sémantiques}] OWL-ViTv2 détecte des objets
-        \textbf{visuellement similaires} aux descriptions, même s'ils ne
-        sont pas l'objet visé. Exemple observé : une gourde en aluminium
-        bleu marine détectée comme \texttt{purple\_cylinder}, un essuie-tout
-        détecté comme \texttt{white\_mug}. C'est une propriété intrinsèque
-        de la détection \textit{open-vocabulary} qui raisonne par
-        similarité, pas par identification d'instance.
-  \item[\textbf{Vitesse}] $\sim$3-5 FPS sur MacBook M4 (MPS), insuffisant
-        pour un asservissement visuel temps réel mais acceptable pour un
-        pick-and-place ponctuel (chapitre~\ref{ch:control_eval}).
-  \item[\textbf{Pas de masque de segmentation}] uniquement des bounding
-        boxes ; l'orientation \texttt{wrist\_roll} du grasp planner est
-        approximée par l'\textit{aspect ratio} de la bbox.
+  \item[\textbf{Faux positifs sémantiques}] le modèle détecte ce qui
+        \emph{ressemble} à la description, pas l'instance exacte visée :
+        une gourde en aluminium bleu marine a été détectée comme
+        \texttt{purple\_cylinder}, un essuie-tout comme \texttt{white\_mug}.
+        C'est inhérent à un raisonnement par similarité.
+  \item[\textbf{Vitesse}] $\sim$3--5~FPS, insuffisant pour un asservissement
+        visuel haute fréquence mais acceptable pour un pick-and-place ponctuel
+        (chapitre~\ref{ch:control_eval}).
+  \item[\textbf{Pas de masque de segmentation}] le modèle ne produit que des
+        \emph{bounding boxes}, sans contour fin de l'objet. Cette absence pèse
+        sur l'estimation d'orientation (section~\ref{sec:perc_3d}), qui doit
+        alors s'appuyer sur la silhouette de la bbox plutôt que sur un masque
+        précis.
 \end{description}
+
+Que la détection vienne du V1 ou du V2, le résultat est le même : une ou
+plusieurs \emph{détections 2D} (centre, bbox, contour éventuel) par caméra. Il
+reste à les fusionner en une position 3D dans le repère base --- l'étape de
+reconstruction.
 
 \section{Reconstruction 3D : triangulation stéréo et PnP}
 \label{sec:perc_3d}
 
-\subsection{Triangulation stéréo}
+Une détection 2D ne donne qu'un \emph{rayon} : la direction sous laquelle la
+caméra voit l'objet, sans sa distance. Pour fixer la position 3D, il faut
+recouper plusieurs rayons. La voie principale est la triangulation stéréo
+(deux caméras eye-to-hand) ; un repli monoculaire par PnP couvre les cas
+d'occlusion. Tout ce module est implémenté dans
+\texttt{src/perception/pose\_estimator.py}, qui reste \emph{pur} (sans I/O ni
+matériel) : on lui passe les détections et les frames, il rend des objets 3D.
 
-Pour un objet vu simultanément par \texttt{cam\_0} et \texttt{cam\_1}, le
-\texttt{PoseEstimator} effectue une triangulation linéaire (DLT) via
-\texttt{cv2.triangulatePoints}~\cite[chap.~12]{hartley_multiple_2018} :
+\subsection{Triangulation stéréo (DLT)}
 
+\paragraph{Notation et modèle de projection.} Soit $\mathbf{X} =
+(X, Y, Z)^\top$ un point 3D exprimé dans le repère base, et
+$\tilde{\mathbf{X}} = (X, Y, Z, 1)^\top$ ses coordonnées homogènes. Chaque
+caméra $i$ projette ce point en un pixel $\mathbf{x}_i = (u_i, v_i)^\top$ selon
 \begin{equation}
-  \mathbf{x}_i = \frac{1}{\lambda_i} \, K_i \, [R_i | \mathbf{t}_i] \,
-                 \begin{pmatrix} \mathbf{X} \\ 1 \end{pmatrix}
+  \lambda_i
+  \begin{pmatrix} u_i \\ v_i \\ 1 \end{pmatrix}
+  = \underbrace{K_i\,[R_i \mid \mathbf{t}_i]}_{P_i}\;\tilde{\mathbf{X}},
+  \label{eq:projection}
 \end{equation}
+où $P_i$ est la \emph{matrice de projection} $3 \times 4$ (intrinsèques $K_i$
+composés avec la pose $[R_i \mid \mathbf{t}_i]$ de la caméra, déduite de la
+calibration hand-eye) et $\lambda_i$ un facteur d'échelle inconnu, égal à la
+profondeur du point devant la caméra.
 
-Pour deux caméras, ce système de 4 équations linéaires en 3 inconnues est
-résolu au sens des moindres carrés. Les coordonnées image sont préalablement
-\textit{déformées-inverse} via \texttt{cv2.undistortPoints} pour compenser la
-distorsion radiale et tangentielle.
+\paragraph{Élimination du facteur d'échelle et système linéaire.} Le scalaire
+$\lambda_i$ gêne ; on l'élimine par un produit vectoriel. Puisque
+$\lambda_i \mathbf{x}_i = P_i \tilde{\mathbf{X}}$, les vecteurs $\mathbf{x}_i$
+(coordonnées homogènes du pixel) et $P_i \tilde{\mathbf{X}}$ sont colinéaires,
+donc leur produit vectoriel est nul :
+\begin{equation}
+  \mathbf{x}_i \times \bigl(P_i\,\tilde{\mathbf{X}}\bigr) = \mathbf{0}.
+  \label{eq:cross_zero}
+\end{equation}
+En notant $\mathbf{p}_i^{(1)}, \mathbf{p}_i^{(2)}, \mathbf{p}_i^{(3)}$ les trois
+lignes de $P_i$, l'équation~\eqref{eq:cross_zero} fournit (deux lignes
+indépendantes par caméra) :
+\begin{equation}
+  \begin{aligned}
+    u_i\,\mathbf{p}_i^{(3)\top}\tilde{\mathbf{X}}
+      - \mathbf{p}_i^{(1)\top}\tilde{\mathbf{X}} &= 0,\\
+    v_i\,\mathbf{p}_i^{(3)\top}\tilde{\mathbf{X}}
+      - \mathbf{p}_i^{(2)\top}\tilde{\mathbf{X}} &= 0.
+  \end{aligned}
+  \label{eq:dlt_rows}
+\end{equation}
+Avec deux caméras, on empile ces relations en un système homogène
+$A\,\tilde{\mathbf{X}} = \mathbf{0}$, où $A$ est $4 \times 4$. C'est la
+\textbf{transformation linéaire directe} (DLT). En présence de bruit, le système
+n'a pas de solution exacte ; on prend $\tilde{\mathbf{X}}$ comme le vecteur
+singulier de $A$ associé à la plus petite valeur singulière (solution des
+moindres carrés sous contrainte de norme unité, via SVD). C'est la méthode de
+référence de Hartley \& Zisserman~\cite[chap.~12]{hartley_multiple_2018}, et
+c'est ce que calcule \texttt{cv2.triangulatePoints}. Les pixels sont
+préalablement \emph{dédistordus} via \texttt{cv2.undistortPoints} pour que
+l'hypothèse de projection linéaire~\eqref{eq:projection} soit valide.
 
-\paragraph{Validation synthétique.} Le module
-\texttt{src/perception/pose\_estimator.py} contient un self-test qui projette
-20 points 3D aléatoires dans deux caméras synthétiques, triangule, et mesure
-l'erreur. Résultat : \textbf{erreur maximale sub-micrométrique
-(\textless 0.0001 mm)}. La triangulation elle-même est exacte ; toute erreur
-observée en pratique vient de la calibration ($K$, $T_{\text{base}}^{\text{cam}}$)
-ou de la détection 2D.
+\paragraph{Validation synthétique : la triangulation n'est pas le maillon
+faible.} Pour vérifier que l'implémentation est correcte, le self-test de
+\texttt{pose\_estimator.py} projette 20 points 3D aléatoires dans deux caméras
+synthétiques, les triangule, et compare au point d'origine. L'erreur maximale
+est \textbf{sub-micrométrique} ($< 0{,}0001$~mm) : la triangulation elle-même
+est exacte. Conséquence importante pour la suite : toute erreur observée
+\emph{en pratique} provient nécessairement soit de la calibration
+($K_i$, $T_{\text{base}}^{\text{cam}_i}$), soit de l'imprécision du centre 2D
+détecté --- jamais de l'algorithme. Cela oriente l'analyse vers la question
+suivante : comment l'erreur de détection se propage-t-elle sur la position 3D ?
 
 \subsection{Sensibilité de la profondeur à l'erreur de détection}
 \label{sec:depth_sensitivity}
 
-La validation synthétique montre que la triangulation est mathématiquement
-exacte. En pratique, l'erreur dominante provient de l'incertitude sur le
-\textbf{centre 2D détecté}, et elle ne se répartit \emph{pas} également sur les
-trois axes : la \textbf{profondeur} ($Z$, distance caméra--objet) est
-structurellement l'axe le plus fragile. Le démontrer est essentiel, car cela
-conditionne la stratégie de saisie (chapitre~\ref{ch:planning}).
+La validation précédente garantit la triangulation exacte ; en pratique,
+l'erreur dominante vient de l'incertitude sur le \textbf{centre 2D détecté}, et
+elle ne se répartit \emph{pas} également sur les trois axes. La
+\textbf{profondeur} ($Z$, distance caméra--objet) est structurellement l'axe le
+plus fragile. Le démontrer n'est pas un exercice gratuit : c'est ce qui
+justifiera, au chapitre~\ref{ch:planning}, de ne pas ancrer la profondeur de
+saisie sur le $Z$ stéréo.
 
-\paragraph{Relation profondeur--disparité.} Pour une paire stéréo rectifiée de
-focale $f$ (en pixels) et de \textit{baseline} $b$ (écartement des centres
-optiques), un point à la profondeur $Z$ se projette dans les deux images avec
-un décalage horizontal --- la \textbf{disparité} $d$ --- donné par similitude
-de triangles :
+\paragraph{Relation profondeur--disparité.} Pour une paire stéréo de focale $f$
+(en pixels) et de \textit{baseline} $b$ (écartement des centres optiques), un
+point à la profondeur $Z$ se projette dans les deux images avec un décalage
+horizontal --- la \textbf{disparité} $d$. La relation se lit directement sur une
+similitude de triangles entre les deux rayons et la baseline :
 \begin{equation}
   d = \frac{f\,b}{Z}
   \qquad\Longleftrightarrow\qquad
@@ -272,17 +451,19 @@ de triangles :
   \label{eq:disparity}
 \end{equation}
 La profondeur est l'\emph{inverse} de la disparité : un objet proche se décale
-beaucoup d'une vue à l'autre, un objet lointain à peine.
+beaucoup d'une vue à l'autre, un objet lointain à peine. C'est déjà le signe que
+les grandes profondeurs seront mal résolues.
 
 \paragraph{Propagation de l'erreur.} La disparité est mesurée à partir des
-centres détectés, entachés d'une incertitude $\delta d$ (pixels). En
-différenciant l'équation~\eqref{eq:disparity} :
+centres détectés, entachés d'une incertitude $\delta d$ (en pixels). En
+différenciant l'équation~\eqref{eq:disparity} par rapport à $d$,
 \begin{equation}
-  \delta Z = \frac{f\,b}{d^{2}}\,\delta d
+  \delta Z = \left|\frac{\mathrm{d}Z}{\mathrm{d}d}\right|\,\delta d
+           = \frac{f\,b}{d^{2}}\,\delta d
            = \frac{Z^{2}}{f\,b}\,\delta d,
   \label{eq:depth_error}
 \end{equation}
-où l'on a substitué $d = f b / Z$. Trois enseignements :
+la dernière égalité substituant $d = f b / Z$. Trois enseignements :
 \begin{itemize}
   \item $\delta Z \propto Z^{2}$ : l'erreur croît avec le \textbf{carré} de la
         distance --- deux fois plus loin, quatre fois plus d'erreur ;
@@ -293,8 +474,9 @@ où l'on a substitué $d = f b / Z$. Trois enseignements :
 \end{itemize}
 À l'inverse, l'erreur \emph{latérale} suit $X \approx (u - c_x)\,Z/f$, donc
 $\delta X \approx (Z/f)\,\delta u$ : elle ne croît que \textbf{linéairement}
-avec $Z$. C'est pourquoi un même tremblement de quelques pixels du centroïde
-dégrade fortement $Z$ tout en laissant $X$ et $Y$ quasi stables.
+avec $Z$. C'est la raison de fond pour laquelle un même tremblement de quelques
+pixels du centroïde dégrade fortement $Z$ tout en laissant $X$ et $Y$ quasi
+stables.
 
 \paragraph{Application au banc.} Avec la calibration stéréo de ce poste
 ($f \approx 1226$~px, $b = 103{,}35$~mm) et un objet à $Z \approx 40$--$50$~cm,
@@ -311,99 +493,215 @@ $\delta d$ (disparité) & $\delta Z$ à 40~cm & $\delta Z$ à 50~cm \\
 \end{tabular}
 \end{center}
 
-Un masque HSV partiel (sous éclairage non contrôlé) déplace facilement le
-centroïde de 5 à 10~px, soit \textbf{6 à 20~mm d'erreur sur $Z$} --- ordre de
-grandeur confirmé expérimentalement, la profondeur estimée d'un même objet
-variant de plusieurs millimètres entre essais. La cause n'est pas un défaut
-logiciel mais la \textbf{géométrie du banc} : baseline courte (103~mm, les deux
-caméras étant contraintes côte à côte sur la barrière avant) et objet
+Un centre détecté qui se déplace de 5 à 10~px --- chose courante quand un masque
+HSV est partiel ou qu'une bbox respire d'une frame à l'autre --- entraîne
+\textbf{6 à 20~mm d'erreur sur $Z$}, ordre de grandeur confirmé
+expérimentalement (la profondeur d'un même objet variant de plusieurs
+millimètres entre essais). La cause n'est pas un défaut logiciel mais la
+\textbf{géométrie du banc} : une baseline courte ($\sim$103~mm, les deux caméras
+étant contraintes côte à côte sur la barrière avant) combinée à un objet
 relativement lointain.
 
 \paragraph{Conséquence sur la stratégie de saisie.} Plutôt que de faire
 confiance au $Z$ absolu de la stéréo pour la profondeur de descente, on
 \textbf{ancre} celle-ci sur une référence fiable : le plan de la table
-($Z = 0$ dans le repère base, le \texttt{base\_link} étant au niveau de la
+($Z = 0$ dans le repère base, le \texttt{base\_link} reposant au niveau de la
 table), sur lequel tout objet repose. La hauteur de prise est alors dérivée de
-ce plan plus une estimation grossière de la hauteur de l'objet, ce qui borne le
+ce plan augmenté d'une estimation de la hauteur de l'objet, ce qui borne le
 résultat (jamais sous la table) et le rend robuste au bruit de profondeur. Ce
-choix est détaillé au chapitre~\ref{ch:planning}.
+choix est développé au chapitre~\ref{ch:planning}. Il rend d'autant plus
+critique l'\emph{estimation de hauteur} de l'objet, abordée en
+section~\ref{sec:perc_3d} ci-après --- raison pour laquelle nous lui consacrons
+un traitement dédié.
 
 \subsection{PnP monoculaire (fallback)}
 
-Si l'objet n'est vu que par une seule caméra (occlusion), le
-\texttt{PoseEstimator} tente une estimation par PnP monoculaire via
-\texttt{cv2.solvePnP} (flag \texttt{SOLVEPNP\_IPPE\_SQUARE} pour les objets
-planaires à 4 coins). La taille métrique de l'objet est fournie par
-\texttt{ObjectSpec.meta} (calibrée manuellement).
+Si l'objet n'est vu que par une seule caméra (occlusion partielle), la
+triangulation est impossible et le \texttt{PoseEstimator} se rabat sur une
+estimation \emph{Perspective-n-Point}. Connaissant la taille métrique réelle de
+l'objet (fournie par \texttt{ObjectSpec.meta}) et un modèle 3D simple de sa face
+(carré, rectangle), \texttt{cv2.solvePnP} résout la pose qui aligne les coins
+3D du modèle sur leurs projetés 2D. Le flag \texttt{SOLVEPNP\_IPPE\_SQUARE} est
+utilisé pour les cibles planaires à 4 coins ; le solveur sous-jacent est
+EPnP~\cite{lepetit_epnp_2009}.
 
-\paragraph{Limite connue.} Pour 4 points coplanaires alignés avec le plan
-image, l'algorithme IPPE peut sélectionner la branche \textit{flippée} de
-l'ambiguïté planaire~\cite[][\textit{Planar case}]{}. En pratique, le PnP
-monoculaire est utilisé uniquement comme \textit{fallback} ; la validation
-expérimentale repose sur la triangulation stéréo.
+\paragraph{Limite connue.} Pour quatre points coplanaires presque parallèles au
+plan image, le problème PnP planaire admet \emph{deux} poses solutions ; IPPE
+peut alors sélectionner la branche \textit{flippée}. Cette ambiguïté est
+documentée par~\cite{lepetit_epnp_2009}. En pratique, le PnP monoculaire ne sert
+que de \textit{fallback} : la validation expérimentale repose sur la
+triangulation stéréo, plus robuste.
+
+\subsection{Estimation de la géométrie de l'objet}
+
+La position du centre ne suffit pas à saisir : il faut savoir \emph{quelle
+hauteur} a l'objet (pour la profondeur de descente), \emph{comment} il est posé
+(debout, couché) et \emph{selon quel axe} orienter la pince. Ces trois
+informations sont calculées dans \texttt{\_estimate\_geometry}, et chacune a dû
+corriger une approche naïve initiale.
+
+\paragraph{(1) Hauteur par triangulation du sommet.} La première approche
+estimait la hauteur par un \emph{proxy pixel} : taille verticale de la bbox
+multipliée par la profondeur sur la focale. Cette estimation
+\emph{surestimait} dès que l'objet pointait vers les caméras, la bbox mêlant
+alors longueur et hauteur --- un cylindre de 30~mm couché en $Y$ était par
+exemple estimé à 53~mm. La correction est géométrique : on \textbf{triangule le
+sommet}. Le point haut-centre de la bbox correspond approximativement au même
+point physique (le sommet de l'objet) dans les deux vues, dont les caméras ont
+une élévation voisine ; trianguler ce point haut-centre des deux bboxes donne
+directement la coordonnée $Z$ du sommet, donc la hauteur réelle (le plan de
+table étant à $Z = 0$). Le self-test confirme cette hauteur à mieux que 2~mm
+sur une configuration de caméras obliques réaliste. Un garde-fou complète la
+mesure : un objet posé \emph{stablement} repose sur sa plus grande face, donc sa
+hauteur ne peut dépasser la largeur courte de son empreinte ; on plafonne en
+conséquence (\texttt{borne\_empreinte}) le cas résiduel où le sommet
+surestimerait encore.
+
+\paragraph{(2) Classe de pose (debout / couché / compact).} À partir de la
+hauteur triangulée et de la largeur d'empreinte horizontale (extent horizontal
+de la bbox, peu pollué par la hauteur), on classe la pose. Un objet
+nettement plus haut que large d'empreinte (\texttt{hauteur} $> 1{,}6 \times$
+largeur) est jugé \texttt{debout} : son empreinte vue du dessus est
+quasi-circulaire, donc l'orientation de la pince autour de la verticale (le
+\texttt{wrist\_roll}) est \emph{libre}. Un objet franchement allongé et plat est
+\texttt{couché}, et possède un grand axe qui contraint l'orientation de prise ;
+les cas intermédiaires sont \texttt{compact}. Cette classe pilotera le choix de
+yaw au chapitre~\ref{ch:planning}.
+
+\paragraph{(3) Orientation du grand axe, en repère base.} La V1 estimait
+l'orientation par l'angle du contour \emph{dans le plan image}, donc dépendant
+de l'orientation de la caméra : un objet posé en biais donnait un angle faux. La
+correction projette le contour dans le \emph{monde}. Pour chaque point du
+contour (à défaut, les coins de la bbox), on dédistord le pixel, on remonte le
+rayon optique correspondant dans le repère base, puis on l'intersecte avec le
+plan horizontal de l'objet (à mi-hauteur) :
+\begin{equation}
+  \mathbf{P} = \mathbf{o} + s\,\mathbf{r},
+  \qquad
+  s = \frac{z_{\text{plan}} - o_z}{r_z},
+  \label{eq:ray_plane}
+\end{equation}
+où $\mathbf{o}$ est le centre optique et $\mathbf{r}$ la direction du rayon, tous
+deux en repère base. On obtient ainsi l'\emph{empreinte} de l'objet projetée au
+sol, indépendante de l'orientation de la caméra. Une \textbf{analyse en
+composantes principales 2D} de ce nuage de points $XY$ donne alors le grand axe
+(donc le \emph{yaw} de l'objet en repère base) et l'\emph{élongation} (rapport
+des extensions principales). L'orientation n'est retenue (\texttt{yaw\_base})
+que si l'empreinte est franchement allongée (élongation $> 1{,}25$ et écart
+absolu $> 12$~mm) ; sinon le yaw est laissé \emph{libre}, ce qui est correct
+pour un objet rond et prudent quand l'orientation est incertaine. L'estimation
+est raffinée par \texttt{cam\_2} (eye-in-hand), placée presque au-dessus de
+l'objet et donc plus fiable que la stéréo oblique pour juger d'un angle au sol.
+
+\paragraph{(4) Diagnostic d'angle par caméra.} Pour distinguer une
+\emph{perception fausse} d'un \emph{problème de convention} de pince (cf.\ la
+découverte de la convention à $90^\circ$, chapitre~\ref{ch:planning}), le
+yaw vu \emph{par chaque caméra séparément} est calculé et journalisé
+(\texttt{yaw\_cam0\_deg}, \texttt{yaw\_cam1\_deg}). Deux caméras concordantes et
+cohérentes avec l'objet réel signent une perception fiable ; un désaccord ou un
+collage systématique à $\sim$0\textdegree{} pointe une détection à améliorer.
+Ce diagnostic s'est révélé décisif pour isoler les sources d'erreur lors de la
+mise au point de la saisie.
 
 \subsection{Filtres post-estimation}
 
-\paragraph{Erreur de reprojection.} Chaque position 3D estimée est
-reprojetée dans les deux caméras et l'erreur pixel est calculée. Au-delà
-d'un seuil (8 px par défaut), la détection est rejetée. C'est un garde-fou
-standard en photogrammétrie.
+Toute position 3D, qu'elle vienne de la stéréo ou du PnP, passe enfin par une
+batterie de garde-fous avant d'entrer dans la \texttt{Scene} :
+
+\paragraph{Erreur de reprojection.} Chaque position estimée est reprojetée dans
+les deux caméras ; au-delà d'un seuil de 60~px d'erreur moyenne, la détection
+est rejetée. Le seuil a été desserré au fil des essais (25~px théorique, puis
+40~px, puis 60~px) : à 40~px, des détections valides mais à la marge (objet en
+bord de champ) étaient rejetées et faisaient échouer tout le pipeline, alors
+qu'une vraie mauvaise correspondance donne typiquement $> 200$~px. Le seuil à
+60~px reste discriminant tout en laissant passer les détections périphériques.
 
 \paragraph{Zones d'exclusion et bornes workspace.} Le fichier
 \texttt{configs/scene.json} déclare :
 \begin{itemize}
-  \item \textbf{Zones d'exclusion} (décision D9) : cylindre autour de la
-        base robot, box englobant le bras typique. Toute estimation 3D qui
-        tombe dedans est rejetée.
-  \item \textbf{Bornes workspace} : limites $x, y, z$ de la zone utile.
-        Filtre les détections aberrantes sur le fond.
-  \item \textbf{Boîte de dépose} : position fixe pour le placement (utilisée
-        par le module \textit{planning}, chapitre~\ref{ch:planning}).
+  \item \textbf{zones d'exclusion} (décision~D9) : cylindre autour de la base
+        robot, box englobant le bras replié. Toute estimation 3D qui y tombe est
+        rejetée. Un \emph{carve-out} a été ajouté : sous une faible hauteur
+        ($Z < 60$~mm), l'enveloppe du bras n'est pas appliquée, car le bras
+        replié est surélevé tandis qu'un objet réel posé sur la table est bas
+        --- sans ce carve-out, des objets posés devant le robot étaient rejetés
+        à tort.
+  \item \textbf{bornes workspace} : limites $x, y, z$ de la zone utile, qui
+        filtrent les détections aberrantes sur le fond ;
+  \item \textbf{boîte de dépose} : position fixe utilisée par le module
+        \textit{planning} (chapitre~\ref{ch:planning}).
 \end{itemize}
+
+À ce stade, la \texttt{Scene} contient, pour chaque objet, sa position 3D dans
+le repère base, sa hauteur, sa classe de pose et son orientation --- exactement
+ce dont la planification de saisie a besoin. Il reste un détail d'ingénierie
+sans lequel rien de tout cela ne fonctionnerait : faire cohabiter trois caméras
+USB sur une seule machine.
 
 \section{Synchronisation multi-caméras et architecture USB}
 \label{sec:perc_usb}
 
-\paragraph{Décision D10 (codec MJPG).} L'ouverture simultanée des 3 caméras
-USB en résolution 1920$\times$1080 en codec YUYV (non compressé, $\sim$125
-Mo/s par caméra) saturait la bande passante du contrôleur xHCI ($\sim$375
-Mo/s total, proche de la limite USB 3.0). Solution : forcer le codec
-\texttt{MJPG} (Motion-JPEG) qui compresse l'image dans la caméra avant
-l'envoi USB ($\sim$12 Mo/s par caméra), réduisant la bande passante d'un
-facteur $\sim$10.
+La perception suppose trois flux vidéo simultanés. Or trois caméras
+1920$\times$1080 en USB ne cohabitent pas naturellement : deux obstacles
+matériels ont dû être résolus, par tâtonnement plutôt que par calcul a priori.
 
-\paragraph{Décision D12 (architecture USB physique).} Malgré le codec MJPG,
-la 3\textsuperscript{e} caméra (\texttt{cam\_2}) échouait au \texttt{grab()} sur macOS.
-Solution physique : répartir les caméras sur \textbf{deux hubs USB distincts}
-branchés sur deux ports USB-C différents, exploitant les deux contrôleurs
-xHCI indépendants du MacBook M4. Configuration adoptée :
+\paragraph{Décision~D10 (codec MJPG).} L'ouverture simultanée des trois caméras
+en codec YUYV (non compressé, $\sim$125~Mo/s par caméra) saturait la bande
+passante du contrôleur xHCI ($\sim$375~Mo/s, proche de la limite USB~3.0) et
+faisait échouer l'acquisition. La correction consiste à compresser dans la
+caméra avant l'envoi : le codec \texttt{MJPG} (Motion-JPEG) ramène chaque flux à
+$\sim$12~Mo/s, soit un facteur $\sim$10 sur la bande passante. Le problème de
+saturation disparaît.
+
+\paragraph{Décision~D12 (architecture USB physique).} Même en MJPG, la
+troisième caméra (\texttt{cam\_2}) échouait au \texttt{grab()} sur macOS : un
+seul contrôleur xHCI ne suffisait pas à arbitrer les trois flux. La correction
+exploite le matériel : répartir les caméras sur \textbf{deux hubs USB distincts}
+branchés sur deux ports USB-C, donc sur les \emph{deux} contrôleurs xHCI
+indépendants du MacBook M4 :
 \begin{itemize}
-  \item Hub 1 : \texttt{cam\_0} + \texttt{cam\_1} (paire stéréo).
-  \item Hub 2 : \texttt{cam\_2} + microcontrôleur du robot.
+  \item hub~1 : \texttt{cam\_0} + \texttt{cam\_1} (paire stéréo) ;
+  \item hub~2 : \texttt{cam\_2} + microcontrôleur du robot.
 \end{itemize}
+La troisième caméra s'ouvre alors de façon fiable.
 
-\paragraph{Synchronisation logicielle.} Le module \texttt{camera\_io.py}
-utilise la séquence \texttt{grab()} sur les 3 caméras (capture rapide sans
-décodage), puis \texttt{retrieve()} pour le décodage. Le décalage temporel
-entre caméras est ainsi inférieur à 1 frame ($\sim$33 ms à 30 FPS),
-négligeable pour des objets quasi-statiques.
+\paragraph{Synchronisation logicielle.} Pour que la triangulation soit valide,
+les trois images doivent dater du même instant. Le module \texttt{camera\_io.py}
+appelle d'abord \texttt{grab()} sur les trois caméras (capture rapide sans
+décodage), puis \texttt{retrieve()} pour le décodage. Le décalage temporel entre
+caméras reste ainsi inférieur à une frame ($\sim$33~ms à 30~FPS), négligeable
+pour des objets quasi-statiques.
 
 \section{Validation expérimentale}
 \label{sec:perc_validation}
 
-\todoF{À remplir après campagne expérimentale (Sprint 5). Tableau cible :}
+Les sections précédentes ont établi, par les self-tests, que la triangulation
+est exacte et que l'estimation de hauteur et d'orientation se comporte
+correctement sur des cas synthétiques. Reste à les confronter à des mesures
+\emph{réelles} : poser des objets à des positions mesurées au pied à coulisse
+(\emph{ground truth} en mm), lancer \texttt{scripts/check\_perception.py}, et
+mesurer l'erreur euclidienne par objet, en comparant les deux détecteurs. Cette
+campagne formelle n'a pas encore été conduite ; le tableau ci-dessous en fixe la
+structure cible.
+
+\todoF{À remplir après la campagne expérimentale formelle (script
+\texttt{check\_perception.py} sur N positions mesurées). Aucune valeur ne doit
+être renseignée avant exécution réelle.}
 
 \begin{center}
 \begin{tabular}{lcccc}
 \toprule
 Détecteur & Détections OK & Erreur 3D moyenne & Faux positifs & FPS \\
 \midrule
-HSV V1 & \texttt{??/9} & \texttt{?? mm} & \texttt{??\%} & \texttt{?? FPS} \\
-OWL-ViTv2 V2 & \texttt{??/9} & \texttt{?? mm} & \texttt{??\%} & \texttt{?? FPS} \\
+HSV V1 & \texttt{??/N} & \texttt{?? mm} & \texttt{??\%} & \texttt{?? FPS} \\
+OWL-ViTv2 V2 & \texttt{??/N} & \texttt{?? mm} & \texttt{??\%} & \texttt{?? FPS} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Procédure : poser un objet à une position mesurée au pied à coulisse (ground
-truth en mm), lancer \texttt{scripts/check\_perception.py}, mesurer l'erreur
-euclidienne par objet, répéter sur N positions différentes.
+La perception fournit donc, à ce stade, une position 3D fiable de l'objet dans
+le repère base, sa hauteur, sa classe de pose et son orientation. Maintenant que
+le robot sait \emph{où} et \emph{comment} l'objet est posé, la question devient~:
+quelle pose de pince adopter pour le saisir sans collision, et quelle
+trajectoire articulaire y mener ? C'est l'objet du chapitre suivant, consacré à
+la planification de saisie et de mouvement.
