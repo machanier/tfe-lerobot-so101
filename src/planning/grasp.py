@@ -186,6 +186,30 @@ def _extent_along(bbox_3d_m: tuple, direction: np.ndarray) -> float:
     return float(abs(d[0]) * dx + abs(d[1]) * dy + abs(d[2]) * dz)
 
 
+def _grasp_depth_z(obj, z_detected: float, table_z: float, grasp_offset: float,
+                   stack_detect_m: float, min_clearance: float) -> float:
+    """Profondeur (Z) du centre de prise : ancrage table CONSCIENT de l'empilement.
+
+    - Pas de bbox 3D -> fallback = Z detecte + offset.
+    - Objet POSE SUR LA TABLE (base estimee ~ table) -> table + hauteur/2 : plus
+      robuste au bruit du Z stereo (cf memoire), car la base est connue (=table).
+    - Objet POSE SUR UN AUTRE OBJET (base nettement au-dessus de la table) ->
+      l'ancrage table viserait le SUPPORT (trop bas) ; on fait alors confiance au
+      CENTROIDE 3D detecte. base estimee = centroide_Z - hauteur/2.
+    Garde-fou : jamais sous table + min_clearance.
+    """
+    if obj.bbox_3d_m is None:
+        z_grasp = z_detected + grasp_offset
+    else:
+        h = float(obj.bbox_3d_m[2])
+        base_detected = z_detected - h / 2.0          # bas estime de l'objet
+        if base_detected > table_z + stack_detect_m:  # objet SURELEVE (empile)
+            z_grasp = z_detected                      # -> centroide detecte
+        else:                                         # objet SUR LA TABLE
+            z_grasp = table_z + h / 2.0               # -> ancrage table (robuste)
+    return max(z_grasp, table_z + min_clearance)
+
+
 def _se3(R: np.ndarray, t: np.ndarray) -> np.ndarray:
     T = np.eye(4)
     T[:3, :3] = R
@@ -341,6 +365,12 @@ class TopDownGrasp(GraspStrategy):
                  # --- D-Z : ancrage de la profondeur de prise sur la table ---
                  table_z_m: float = 0.0,                 # plan table (repere base)
                  min_grasp_clearance_m: float = 0.005,   # ne jamais saisir sous +5mm
+                 # Seuil de detection d'EMPILEMENT : si la base estimee de l'objet
+                 # (centroide - hauteur/2) depasse table + ce seuil, l'objet repose
+                 # sur AUTRE CHOSE -> on vise le centroide detecte plutot que
+                 # table+H/2 (qui viserait le support). 15mm = tolerance au bruit
+                 # du Z stereo sur un objet pose a plat sur la table.
+                 stack_detect_m: float = 0.015,
                  ):
         self.approach_height_m = approach_height_m
         self.grasp_offset_m = grasp_offset_m
@@ -358,6 +388,7 @@ class TopDownGrasp(GraspStrategy):
         self.gripper_max_opening_mm = gripper_max_opening_mm
         self.table_z_m = table_z_m
         self.min_grasp_clearance_m = min_grasp_clearance_m
+        self.stack_detect_m = stack_detect_m
 
     @property
     def name(self) -> str:
@@ -431,20 +462,15 @@ class TopDownGrasp(GraspStrategy):
         grasp_xy = np.array([x, y, 0.0]) + np.array([offset_base[0], offset_base[1], 0.0])
         gx, gy = float(grasp_xy[0]), float(grasp_xy[1])
 
-        # === D-Z : profondeur de prise ANCREE SUR LA TABLE ===
-        # Le Z stereo est l'axe le plus bruite (cf memoire, "sensibilite de la
-        # profondeur a l'erreur de detection") : il peut tomber sous la table
-        # -> la pince force dans le sol. Comme l'objet REPOSE sur la table
-        # (Z=0, base_link au niveau de la table), on derive la profondeur de
-        # prise du plan table + la moitie de la hauteur estimee (= milieu de
-        # l'objet en hauteur), au lieu du Z detecte. Garde-fou : jamais sous
-        # la table + une marge.
-        if obj.bbox_3d_m is not None:
-            obj_height_m = float(obj.bbox_3d_m[2])
-            z_grasp = self.table_z_m + obj_height_m / 2.0    # milieu en hauteur
-        else:
-            z_grasp = z + self.grasp_offset_m                # fallback : Z detecte
-        z_grasp = max(z_grasp, self.table_z_m + self.min_grasp_clearance_m)
+        # === D-Z : profondeur de prise (ancrage table, conscient de l'EMPILEMENT) ===
+        # Pour un objet POSE SUR LA TABLE, le Z stereo est bruite (cf memoire) ->
+        # on derive la profondeur de table + hauteur/2 (milieu de l'objet), plus
+        # robuste au bruit. MAIS si l'objet repose SUR UN AUTRE OBJET (base au-
+        # dessus de la table), cet ancrage table viserait trop BAS (au niveau du
+        # support) -> on detecte ce cas (base = centroide - hauteur/2 nettement
+        # au-dessus de la table) et on fait alors confiance au CENTROIDE detecte.
+        z_grasp = _grasp_depth_z(obj, z, self.table_z_m, self.grasp_offset_m,
+                                 self.stack_detect_m, self.min_grasp_clearance_m)
 
         # 3 poses : approach, grasp, retract (meme (gx, gy), Z relatif au grasp)
         T_approach = _se3(R, [gx, gy, z_grasp + self.approach_height_m])
@@ -553,16 +579,18 @@ class AdaptiveGrasp(GraspStrategy):
                  gripper_max_opening_mm: float = 150.0,
                  table_z_m: float = 0.0,
                  min_grasp_clearance_m: float = 0.005,
+                 # Seuil de detection d'EMPILEMENT (cf TopDownGrasp.stack_detect_m).
+                 stack_detect_m: float = 0.015,
                  # DEGAGEMENT TABLE pour une prise INCLINEE : a l'horizontale
                  # (theta=+/-90) les machoires sont a mi-hauteur de l'objet et il
-                 # faut que le bas de la pince degage la table. Hauteur de prise
+                 # faut que le BAS de la pince degage la table. Hauteur de prise
                  # mini requise = min_grasp_clearance + |sin(theta)| * ce terme.
-                 # ~20mm = demi-empreinte verticale de la pince a l'horizontale.
-                 # ⚠️ PROVISOIRE : valeur physique conservatrice NON MESUREE (le
-                 # modele de collision exact par maillage est hors scope v1) -> a
-                 # mesurer/affiner en campagne (--side-grasp-min-height). A theta=0
-                 # ce terme est nul -> le top-down n'est JAMAIS contraint (comme avant).
-                 side_grasp_min_height_m: float = 0.020,
+                 # 25mm = hauteur du doigt a sa BASE (mesure Maxence : doigt 10mm a
+                 # la pointe, 25mm a la fixation 3d) -> au plus bas la pince occupe
+                 # ~25mm sous la ligne de prise a l'horizontale. Reglable
+                 # (--side-grasp-min-height). A theta=0 ce terme est nul -> le
+                 # top-down n'est JAMAIS contraint par ce filtre (comme avant).
+                 side_grasp_min_height_m: float = 0.025,
                  # Roll (rad-via-deg) applique aux prises INCLINEES autour de l'axe
                  # d'approche pour la convention pince. None = reutilise yaw_offset_deg
                  # (mesure en TOP-DOWN). ⚠️ Le SIGNE n'est PAS valide en incline ;
@@ -587,11 +615,13 @@ class AdaptiveGrasp(GraspStrategy):
         self.gripper_max_opening_mm = gripper_max_opening_mm
         self.table_z_m = table_z_m
         self.min_grasp_clearance_m = min_grasp_clearance_m
+        self.stack_detect_m = stack_detect_m
         self.side_grasp_min_height_m = side_grasp_min_height_m
         self.tilted_roll_deg = tilted_roll_deg
         # Le candidat theta=0 DELEGUE a TopDownGrasp (memes parametres) : le
         # comportement top-down reste IDENTIQUE bit-pour-bit (aucune regression).
         self._top_down = TopDownGrasp(
+            stack_detect_m=stack_detect_m,
             approach_height_m=approach_height_m,
             grasp_offset_m=grasp_offset_m,
             retract_height_m=retract_height_m,
@@ -645,8 +675,10 @@ class AdaptiveGrasp(GraspStrategy):
         phi = float(np.arctan2(y, x))
         th = np.radians(float(theta_deg))
         obj_h = float(obj.bbox_3d_m[2])
-        z_center = max(self.table_z_m + obj_h / 2.0,
-                       self.table_z_m + self.min_grasp_clearance_m)
+        # profondeur de prise : ancrage table CONSCIENT de l'empilement (si l'objet
+        # repose sur un autre, on vise le centroide detecte, pas table+H/2).
+        z_center = _grasp_depth_z(obj, z, self.table_z_m, self.grasp_offset_m,
+                                  self.stack_detect_m, self.min_grasp_clearance_m)
 
         # --- filtre DEGAGEMENT TABLE : a l'horizontale (|theta|->90) il faut une
         #     hauteur de prise suffisante pour que le bas de la pince degage la
@@ -949,5 +981,18 @@ if __name__ == "__main__":
     assert abs(np.degrees(g_ovr.meta["roll_rad"]) - (-90.0)) < 1e-6
     assert abs(g_def.meta["jaw_width_mm"] - g_ovr.meta["jaw_width_mm"]) < 1e-6
     print("  [OK] tilted_roll_deg : roll incline reglable, largeur serree inchangee")
+
+    # 14. Ancrage de profondeur CONSCIENT de l'empilement (_grasp_depth_z) :
+    #     objet SUR LA TABLE -> table + H/2 (robuste) ; objet SUR UN AUTRE OBJET
+    #     -> centroide detecte (sinon on viserait le support = grasp trop bas).
+    obj_tbl = ObjectInstance(label="t", position_base_m=np.array([0.2, 0, 0.05]),
+                             bbox_3d_m=(0.03, 0.03, 0.10))
+    z_tbl = _grasp_depth_z(obj_tbl, 0.05, 0.0, 0.0, 0.015, 0.005)  # base=0 -> table
+    assert abs(z_tbl - 0.05) < 1e-9, f"objet sur table -> table+H/2, recu {z_tbl}"
+    obj_stk = ObjectInstance(label="s", position_base_m=np.array([0.2, 0, 0.076]),
+                             bbox_3d_m=(0.03, 0.03, 0.10))
+    z_stk = _grasp_depth_z(obj_stk, 0.076, 0.0, 0.0, 0.015, 0.005)  # base=26mm -> empile
+    assert abs(z_stk - 0.076) < 1e-9, f"objet empile -> centroide detecte, recu {z_stk}"
+    print("  [OK] _grasp_depth_z : table vs empile (anti grasp trop bas)")
 
     print("Tous les tests passent.")
