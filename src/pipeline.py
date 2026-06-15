@@ -519,11 +519,9 @@ class PickAndPlacePipeline:
         c = self.config
         TRANS_OK_MM, ROT_OK_DEG = c.ik_tol_trans_mm, c.ik_tol_rot_deg
         APP_OK_MM = c.ik_tol_approach_mm
-        print(f">> Saisie adaptative : {len(cands)} candidat(s) d'angle "
-              f"(ordre de preference), choix par atteignabilite IK :")
-        chosen = None
-        # repli : (tuple, grasp_trans, grasp_rot, app_trans) du moins mauvais
-        best_fallback = None
+        print(f">> Saisie adaptative : {len(cands)} candidat(s) d'angle, choix par "
+              f"atteignabilite IK (top-down si possible, sinon le plus frontal) :")
+        results = []  # (gp, r_app, r_grp, r_ret, reachable)
         for gp in cands:
             if gp.meta.get("yaw_free"):
                 r_app, r_grp, r_ret = self._ik.solve_grasp_pose_free_yaw(
@@ -532,41 +530,42 @@ class PickAndPlacePipeline:
                 r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
                     gp, q_init=q_current)
             # Atteignabilite = RESIDUS sous seuil (et non le flag `converged`,
-            # trop strict : sur ce bras 5 DDL il reste souvent False meme a ~1mm,
-            # cf approach/retract). On exige que la pose GRASP (position +
-            # orientation) ET la pose APPROACH (position) soient atteintes :
-            # une prise frontale peut avoir un grasp atteignable mais un approach
-            # recule de 8cm HORS workspace -> il faut le detecter ici, pas a
-            # l'execution. cf reachability-aware grasping.
+            # trop strict en 5 DDL). On exige que la pose GRASP (position +
+            # orientation) ET la pose APPROACH (position) soient atteintes : une
+            # frontale peut avoir un grasp OK mais un approach recule de 8cm HORS
+            # workspace -> a detecter ici. cf reachability-aware grasping.
             reachable = (r_grp.translation_err_mm <= TRANS_OK_MM
                          and r_grp.rotation_err_deg <= ROT_OK_DEG
                          and r_app.translation_err_mm <= APP_OK_MM)
-            if reachable and chosen is None:
-                tag = "RETENU"
-            elif reachable:
-                tag = "atteignable"
-            else:
-                tag = "rejete (IK)"
             print(f"   theta={gp.meta['pitch_deg']:+5.0f}deg  "
                   f"roll={np.degrees(gp.meta.get('roll_rad', 0.0)):+4.0f}deg  "
                   f"machoires={gp.meta['jaw_width_mm']:4.0f}mm  "
                   f"ouv={gp.gripper_open_pct:3.0f}%  "
                   f"IK: grasp {r_grp.translation_err_mm:4.1f}mm/"
                   f"{r_grp.rotation_err_deg:4.1f}deg  "
-                  f"app {r_app.translation_err_mm:4.1f}mm  [{tag}]")
-            if reachable and chosen is None:
-                chosen = (gp, r_app, r_grp, r_ret)  # 1er faisable = retenu
-            cand = (gp, r_app, r_grp, r_ret)
-            if best_fallback is None or r_grp.translation_err_mm < best_fallback[1]:
-                best_fallback = (cand, r_grp.translation_err_mm,
-                                 r_grp.rotation_err_deg, r_app.translation_err_mm)
+                  f"app {r_app.translation_err_mm:4.1f}mm  "
+                  f"[{'atteignable' if reachable else 'rejete (IK)'}]")
+            results.append((gp, r_app, r_grp, r_ret, reachable))
 
-        if chosen is None:
-            cand, ftrans, frot, fapp = best_fallback
-            gp = cand[0]
-            # BORNE DURE : ne PAS executer une pose desesperee (le bras 5 DDL
-            # forcerait/buterait et gaspillerait une tentative). Au-dela des
-            # bornes -> on declare l'echec proprement (comme objet trop haut).
+        reachable_list = [r for r in results if r[4]]
+        if reachable_list:
+            # CHOIX PARMI LES ATTEIGNABLES (pas "le 1er de la liste", demande de
+            # Maxence) : top-down (0) PRIORITAIRE s'il est atteignable (sur,
+            # eprouve, pas de collision) ; sinon le PLUS FRONTAL (theta max) -> pour
+            # un objet debout, une prise quasi-horizontale grippe la section
+            # transversale (cercle) = plus stable qu'une diagonale.
+            top_down = [r for r in reachable_list
+                        if abs(r[0].meta["pitch_deg"]) < 1e-6]
+            best = (top_down[0] if top_down
+                    else max(reachable_list, key=lambda r: r[0].meta["pitch_deg"]))
+            chosen = best[:4]
+        else:
+            # repli : le moins mauvais (residu grasp), borne dure sinon echec propre.
+            best = min(results, key=lambda r: r[2].translation_err_mm)
+            gp, r_app, r_grp, r_ret, _ = best
+            ftrans = r_grp.translation_err_mm
+            frot = r_grp.rotation_err_deg
+            fapp = r_app.translation_err_mm
             if (ftrans > c.grasp_fallback_max_trans_mm
                     or frot > c.grasp_fallback_max_rot_deg
                     or fapp > c.grasp_fallback_max_trans_mm):
@@ -580,7 +579,7 @@ class PickAndPlacePipeline:
             print(f"   [WARN] aucun candidat pleinement atteignable -> repli sur le "
                   f"moins mauvais DANS LES BORNES (theta={gp.meta['pitch_deg']:+.0f}deg, "
                   f"grasp {ftrans:.1f}mm, app {fapp:.1f}mm). A surveiller a l'essai.")
-            chosen = cand
+            chosen = (gp, r_app, r_grp, r_ret)
 
         gp, r_app, r_grp, r_ret = chosen
         print(f">> Prise retenue : {gp.meta['strategy']} "
