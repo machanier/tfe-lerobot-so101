@@ -744,4 +744,39 @@ if __name__ == "__main__":
     print(f"  [OK] solve_grasp_pose : FK(solution) == matrices persistees")
     print()
 
+    # ========================================================
+    # Test 7 : AdaptiveGrasp — l'IK resout des poses INCLINEES (pas seulement
+    # top-down) et le contrat de persistance d'orientation tient aussi hors
+    # top-down. Illustre l'atteignabilite angle x distance d'un bras 5 DDL :
+    # un objet trop HAUT pour le top-down reste saisissable de biais/de face.
+    # ========================================================
+    from src.planning.grasp import AdaptiveGrasp
+    obj_tall = ObjectInstance(label="bouteille",
+                              position_base_m=np.array([0.20, 0.0, 0.09]),
+                              bbox_3d_m=(0.04, 0.04, 0.18))
+    cands = AdaptiveGrasp().plan_candidates(obj_tall)
+    pitches = [c.meta["pitch_deg"] for c in cands]
+    assert 0.0 not in pitches, "objet 18cm : le top-down doit etre exclu (trop haut)"
+    print(f"  Test 7 objet haut (18cm) a 20cm : candidats inclines {pitches}")
+    best = None  # (gp, rg)
+    for gp in cands:
+        _ra, rg, _rr = solver.solve_grasp_pose(gp, q_init={j: 0.0 for j in ARM_JOINTS})
+        print(f"    theta={gp.meta['pitch_deg']:+5.0f}deg : converged={rg.converged}, "
+              f"err {rg.translation_err_mm:.1f} mm / {rg.rotation_err_deg:.1f} deg")
+        if best is None or rg.translation_err_mm < best[1].translation_err_mm:
+            best = (gp, rg)
+    gp_b, rg_b = best
+    assert rg_b.translation_err_mm < 20.0, \
+        f"aucune prise inclinee atteignable de pres ? best={rg_b.translation_err_mm:.1f} mm"
+    # contrat de persistance d'orientation sur la meilleure prise INCLINEE
+    T_fk = solver.chain.fk(rg_b.joint_angles_rad)
+    d_mm = float(np.linalg.norm(T_fk[:3, 3] - gp_b.T_base_gripper_grasp[:3, 3]) * 1000)
+    R_err7 = T_fk[:3, :3].T @ gp_b.T_base_gripper_grasp[:3, :3]
+    ang7 = float(np.degrees(np.linalg.norm(cv2.Rodrigues(R_err7)[0])))
+    assert d_mm < 15.0 and ang7 < 15.0, \
+        f"contrat persistance (prise inclinee) viole : {d_mm:.1f} mm / {ang7:.1f} deg"
+    print(f"  [OK] AdaptiveGrasp : poses inclinees resolues par l'IK "
+          f"(meilleure theta={gp_b.meta['pitch_deg']:+.0f}deg), contrat tenu")
+    print()
+
     print("Tous les tests passent.")

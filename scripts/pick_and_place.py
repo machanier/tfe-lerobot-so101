@@ -130,6 +130,28 @@ def main():
                              "montage : la pince ferme a 90deg de la convention nominale). "
                              "Passe 0 pour revenir au comportement nominal, ou une autre valeur "
                              "si la pince est remontee differemment.")
+    parser.add_argument("--top-down", action="store_true",
+                        help="Revient a la saisie VERTICALE PAR LE HAUT uniquement "
+                             "(comportement de reference eprouve). Par defaut (sans "
+                             "ce flag) le robot est ADAPTATIF : il choisit l'angle "
+                             "d'attaque sur le balayage du plan sagittal (top-down / "
+                             "diagonale / frontal) en gardant la 1ere prise atteignable. "
+                             "Utile pour re-tester l'ancien comportement ou comparer.")
+    parser.add_argument("--tilt-roll-offset", type=float, default=None,
+                        help="Saisie adaptative : roll (deg) des prises INCLINEES "
+                             "autour de l'axe d'approche (convention pince). Defaut = "
+                             "--grasp-yaw-offset (90, cale en top-down). Si au 1er essai "
+                             "incline les machoires ferment de travers, essaie 0, -90, etc.")
+    parser.add_argument("--side-grasp-min-height", type=float, default=None,
+                        help="Saisie adaptative : hauteur de prise mini (m) pour une "
+                             "prise inclinee (degagement table). Defaut 0.020 (PROVISOIRE, "
+                             "a mesurer). Plus petit = autorise des prises inclinees plus basses.")
+    parser.add_argument("--ik-tol-trans", type=float, default=None,
+                        help="Saisie adaptative : tolerance de position IK (mm) pour "
+                             "juger un angle ATTEIGNABLE. Defaut 8.")
+    parser.add_argument("--ik-tol-rot", type=float, default=None,
+                        help="Saisie adaptative : tolerance d'orientation IK (deg) pour "
+                             "juger un angle atteignable. Defaut 15.")
     parser.add_argument("--no-lift-check", action="store_true",
                         help="Desactive la VERIF POST-LEVEE (P1'). Par defaut, apres une "
                              "fermeture jugee OK le bras remonte a retract et RE-LIT "
@@ -166,6 +188,7 @@ def main():
         dry_run=args.dry_run,
         closed_loop=(not args.no_closed_loop),
         display=args.display,
+        grasp_mode=("top_down" if args.top_down else "adaptive"),
     )
     if args.grasp_threshold is not None:
         config.grasp_success_threshold_pct = args.grasp_threshold
@@ -182,6 +205,14 @@ def main():
         config.grasp_gripper_open_margin_mm = args.gripper_open_margin
     if args.grasp_yaw_offset is not None:
         config.grasp_yaw_offset_deg = args.grasp_yaw_offset
+    if args.tilt_roll_offset is not None:
+        config.grasp_tilt_roll_deg = args.tilt_roll_offset
+    if args.side_grasp_min_height is not None:
+        config.grasp_side_min_height_m = args.side_grasp_min_height
+    if args.ik_tol_trans is not None:
+        config.ik_tol_trans_mm = args.ik_tol_trans
+    if args.ik_tol_rot is not None:
+        config.ik_tol_rot_deg = args.ik_tol_rot
 
     pipeline = PickAndPlacePipeline(config)
     pipeline.run()
