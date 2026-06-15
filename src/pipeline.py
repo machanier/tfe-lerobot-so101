@@ -549,15 +549,25 @@ class PickAndPlacePipeline:
 
         reachable_list = [r for r in results if r[4]]
         if reachable_list:
-            # CHOIX PARMI LES ATTEIGNABLES (pas "le 1er de la liste", demande de
-            # Maxence) : top-down (0) PRIORITAIRE s'il est atteignable (sur,
-            # eprouve, pas de collision) ; sinon le PLUS FRONTAL (theta max) -> pour
-            # un objet debout, une prise quasi-horizontale grippe la section
-            # transversale (cercle) = plus stable qu'une diagonale.
-            top_down = [r for r in reachable_list
-                        if abs(r[0].meta["pitch_deg"]) < 1e-6]
-            best = (top_down[0] if top_down
-                    else max(reachable_list, key=lambda r: r[0].meta["pitch_deg"]))
+            # CHOIX PARMI LES ATTEIGNABLES, LOGIQUE SELON LA POSE DE L'OBJET
+            # (pas "le 1er de la liste") :
+            #  - objet DEBOUT : on grippe le COTE (prise frontale/diagonale, theta
+            #    le PLUS GRAND atteignable). Descendre par le dessus sur un objet
+            #    debout = la pince longe l'objet -> prise basse/instable et tres
+            #    sensible a l'erreur de hauteur ; une prise de cote grippe le flanc
+            #    a la hauteur detectee, quelle qu'elle soit -> plus logique et plus
+            #    robuste.
+            #  - objet COUCHE / PLAT / compact : top-down (0) s'il est atteignable
+            #    (sur, eprouve) ; sinon le plus frontal atteignable.
+            standing = (target.meta or {}).get("pose_class") == "debout"
+            most_frontal = max(reachable_list,
+                               key=lambda r: r[0].meta["pitch_deg"])
+            if standing:
+                best = most_frontal
+            else:
+                top_down = [r for r in reachable_list
+                            if abs(r[0].meta["pitch_deg"]) < 1e-6]
+                best = top_down[0] if top_down else most_frontal
             chosen = best[:4]
         else:
             # repli : le moins mauvais (residu grasp), borne dure sinon echec propre.
