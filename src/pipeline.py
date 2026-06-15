@@ -72,7 +72,7 @@ from src.perception.detector import (
 from src.perception.pose_estimator import PoseEstimator
 from src.perception.robot_state import RobotStateProvider
 from src.perception.scene import Scene
-from src.planning.grasp import TopDownGrasp
+from src.planning.grasp import AdaptiveGrasp, TopDownGrasp
 
 
 # ============================================================
@@ -256,6 +256,46 @@ class PipelineConfig:
     # va-et-vient observe.
     closed_loop_two_stage: bool = False
 
+    # ---------- MODE DE SAISIE : adaptatif (defaut) vs top-down ----------
+    # "adaptive" : AdaptiveGrasp choisit l'angle d'attaque sur le balayage 180deg
+    #   du plan sagittal (top-down / diagonale / frontal) en gardant la 1ere prise
+    #   ATTEIGNABLE (filtre IK) dans l'ordre de preference. Etend la couverture aux
+    #   objets hauts/lointains que le top-down seul ne peut pas saisir.
+    # "top_down" : comportement historique (TopDownGrasp), force par --top-down.
+    #   Le candidat top-down d'AdaptiveGrasp est de toute facon identique a
+    #   TopDownGrasp -> pas de regression en mode adaptatif sur les objets bas.
+    grasp_mode: str = "adaptive"
+
+    # ---------- Saisie adaptative : seuils d'ATTEIGNABILITE IK ----------
+    # Un candidat d'angle est retenu si sa pose GRASP est atteinte sous ces
+    # residus (et non le flag `converged`, trop strict en 5 DDL). PROVENANCE des
+    # valeurs (PROVISOIRES, a confirmer en campagne d'essais) :
+    #   - 8mm = residu IK typique du grasp (~0.3mm en sim) + budget calibration
+    #     stereo (~5-8mm, cf D17). A re-mesurer si la precision change.
+    #   - 15deg = tolerance d'orientation acceptee vu la sous-actuation 5/6 DDL
+    #     (une pince ne se referme pas exactement a l'angle vise). Indicatif.
+    ik_tol_trans_mm: float = 8.0
+    ik_tol_rot_deg: float = 15.0
+    # Tolerance de position pour la pose APPROACH (plus laxiste : la precision
+    # compte moins a l'approche). Sert a rejeter un approche HORS workspace.
+    ik_tol_approach_mm: float = 15.0
+    # BORNE DURE du repli : si aucun candidat n'est atteignable, on n'execute le
+    # "moins mauvais" que s'il reste sous ces bornes ; au-dela on declare l'echec
+    # (eviter de forcer le bras sur une pose desesperee). PROVISOIRE.
+    grasp_fallback_max_trans_mm: float = 25.0
+    grasp_fallback_max_rot_deg: float = 25.0
+    # Hauteur de prise mini requise pour une prise INCLINEE (degagement table) :
+    # required = min_clearance + |sin(theta)| * ce terme. None = defaut
+    # AdaptiveGrasp (0.020m). ⚠️ PROVISOIRE : ~demi-empreinte verticale de la
+    # pince a l'horizontale, A MESURER reellement (CAD/terrain) a theta=90.
+    grasp_side_min_height_m: Optional[float] = None
+    # Roll (deg) applique aux prises INCLINEES autour de l'axe d'approche, pour la
+    # convention pince. None = reutilise grasp_yaw_offset_deg (90, mesure en
+    # TOP-DOWN). ⚠️ Le SIGNE n'a PAS ete valide en incline -> si au 1er essai les
+    # machoires ferment de travers, passer une autre valeur via --tilt-roll-offset
+    # (ex: -90, 0) sans recompiler.
+    grasp_tilt_roll_deg: Optional[float] = None
+
 
 # ============================================================
 # Orchestrateur principal
@@ -284,7 +324,19 @@ class PickAndPlacePipeline:
             grasp_kwargs["gripper_open_margin_mm"] = self.config.grasp_gripper_open_margin_mm
         if self.config.grasp_yaw_offset_deg is not None:
             grasp_kwargs["yaw_offset_deg"] = self.config.grasp_yaw_offset_deg
-        self._grasp_strategy = TopDownGrasp(**grasp_kwargs)
+        # Strategie de saisie : adaptative (defaut) ou top-down (--top-down).
+        # Les deux acceptent les memes kwargs de base (offset, ouverture, marge,
+        # yaw) ; AdaptiveGrasp accepte en plus le degagement table et le roll
+        # incline (specifiques aux prises inclinees).
+        if self.config.grasp_mode == "top_down":
+            self._grasp_strategy = TopDownGrasp(**grasp_kwargs)
+        else:
+            adaptive_kwargs = dict(grasp_kwargs)
+            if self.config.grasp_side_min_height_m is not None:
+                adaptive_kwargs["side_grasp_min_height_m"] = self.config.grasp_side_min_height_m
+            if self.config.grasp_tilt_roll_deg is not None:
+                adaptive_kwargs["tilted_roll_deg"] = self.config.grasp_tilt_roll_deg
+            self._grasp_strategy = AdaptiveGrasp(**adaptive_kwargs)
         self._ik = IKSolver()
         # IK SPECIFIQUE A LA DEPOSE : poids de rotation reduit (0.05 vs 0.1
         # par defaut). Pour la depose on s'en moque que la pince soit pile
@@ -406,6 +458,129 @@ class PickAndPlacePipeline:
         else:
             raise ValueError(f"detector_kind inconnu: {self.config.detector_kind}")
         self._estimator = PoseEstimator(specs_by_label=self._specs_meta)
+
+    # ----- grasp planning + IK selection ----------------------------------
+
+    def _plan_and_solve_grasp(self, target, q_current):
+        """Planifie la saisie et resout l'IK ; renvoie (grasp_pose, r_app, r_grp,
+        r_ret) ou (None, None, None, None) si rien de faisable.
+
+        Mode top-down : comportement historique (1 plan + IK, branche yaw_free).
+        Mode adaptatif : *generate -> filter(IK) -> rank*. On evalue les candidats
+        d'angle d'attaque dans l'ordre de preference et on garde le PREMIER
+        reellement ATTEIGNABLE (residus IK sous seuil). Tous les candidats sont
+        loggues (utile pour les essais et les campagnes). Si aucun n'est pleinement
+        atteignable, repli sur le moins mauvais (comportement degrade, comme avant)
+        avec avertissement.
+        """
+        strat = self._grasp_strategy
+
+        # ---- mode top-down : inchange ----
+        if not isinstance(strat, AdaptiveGrasp):
+            grasp_pose = strat.plan(target)
+            if grasp_pose is None:
+                return None, None, None, None
+            print(f">> Grasp planifie ({grasp_pose.meta.get('strategy')}, "
+                  f"yaw={np.degrees(grasp_pose.meta.get('yaw_rad', 0)):+.0f}deg, "
+                  f"ouverture pince={grasp_pose.gripper_open_pct:.0f}%)")
+            if grasp_pose.meta.get("yaw_free"):
+                r_app, r_grp, r_ret = self._ik.solve_grasp_pose_free_yaw(
+                    grasp_pose, q_init=q_current)
+                yc = grasp_pose.meta.get("yaw_committed_deg")
+                print(f"   (objet debout -> yaw LIBRE choisi pour minimiser la "
+                      f"rotation du poignet : yaw={yc:+.0f}deg)" if yc is not None
+                      else "   (objet debout -> yaw libre)")
+            else:
+                r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
+                    grasp_pose, q_init=q_current)
+                if grasp_pose.meta.get("flipped_180"):
+                    print(f"   (orientation de prise retournee de 180deg retenue, "
+                          f"yaw={np.degrees(grasp_pose.meta.get('yaw_rad', 0)):+.0f}deg ; "
+                          f"matrices persistees -> cibles coherentes pour la suite)")
+            return grasp_pose, r_app, r_grp, r_ret
+
+        # ---- mode adaptatif : balayage d'angles, choix par faisabilite IK ----
+        cands = strat.plan_candidates(target)
+        if not cands:
+            print("!! Aucun candidat geometriquement faisable "
+                  "(ouverture pince / degagement table).")
+            return None, None, None, None
+
+        # seuils d'ATTEIGNABILITE de la pose grasp. Le bras est 5 DDL (sous-
+        # actionne) -> on tolere une petite erreur d'orientation, mais la POSITION
+        # doit etre atteinte. cf reachability-aware grasping.
+        c = self.config
+        TRANS_OK_MM, ROT_OK_DEG = c.ik_tol_trans_mm, c.ik_tol_rot_deg
+        APP_OK_MM = c.ik_tol_approach_mm
+        print(f">> Saisie adaptative : {len(cands)} candidat(s) d'angle "
+              f"(ordre de preference), choix par atteignabilite IK :")
+        chosen = None
+        # repli : (tuple, grasp_trans, grasp_rot, app_trans) du moins mauvais
+        best_fallback = None
+        for gp in cands:
+            if gp.meta.get("yaw_free"):
+                r_app, r_grp, r_ret = self._ik.solve_grasp_pose_free_yaw(
+                    gp, q_init=q_current)
+            else:
+                r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
+                    gp, q_init=q_current)
+            # Atteignabilite = RESIDUS sous seuil (et non le flag `converged`,
+            # trop strict : sur ce bras 5 DDL il reste souvent False meme a ~1mm,
+            # cf approach/retract). On exige que la pose GRASP (position +
+            # orientation) ET la pose APPROACH (position) soient atteintes :
+            # une prise frontale peut avoir un grasp atteignable mais un approach
+            # recule de 8cm HORS workspace -> il faut le detecter ici, pas a
+            # l'execution. cf reachability-aware grasping.
+            reachable = (r_grp.translation_err_mm <= TRANS_OK_MM
+                         and r_grp.rotation_err_deg <= ROT_OK_DEG
+                         and r_app.translation_err_mm <= APP_OK_MM)
+            if reachable and chosen is None:
+                tag = "RETENU"
+            elif reachable:
+                tag = "atteignable"
+            else:
+                tag = "rejete (IK)"
+            print(f"   theta={gp.meta['pitch_deg']:+5.0f}deg  "
+                  f"roll={np.degrees(gp.meta.get('roll_rad', 0.0)):+4.0f}deg  "
+                  f"machoires={gp.meta['jaw_width_mm']:4.0f}mm  "
+                  f"ouv={gp.gripper_open_pct:3.0f}%  "
+                  f"IK: grasp {r_grp.translation_err_mm:4.1f}mm/"
+                  f"{r_grp.rotation_err_deg:4.1f}deg  "
+                  f"app {r_app.translation_err_mm:4.1f}mm  [{tag}]")
+            if reachable and chosen is None:
+                chosen = (gp, r_app, r_grp, r_ret)  # 1er faisable = retenu
+            cand = (gp, r_app, r_grp, r_ret)
+            if best_fallback is None or r_grp.translation_err_mm < best_fallback[1]:
+                best_fallback = (cand, r_grp.translation_err_mm,
+                                 r_grp.rotation_err_deg, r_app.translation_err_mm)
+
+        if chosen is None:
+            cand, ftrans, frot, fapp = best_fallback
+            gp = cand[0]
+            # BORNE DURE : ne PAS executer une pose desesperee (le bras 5 DDL
+            # forcerait/buterait et gaspillerait une tentative). Au-dela des
+            # bornes -> on declare l'echec proprement (comme objet trop haut).
+            if (ftrans > c.grasp_fallback_max_trans_mm
+                    or frot > c.grasp_fallback_max_rot_deg
+                    or fapp > c.grasp_fallback_max_trans_mm):
+                print(f"!! Aucun candidat atteignable ; le moins mauvais "
+                      f"(theta={gp.meta['pitch_deg']:+.0f}deg, grasp "
+                      f"{ftrans:.1f}mm/{frot:.1f}deg, app {fapp:.1f}mm) DEPASSE les "
+                      f"bornes ({c.grasp_fallback_max_trans_mm:.0f}mm/"
+                      f"{c.grasp_fallback_max_rot_deg:.0f}deg) -> on N'EXECUTE PAS "
+                      f"(eviter de forcer mecaniquement).")
+                return None, None, None, None
+            print(f"   [WARN] aucun candidat pleinement atteignable -> repli sur le "
+                  f"moins mauvais DANS LES BORNES (theta={gp.meta['pitch_deg']:+.0f}deg, "
+                  f"grasp {ftrans:.1f}mm, app {fapp:.1f}mm). A surveiller a l'essai.")
+            chosen = cand
+
+        gp, r_app, r_grp, r_ret = chosen
+        print(f">> Prise retenue : {gp.meta['strategy']} "
+              f"theta={gp.meta['pitch_deg']:+.0f}deg "
+              f"roll={np.degrees(gp.meta.get('roll_rad', 0)):+.0f}deg "
+              f"(ouverture pince={gp.gripper_open_pct:.0f}%)")
+        return gp, r_app, r_grp, r_ret
 
     # ----- main entry point -----------------------------------------------
 
@@ -566,18 +741,12 @@ class PickAndPlacePipeline:
             print()
 
             # ============================================================
-            # 4. Grasp planning
-            # ============================================================
-            grasp_pose = self._grasp_strategy.plan(target)
-            if grasp_pose is None:
-                print(f"!! Grasp planning a echoue (objet trop haut ?). Annule.")
-                return
-            print(f">> Grasp planifie ({grasp_pose.meta.get('strategy')}, "
-                  f"yaw={np.degrees(grasp_pose.meta.get('yaw_rad', 0)):+.0f}deg, "
-                  f"ouverture pince={grasp_pose.gripper_open_pct:.0f}%)")
-
-            # ============================================================
-            # 5. IK pour les 3 poses + drop
+            # 4-5. Grasp planning + IK
+            #   - mode adaptatif : genere des candidats d'angle d'attaque sur le
+            #     balayage sagittal, filtre par ATTEIGNABILITE IK, garde le 1er
+            #     faisable (top-down d'abord, frontal/diagonale en repli).
+            #   - mode top-down : comportement historique inchange.
+            # Toute la logique de selection + IK est dans _plan_and_solve_grasp.
             # ============================================================
             print(">> Cinematique inverse...")
             current_state = (self._provider.read_live() if not self.config.dry_run
@@ -587,24 +756,12 @@ class PickAndPlacePipeline:
             # home_from_session_start=True. Le robot reviendra exactement la.
             q_session_start = dict(q_current)
 
-            # YAW LIBRE pour objet DEBOUT : choisir le yaw qui minimise le
-            # mouvement du poignet (anti rotation ~90deg inutile). Sinon :
-            # arbitrage d'orientation standard (symetrie 180deg). Dans les deux
-            # cas l'orientation est PERSISTEE puis VERROUILLEE aux re-solves.
-            if grasp_pose.meta.get("yaw_free"):
-                r_app, r_grp, r_ret = self._ik.solve_grasp_pose_free_yaw(
-                    grasp_pose, q_init=q_current)
-                yc = grasp_pose.meta.get("yaw_committed_deg")
-                print(f"   (objet debout -> yaw LIBRE choisi pour minimiser la "
-                      f"rotation du poignet : yaw={yc:+.0f}deg)" if yc is not None
-                      else "   (objet debout -> yaw libre)")
-            else:
-                r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
-                    grasp_pose, q_init=q_current)
-                if grasp_pose.meta.get("flipped_180"):
-                    print(f"   (orientation de prise retournee de 180deg retenue, "
-                          f"yaw={np.degrees(grasp_pose.meta.get('yaw_rad', 0)):+.0f}deg ; "
-                          f"matrices persistees -> cibles coherentes pour la suite)")
+            grasp_pose, r_app, r_grp, r_ret = self._plan_and_solve_grasp(
+                target, q_current)
+            if grasp_pose is None:
+                print("!! Aucune prise faisable (objet trop haut / hors d'atteinte ?). "
+                      "Annule.")
+                return
             self._log_wrist("IK initiale", q_current, r_grp)
             # IK pour la pose drop_above et drop_release : on utilise l'IK
             # specialise self._ik_drop qui a un poids rotation reduit (0.01).
@@ -803,9 +960,17 @@ class PickAndPlacePipeline:
                     # CLAIREMENT allonge, on REORIENTE la prise sur son petit axe
                     # avant de descendre (reponse au probleme 'pince pas alignee').
                     reoriented = False
-                    if (self.config.cam2_reorient
-                            and refinement.yaw_base_cam2 is not None
-                            and refinement.elong_cam2 >= self.config.cam2_reorient_min_elong):
+                    # GARDE-FOU : reorient_grasp_pose suppose une prise TOP-DOWN
+                    # (elle reconstruit l'orientation via _rotation_top_down). Sur
+                    # une prise INCLINEE (mode adaptatif), l'appliquer aplatirait la
+                    # prise a la verticale -> on la SAUTE. La correction de POSITION
+                    # (ci-dessus) reste appliquee : elle est agnostique a l'angle.
+                    is_tilted = abs(grasp_pose.meta.get("pitch_rad", 0.0)) > 1e-3
+                    cam2_says_reorient = (
+                        self.config.cam2_reorient
+                        and refinement.yaw_base_cam2 is not None
+                        and refinement.elong_cam2 >= self.config.cam2_reorient_min_elong)
+                    if cam2_says_reorient and not is_tilted:
                         from src.planning.grasp import reorient_grasp_pose
                         old_yaw = np.degrees(grasp_pose.meta.get("yaw_rad", 0.0))
                         reorient_grasp_pose(grasp_pose, refinement.yaw_base_cam2)
@@ -814,6 +979,11 @@ class PickAndPlacePipeline:
                               f"-> {new_yaw:+.0f}deg (objet vu allonge x{refinement.elong_cam2:.1f} "
                               f"par cam_2, plus fiable que la stereo)")
                         reoriented = True
+                    elif cam2_says_reorient and is_tilted:
+                        print(f"   (prise inclinee theta="
+                              f"{np.degrees(grasp_pose.meta.get('pitch_rad', 0.0)):+.0f}deg "
+                              f"-> reorientation cam_2 ignoree : elle suppose le "
+                              f"top-down ; correction de POSITION conservee)")
                     # Re-IK. Si on a reoriente : NON verrouille (l'axe a change ->
                     # re-choisir la meilleure des 2 orientations 180 pour la
                     # continuite). Sinon verrouille (anti bascule).
