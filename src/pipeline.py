@@ -295,6 +295,11 @@ class PipelineConfig:
     # machoires ferment de travers, passer une autre valeur via --tilt-roll-offset
     # (ex: -90, 0) sans recompiler.
     grasp_tilt_roll_deg: Optional[float] = None
+    # Hauteur d'objet (m) au-dela de laquelle le candidat TOP-DOWN est refuse
+    # (collision pince/objet par le haut). None = defaut strategie (0.12 = 12cm).
+    # En adaptatif, au-dela l'incline (45/90) prend le relais. Reglable via
+    # --max-top-down-height (utile pres du seuil ou la hauteur mesuree est bruitee).
+    grasp_max_top_down_height_m: Optional[float] = None
 
 
 # ============================================================
@@ -324,6 +329,8 @@ class PickAndPlacePipeline:
             grasp_kwargs["gripper_open_margin_mm"] = self.config.grasp_gripper_open_margin_mm
         if self.config.grasp_yaw_offset_deg is not None:
             grasp_kwargs["yaw_offset_deg"] = self.config.grasp_yaw_offset_deg
+        if self.config.grasp_max_top_down_height_m is not None:
+            grasp_kwargs["max_object_height_m"] = self.config.grasp_max_top_down_height_m
         # Strategie de saisie : adaptative (defaut) ou top-down (--top-down).
         # Les deux acceptent les memes kwargs de base (offset, ouverture, marge,
         # yaw) ; AdaptiveGrasp accepte en plus le degagement table et le roll

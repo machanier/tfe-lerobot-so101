@@ -525,7 +525,15 @@ class AdaptiveGrasp(GraspStrategy):
 
     def __init__(self,
                  # jeu d'angles canoniques (deg), DANS L'ORDRE DE PREFERENCE.
-                 candidate_pitches_deg: tuple = (0.0, 45.0, 90.0, -45.0, -90.0),
+                 # {0, +45, +90} UNIQUEMENT. Les angles ARRIERE (-45, -90)
+                 # demanderaient d'attaquer la FACE ARRIERE de l'objet (depuis
+                 # l'autre cote, pince orientee vers la base) : structurellement
+                 # hors d'atteinte sur le SO-101 (epaule-lift/coude/poignet-flex
+                 # plient dans le MEME plan -> le poignet ne peut pas se replier
+                 # derriere l'objet). Verifie sur tous les essais terrain
+                 # (residus IK 40-110mm, JAMAIS retenus), et un objet assez proche
+                 # pour eux est de toute facon pris en top-down (0, prefere).
+                 candidate_pitches_deg: tuple = (0.0, 45.0, 90.0),
                  approach_height_m: float = 0.08,
                  grasp_offset_m: float = 0.0,
                  retract_height_m: float = 0.10,

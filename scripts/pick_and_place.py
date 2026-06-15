@@ -152,6 +152,11 @@ def main():
     parser.add_argument("--ik-tol-rot", type=float, default=None,
                         help="Saisie adaptative : tolerance d'orientation IK (deg) pour "
                              "juger un angle atteignable. Defaut 15.")
+    parser.add_argument("--max-top-down-height", type=float, default=None,
+                        help="Hauteur d'objet (m) au-dela de laquelle le TOP-DOWN est "
+                             "refuse (l'adaptatif bascule alors en incline). Defaut 0.12. "
+                             "Augmente un peu (ex 0.14) si la hauteur mesuree depasse 12cm "
+                             "par bruit alors que le top-down passerait.")
     parser.add_argument("--no-lift-check", action="store_true",
                         help="Desactive la VERIF POST-LEVEE (P1'). Par defaut, apres une "
                              "fermeture jugee OK le bras remonte a retract et RE-LIT "
@@ -213,6 +218,8 @@ def main():
         config.ik_tol_trans_mm = args.ik_tol_trans
     if args.ik_tol_rot is not None:
         config.ik_tol_rot_deg = args.ik_tol_rot
+    if args.max_top_down_height is not None:
+        config.grasp_max_top_down_height_m = args.max_top_down_height
 
     pipeline = PickAndPlacePipeline(config)
     pipeline.run()
