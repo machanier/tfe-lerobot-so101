@@ -38,24 +38,24 @@ course du gripper. L'ensemble forme une \texttt{GraspPose}
 (structure définie dans \texttt{src/planning/grasp.py}).
 
 Ce découpage en \textit{approach / grasp / retract} n'est pas arbitraire : il
-sépare la phase de \emph{positionnement} (descendre verticalement sur l'objet
-sans le heurter de côté) de la phase de \emph{préhension} (fermer les doigts) et
+sépare la phase de \emph{positionnement} (approcher l'objet le long de l'axe
+d'attaque sans le heurter) de la phase de \emph{préhension} (fermer les doigts) et
 de la phase de \emph{dégagement} (soulever l'objet une fois saisi). Cette
 décomposition en sous-mouvements rectilignes est celle que retient le survey de
 Bohg \textit{et al.}~\cite{bohg_data-driven_2014}, et c'est elle qui permet
 ensuite au module de contrôle d'enchaîner des trajectoires lisses entre points
 de passage connus.
 
-\section{Stratégie retenue : \textit{top-down grasp}}
+\section{Stratégie retenue : saisie adaptative par balayage de l'angle d'attaque}
 \label{sec:plan_topdown}
 
-\subsection{Pourquoi le top-down, et pas autre chose}
+\subsection{Pourquoi une heuristique géométrique, et un balayage de l'angle}
 
 Bohg \textit{et al.}~\cite{bohg_data-driven_2014} distinguent trois familles de
 \textit{grasp planners} : \textit{heuristic} (règles géométriques explicites),
 \textit{contact-based} (analyse des points de contact et de la fermeture de
 forme), et \textit{data-driven} (synthèse apprise à partir d'exemples). Le choix
-d'une approche \textbf{heuristique \textit{top-down}} découle directement de la
+d'une approche \textbf{heuristique géométrique} découle directement de la
 question posée et de la plateforme :
 
 \begin{itemize}
@@ -63,8 +63,7 @@ question posée et de la plateforme :
         géométrie et à l'accessibilité} ; une règle géométrique explicite y
         répond et reste lisible.
   \item La quasi-totalité des objets cibles du TFE sont des objets du quotidien
-        posés sur une table (cube, cylindre, mug, rubik's cube), donc
-        \emph{accessibles par le dessus}.
+        posés sur une table (cube, cylindre, mug, rubik's cube).
   \item Le caractère déterministe et explicable autorise l'analyse d'un échec :
         chaque pose produite peut être inspectée et reliée à une cause.
   \item La méthode fournit une \textbf{base de référence reproductible} pour les
@@ -72,21 +71,39 @@ question posée et de la plateforme :
         (chapitre~\ref{ch:control_eval}).
 \end{itemize}
 
-Une raison plus profonde justifie ce choix, et elle n'est pleinement établie
-qu'au chapitre de discussion : sur un bras à 5~degrés de liberté actionnés
-comme le SO-101, l'approche verticale est la seule à être véritablement
-bien conditionnée. Une prise latérale « vraie » (pince horizontale se refermant
-autour du flanc vertical d'un objet) est, elle, mal conditionnée sur cette
-cinématique. Ce résultat est montré numériquement au
-chapitre~\ref{ch:control_eval} ; on s'appuie ici sur sa conclusion : le
-top-down borne l'ensemble des objets saisissables, et c'est lui qu'il faut
-rendre robuste.
+La plateforme impose en outre une contrainte géométrique qui structure toute la
+stratégie. Les trois articulations de tangage du SO-101 plient dans un même plan
+vertical, le \emph{plan sagittal} que pointe le \texttt{shoulder\_pan} : l'effecteur
+peut donc faire varier son angle d'attaque \emph{à l'intérieur} de ce plan --- du
+dessus (\textit{top-down}) jusqu'à l'horizontale de face (\textit{face avant}) ---
+mais ne peut pas orienter son approche \emph{hors} de ce plan. Une prise latérale
+« vraie » (pince horizontale se refermant autour du flanc d'un objet,
+\emph{perpendiculairement} au bras) reste donc inaccessible de façon fiable sur
+cette cinématique à 5~degrés de liberté ; ce résultat est établi numériquement au
+chapitre~\ref{ch:control_eval}.
+
+La stratégie retenue exploite précisément ce qui \emph{est} accessible : un
+\textbf{balayage de l'angle d'attaque dans le plan sagittal}. Plutôt que d'attaquer
+toujours par le dessus, le planificateur (\texttt{AdaptiveGrasp}) \emph{propose}
+plusieurs angles de tangage --- top-down (\(0\)\textdegree), diagonale
+(\(45\)\textdegree), face avant (\(90\)\textdegree) --- et le module de contrôle
+retient le premier \emph{atteignable} par la cinématique inverse, dans un ordre de
+préférence dicté par la géométrie de la scène (section~\ref{sub:plan_zones}). Le
+top-down conserve un statut particulier : c'est l'angle le mieux conditionné, le
+cas de repli, et le seul appliqué aux objets bas et proches ; les angles inclinés
+\emph{étendent} la couverture aux objets que la seule attaque verticale ne permet
+pas. Le \textit{top-down} n'est donc plus la stratégie unique mais le cas
+particulier \(\theta = 0\) de cette famille (la classe \texttt{TopDownGrasp} est
+exactement le candidat \(\theta = 0\) de \texttt{AdaptiveGrasp}, par délégation).
 
 \subsection{Construction géométrique}
 
-Pour un objet de centre \((x, y, z)\) dans le repère base, la classe
-\texttt{TopDownGrasp} construit les trois poses en empilant la même rotation
-\(R(\theta)\) (pince vers le bas, \textit{yaw} \(\theta\)) sur trois hauteurs :
+On décrit d'abord le cas \textbf{top-down} (\(\theta = 0\)), qui porte l'essentiel
+de la géométrie et sert de cas de référence ; la généralisation aux angles
+inclinés est traitée à la section~\ref{sub:plan_incline}. Pour un objet de centre
+\((x, y, z)\) dans le repère base, la classe \texttt{TopDownGrasp} construit les
+trois poses en empilant la même rotation \(R(\theta)\) (pince vers le bas,
+\textit{yaw} \(\theta\)) sur trois hauteurs :
 
 \begin{align}
   T_{\text{approach}} &= T_{\text{base}}^{\text{gripper}}\!\big(g_x,\, g_y,\, z_{\text{grasp}} + h_{\text{approach}},\, R(\theta)\big) \\
@@ -101,6 +118,36 @@ pas non plus le \(z\) détecté par la stéréo : elle est ancrée sur la table
 (section~\ref{sub:plan_depth}). Les sous-sections suivantes établissent chacune
 de ces composantes ; on commence par la rotation, qui porte l'essentiel de la
 géométrie.
+
+\subsection{Choix de l'angle d'attaque par zone d'usage}
+\label{sub:plan_zones}
+
+Avant de construire une pose, encore faut-il choisir l'angle de tangage. Le
+planificateur ne tranche pas seul : il \emph{ordonne} les angles candidats par
+préférence, et c'est le contrôle qui retient le premier réellement atteignable
+(section~\ref{sec:plan_interface}). L'ordre de préférence suit une règle de
+\emph{zone} fondée sur deux grandeurs lues dans la scène : la distance
+horizontale objet--base \(d = \sqrt{x^2 + y^2}\) et la hauteur du sommet de
+l'objet \(h\). La fonction \texttt{preferred\_pitch\_deg} l'implémente avec trois
+bornes réglables (\texttt{GRASP\_ZONE\_*}) :
+
+\begin{center}
+\begin{tabular}{l|ccc}
+ & proche (\(d \le 33\) cm) & moyen (\(33\)--\(42\) cm) & loin (\(d \ge 42\) cm) \\
+\hline
+bas (\(h \le 12\) cm)   & top-down (\(0\)\textdegree) & diagonale (\(45\)\textdegree) & face avant (\(90\)\textdegree) \\
+haut (\(h > 12\) cm) ou debout & face avant (\(90\)\textdegree) & face avant (\(90\)\textdegree) & face avant (\(90\)\textdegree) \\
+\end{tabular}
+\end{center}
+
+L'intuition est mécanique : un objet bas et proche s'attrape le plus sûrement par
+le dessus ; à mesure qu'il s'éloigne ou s'élève, un petit angle de tangage devient
+difficile (la pince devrait plonger sous un angle que le bras ne tient pas) et l'on
+préfère une attaque plus frontale. Un objet \emph{haut} ou \emph{debout} se prend
+par la face avant, jamais en diagonale (une attaque à \(45\)\textdegree{} y poserait
+les doigts en biais). Ces bornes ne sont pas un verrou : si l'angle préféré n'est
+pas atteignable, le contrôle bascule sur le voisin atteignable, ce qui évite l'échec
+« angle imposé alors qu'un autre passait ».
 
 \subsection{Rotation \texorpdfstring{$R(\theta)$}{R(theta)} : pince verticale alignée}
 \label{sub:plan_rotation}
@@ -147,6 +194,31 @@ C'est précisément la correction sur \(Y_{\text{pince}}\) (le signe \(-\) en
 position centrale) qui ramène \(R\) dans le groupe des rotations propres
 \(SO(3)\). Le premier des self-tests
 (section~\ref{sec:plan_validation}) vérifie numériquement ces deux propriétés.
+
+\subsection{Généralisation aux angles inclinés}
+\label{sub:plan_incline}
+
+Pour un angle de tangage \(\theta \neq 0\), la rotation se généralise
+(\texttt{\_rotation\_grasp}) : l'axe d'approche de la pince devient
+\[
+  \mathbf{a} = \big(\sin\theta\,\cos\psi,\; \sin\theta\,\sin\psi,\; -\cos\theta\big),
+\]
+où \(\psi\) est l'azimut de l'approche dans le plan horizontal
+(\(\theta = 0 \Rightarrow \mathbf{a} = (0,0,-1)\), le top-down ; \(\theta = 90\)\textdegree{}
+\(\Rightarrow \mathbf{a}\) horizontal, la face avant). Le top-down en est le cas
+particulier exact (vérifié en self-test), donc aucune régression sur les objets
+bas. Les trois poses suivent le même découpage, à ceci près que la pose
+\textit{approach} \emph{recule le long de l'axe d'attaque} \(\mathbf{a}\) (et non
+plus verticalement), tandis que le \textit{retract} reste une levée verticale.
+
+L'axe physique des machoires est l'horizontale \(\mathbf{u} = (-\sin\psi,\,
+\cos\psi,\, 0)\), perpendiculaire au plan d'attaque. Pour un objet allongé, on
+choisit l'azimut \(\psi\) \emph{aligné sur le grand axe} de l'objet : \(\mathbf{u}\)
+tombe alors en travers du petit côté, exactement comme le \textit{yaw} le faisait
+en top-down (section~\ref{sub:plan_yaw}). Un filtre de dégagement s'ajoute pour les
+attaques quasi horizontales (\(\theta \ge 67{,}5\)\textdegree) : le centre de prise
+doit être à au moins \(7\) mm au-dessus de la plaque, sans quoi le bout de la pince
+raclerait la table en avançant ; le top-down et la diagonale n'en ont pas besoin.
 
 \subsection{Orientation \texttt{wrist\_roll} : machoires en travers du petit axe}
 \label{sub:plan_yaw}
@@ -240,22 +312,24 @@ enfin les objets selon leur taille.
 
 La pince du SO-101 est \textbf{asymétrique} : un doigt est fixe, l'autre se
 referme contre lui. Centrer la prise sur le centroïde de l'objet a un effet
-pervers : à la descente, le doigt fixe heurte l'objet \emph{avant} la fermeture,
-le déplace, et la saisie rate. La parade est de décaler le centre de prise dans
-la direction \emph{opposée} au doigt fixe, pour que l'objet finisse appuyé contre
-ce doigt fixe et que le doigt mobile vienne simplement l'écraser. Si
-\(\mathbf{d}\) est la direction du doigt fixe dans le repère pince et \(\ell\)
-l'amplitude du décalage, le déplacement appliqué en repère base est
-\[
-  \Delta_{\text{base}} = R(\theta) \, (-\mathbf{d}) \, \ell ,
-\]
-appliqué identiquement à \textit{approach}, \textit{grasp} et \textit{retract}
-pour garder l'alignement vertical. La valeur \emph{nominale} est \(\ell = 8\) mm,
-utile pour les objets à faces plates (type cube) où un bord franc cale contre le
-doigt fixe. En \emph{déploiement}, la valeur par défaut est ramenée à \(0\) :
-pour un objet rond ou fin, le décalage ne sert à rien et risque au contraire de
-faire manquer l'objet. On l'active explicitement (option
-\texttt{--grasp-lateral-offset}) quand l'objet le justifie.
+pervers : à la descente, le doigt fixe arrive \emph{sur} l'objet --- on l'observe
+buter contre le dessus du cube alors même que la prise est bien centrée. La parade
+est de décaler le point de prise pour que le doigt fixe tombe au \emph{bord} de
+l'objet (l'objet se cale contre lui, le doigt mobile vient l'écraser).
+
+L'implémentation de ce décalage a demandé un détour instructif. Une première
+version l'exprimait dans le repère \emph{pince}, le long de l'axe des machoires.
+Deux écueils l'ont rendue inopérante en déploiement : avec la convention de
+fermeture à \(90\)\textdegree{} (section~\ref{sub:plan_90deg}) cet axe ne pointe
+plus selon \(Y\) mais selon \(X\) en repère base ; et surtout le \emph{recentrage}
+par \texttt{cam\_2} (chapitre~\ref{ch:control_eval}) ramène ensuite la pince sur le
+centroïde de l'objet, \emph{annulant} le décalage. La solution retenue est donc un
+décalage en \textbf{repère base, selon \(Y\)} (vers la gauche), une translation
+pure qui ne touche pas à l'orientation, \emph{appliquée après} le raffinement
+\texttt{cam\_2} et sur chaque descente. La valeur de déploiement est de
+\(10\) mm, réglable par l'option \texttt{--grasp-lateral-offset} (signe négatif
+pour décaler vers la droite, \(0\) pour désactiver). Pour un objet rond ou fin,
+ce décalage peut au contraire faire manquer la prise : il est alors remis à zéro.
 
 \subsection{Profondeur de prise ancrée sur la table}
 \label{sub:plan_depth}
@@ -275,12 +349,18 @@ augmenté de la moitié de la hauteur estimée de l'objet (sa mi-hauteur) :
 \begin{equation}
   z_{\text{grasp}} = z_{\text{table}} + \frac{h_{\text{objet}}}{2} ,
 \end{equation}
-et l'on n'utilise le \(Z\) détecté qu'en repli, faute de boîte englobante. Un
-garde-fou borne le résultat : on ne descend jamais sous
-\(z_{\text{table}} + 5\) mm. La profondeur de prise repose ainsi sur la dimension
-\emph{verticale} de l'objet (relativement fiable, voir la triangulation du sommet
-au chapitre~\ref{ch:perception}) et sur le plan de la table, jamais sur le
-\(Z\) absolu de la stéréo.
+et l'on n'utilise le \(Z\) détecté qu'en repli, faute de boîte englobante. Le
+repère est posé une fois pour toutes avec \emph{l'origine \(z = 0\) au niveau de
+la plaque} où reposent les objets (la relation à l'éventuel datum CAO n'entre pas
+dans le calcul). Un garde-fou borne le résultat : la prise ne descend jamais sous
+le niveau de la plaque (l'attaque quasi horizontale impose en plus la marge de
+\(7\) mm de la section~\ref{sub:plan_incline}). À cette hauteur de centre s'ajoute
+enfin un petit décalage de serrage (\(\approx 14\) mm), qui compense l'écart entre
+le point commandé de l'effecteur et la ligne où les machoires se referment
+réellement. La profondeur de prise repose ainsi sur la dimension \emph{verticale}
+de l'objet (relativement fiable, voir la triangulation du sommet au
+chapitre~\ref{ch:perception}) et sur le plan de la table, jamais sur le \(Z\)
+absolu de la stéréo.
 
 \subsection{Découverte : la convention de fermeture à 90\textdegree}
 \label{sub:plan_90deg}
@@ -302,50 +382,53 @@ Autrement dit, l'axe que le code croyait être l'axe de fermeture des machoires
 était en réalité l'axe perpendiculaire, du fait du montage physique de la pince.
 Un test empirique a confirmé l'hypothèse : en ajoutant un décalage de
 \(90\)\textdegree{} au \textit{yaw} de prise (option \texttt{--grasp-yaw-offset 90}),
-les saisies parallèles à \(X\) comme parallèles à \(Y\) ont réussi du premier
-coup, avec un couple de maintien dépassant 300. La valeur \(0\) échouait à chaque
-fois. Le décalage de \(90\)\textdegree{} est donc adopté comme valeur de
-déploiement, tandis que la convention nominale (\(0\)) reste celle des self-tests.
+l'alignement des mâchoires sur l'objet redevient correct, là où la convention
+nominale (\(0\)) le laissait systématiquement de travers. Le décalage de
+\(90\)\textdegree{} est donc adopté comme valeur de déploiement, tandis que la
+convention nominale (\(0\)) reste celle des self-tests.
 Cet épisode illustre une difficulté propre au travail sur matériel réel : une
 convention de repère parfaitement cohérente \emph{en code} peut être décalée par
 rapport au \emph{montage physique}, et seul un essai instrumenté le révèle.
 
 \subsection{Filtres et garde-fous}
 
-Le \texttt{TopDownGrasp} rejette les objets trop hauts pour une saisie verticale,
-quand le sommet estimé de l'objet dépasse \texttt{max\_object\_height\_m}
-(\(0{,}12\) m par défaut) : au-delà, la pince entrerait en collision avec l'objet
-avant d'atteindre sa mi-hauteur. Dans le brouillon initial, ce rejet motivait une
-extension « \textit{side grasp} » pour les objets hauts ; la
-section~\ref{sec:plan_horsportee} explique pourquoi cette piste a été remplacée
-par un résultat de discussion, et non par du travail à venir.
+Le candidat \texttt{top-down} est rejeté quand le sommet estimé de l'objet dépasse
+\texttt{max\_object\_height\_m} (\(0{,}12\) m par défaut) : au-delà, la pince
+entrerait en collision avec l'objet avant d'atteindre sa mi-hauteur. Mais
+l'objet n'est plus pour autant écarté : la règle de zone (section~\ref{sub:plan_zones})
+route précisément les objets hauts vers les candidats \emph{inclinés}
+(face avant), et le contrôle retient le premier atteignable. Le rejet du top-down
+n'est donc qu'un filtre \emph{par candidat}, pas un refus de saisie. À cela s'ajoutent
+le filtre de dégagement de la plaque pour les attaques quasi horizontales
+(section~\ref{sub:plan_incline}) et le filtre d'ouverture (objet trop large
+latéralement pour la course de la pince), qui éliminent les candidats
+géométriquement infaisables avant même l'étape de cinématique inverse.
 
-\section{Au-delà du top-down : la prise latérale}
+\section{Périmètre : balayage sagittal couvert, prise latérale hors-plan exclue}
 \label{sec:plan_horsportee}
 
-Le brouillon de ce mémoire présentait la prise latérale (\textit{side grasp})
-comme une extension à implémenter pour saisir les objets trop hauts pour une
-attaque verticale. Cette présentation n'est plus exacte, et il serait malhonnête
-de la maintenir : la prise latérale a été \emph{étudiée}, et le résultat est
-qu'elle est mal conditionnée sur le SO-101, pas qu'elle reste à coder.
+Il importe de distinguer deux notions souvent confondues, car le périmètre exact
+du travail tient à cette distinction. Le balayage d'angle décrit plus haut se fait
+\emph{dans le plan sagittal} : l'attaque va du dessus (top-down) à l'horizontale de
+\emph{face avant} (la pince avance vers l'objet, dans le plan vertical du bras).
+Cette famille est \textbf{couverte} : c'est l'apport de \texttt{AdaptiveGrasp} par
+rapport à la version initiale purement top-down.
 
-Le raisonnement complet est mené au chapitre~\ref{ch:control_eval}. En résumé :
-les trois articulations de tangage du bras plient toutes dans un même plan
-vertical, si bien que l'effecteur ne peut pas pointer son approche \emph{hors}
-de ce plan. Une fermeture horizontale « vraie » autour du flanc vertical d'un
-objet demande précisément ce type d'orientation. L'évaluation numérique sur un
-grand nombre de configurations le confirme : l'IK ne réalise une telle fermeture
-qu'avec plusieurs centimètres d'erreur, contre une erreur sous le millimètre pour
-un top-down accessible. Le résultat n'est pas que la prise latérale soit
-catégoriquement impossible — un bras à 6~degrés de liberté lèverait la
-contrainte — mais qu'elle est \emph{mal conditionnée} et peu fiable sur 5~degrés.
+Ce qui reste \textbf{hors périmètre}, c'est la prise latérale « vraie » : une pince
+horizontale se refermant autour du flanc d'un objet en l'abordant
+\emph{perpendiculairement} au bras (par la gauche ou la droite). La raison est
+cinématique et tient à la sous-actionation du SO-101 (le chapitre~\ref{ch:control_eval}
+la détaille) : les trois articulations de tangage plient toutes dans un même plan
+vertical, si bien que l'effecteur ne peut pas orienter son approche \emph{hors} de
+ce plan. Sur cinq degrés de liberté, cette famille de prises n'est pas accessible
+de façon fiable, là où un bras à six degrés la rendrait possible.
 
-La conséquence pour la planification est directe et, plutôt qu'une lacune, c'est
-un cadrage : le top-down s'impose comme l'approche robuste, et c'est lui qui
-\emph{borne} l'ensemble des objets saisissables (ceux accessibles par le dessus,
-sous la hauteur limite). On renvoie donc le lecteur au
-chapitre~\ref{ch:control_eval} pour la démonstration chiffrée, sans présenter de
-\textit{side grasp} comme un développement futur.
+Le cadrage est donc précis : la face avant (\(90\)\textdegree{} dans le plan sagittal)
+est tentée et retenue \emph{lorsque la cinématique inverse l'autorise} --- ce qui,
+en pratique, dépend fortement de la distance et reste souvent hors d'atteinte au
+bord de l'espace de travail ; le top-down demeure le cas le mieux conditionné et le
+repli systématique. La prise latérale hors-plan, elle, n'est pas présentée comme un
+développement futur : elle supposerait un changement de plateforme (6~DDL).
 
 \section{Interface avec le module de contrôle}
 \label{sec:plan_interface}
@@ -363,49 +446,57 @@ est résolu \emph{avant} que le contrôle n'intervienne. Le module \textit{contr
   \item la gestion de l'ouverture et de la fermeture de la pince.
 \end{enumerate}
 
-Un détail de l'interface mérite d'être noté, car il fait le lien avec le
-\textit{yaw} libre de la section~\ref{sub:plan_yaw} : quand la perception fournit
-en cours d'approche une mesure d'orientation plus fiable (typiquement
-\texttt{cam\_2}, vue rapprochée et quasi verticale), la fonction
-\texttt{reorient\_grasp\_pose} réoriente la \texttt{GraspPose} sur ce nouvel
-angle en préservant la position de l'objet, le décalage latéral et la correction
-de convention. C'est l'amorce du raffinement en boucle fermée que détaille le
-chapitre suivant.
+Un point de l'interface mérite d'être noté, car il fait le lien avec le
+\textit{yaw} libre de la section~\ref{sub:plan_yaw} : en cours d'approche, la
+caméra eye-in-hand \texttt{cam\_2} (vue rapprochée) fournit une mesure plus fiable
+à la fois de la \emph{position} et de l'\emph{orientation} de l'objet. La
+\texttt{GraspPose} est alors recalée. Pour le réalignement des machoires, deux
+chemins selon l'angle : en top-down, \texttt{reorient\_grasp\_pose} fait tourner la
+pose sur le nouveau grand axe en préservant la position et le décalage ; pour une
+prise inclinée, \texttt{AdaptiveGrasp.replan\_oriented} replanifie au \emph{même}
+tangage avec ce grand axe (le pitch ne change pas, seules les machoires se
+réorientent en travers du petit côté). Le décalage de prise en \(Y\)
+(section~\ref{sub:plan_lateral}) est, lui, appliqué \emph{après} ce recalage. Tout
+cela est l'amorce du raffinement en boucle fermée que détaille le chapitre suivant.
 
 \section{Validation et tests}
 \label{sec:plan_validation}
 
-Le module \texttt{src/planning/grasp.py} embarque 6~self-tests
-(\texttt{python -m src.planning.grasp}), chacun ciblant une des briques
-géométriques établies plus haut :
+La planification est validée hors robot par deux jeux de tests. Les
+\textbf{primitives géométriques} sont auto-testées dans
+\texttt{src/planning/grasp.py} : rotation propre (\(R\) orthonormale,
+\(\det R = +1\), \(Z_{\text{pince}}\) vers \(-Z_{\text{base}}\),
+section~\ref{sub:plan_rotation}) ; équivalence exacte du top-down comme cas
+\(\theta = 0\) de la rotation généralisée (section~\ref{sub:plan_incline}) ;
+\texttt{yaw\_from\_contour} (rectangle horizontal \(\rightarrow \theta = 0\),
+vertical \(\rightarrow \theta = \pm\pi/2\), section~\ref{sub:plan_yaw}).
+
+La \textbf{sélection d'angle et le réalignement} sont couverts par la suite
+\texttt{tests/planning/test\_adaptive\_grasp\_selection.py}, qui passe :
 \begin{enumerate}
-  \item \textbf{Rotation propre} : \(R(\theta)\) orthonormale, \(\det R = +1\),
-        et \(Z_{\text{pince}}\) pointant bien vers \(-Z_{\text{base}}\)
-        (section~\ref{sub:plan_rotation}).
-  \item \texttt{yaw\_from\_contour} : rectangle horizontal \(\rightarrow \theta = 0\),
-        rectangle vertical \(\rightarrow \theta = \pm\pi/2\)
-        (section~\ref{sub:plan_yaw}).
-  \item \texttt{TopDownGrasp.plan} (décalage nul) : positions \((x, y, z)\)
-        correctement propagées sur les 3 poses, pince vers le bas.
-  \item \texttt{TopDownGrasp.plan} (décalage latéral 8~mm et ancrage table) :
-        décalage en \(Y\) vers le doigt fixe et hauteur de prise à
-        \(z_{\text{table}} + h/2\) (sections~\ref{sub:plan_lateral}
-        et~\ref{sub:plan_depth}).
-  \item \textbf{Filtre objet trop haut} : un objet de 15~cm retourne
-        \texttt{None}.
-  \item \textbf{Classe abstraite} \texttt{GraspStrategy} : \texttt{TypeError} si
-        instanciation directe (garantit que toute stratégie future implémente
-        l'interface).
+  \item objet plat et proche \(\rightarrow\) top-down (\(\theta = 0\)) retenu ;
+  \item objet haut \(\rightarrow\) top-down exclu, prise inclinée retenue ;
+  \item objet hors d'atteinte \(\rightarrow\) aucune prise (repli borné, pas de
+        saisie forcée) ;
+  \item mode top-down seul \(+\) objet trop haut \(\rightarrow\) aucune prise ;
+  \item \textbf{angle préféré par zone} : proche \(\rightarrow 0\), moyen
+        \(\rightarrow 45\)\textdegree, loin ou haut \(\rightarrow 90\)\textdegree{}
+        (section~\ref{sub:plan_zones}) ;
+  \item \textbf{réalignement \texttt{cam\_2} incliné} : à \(45\)\textdegree{} \emph{et}
+        \(90\)\textdegree, l'axe des machoires est perpendiculaire au grand axe mesuré
+        (machoires en travers du petit côté) \emph{et le tangage reste inchangé}
+        (section~\ref{sub:plan_incline}).
 \end{enumerate}
 
-Les six tests passent. Ils valident la géométrie de manière isolée, hors robot ;
-la validation \emph{en boucle fermée}, sur le matériel, relève du chapitre
-suivant, où une campagne préliminaire informelle est rapportée et où la campagne
-formelle reste à mener.
+Ces tests valident la géométrie et la logique de sélection de manière isolée ; la
+validation \emph{en boucle fermée}, sur le matériel, relève du chapitre suivant, où
+la campagne formelle d'évaluation reste à mener.
 
-\todoF{Ajouter une figure illustrant les 3 poses (approach / grasp / retract) au-
-dessus d'un objet schématique, avec le repère pince ($Z_{\text{pince}}$ vers le
-bas, $X_{\text{pince}}$ horizontal) et le décalage latéral vers le doigt fixe.}
+\todoF{Ajouter une figure illustrant (a) les 3 poses (approach / grasp / retract)
+et (b) le balayage de l'angle d'attaque dans le plan sagittal : top-down
+($\theta=0$), diagonale ($45$\textdegree) et face avant ($90$\textdegree), avec
+l'axe d'attaque $\mathbf{a}$ et les machoires en travers du petit côté. Idéalement
+un schéma des zones (proche/moyen/loin $\times$ bas/haut) de la table de décision.}
 
 \todoF{Voix de Maxence : un mot court sur l'effet « eurêka » du diagnostic 90\textdegree{}
 (section~\ref{sub:plan_90deg}) — combien de saisies ratées avant de penser à

@@ -97,10 +97,12 @@ def main():
                              "Defaut PipelineConfig=8. Baisse si faux negatifs, monte si "
                              "faux positifs. Maxence a calibre ~8-9 pour le cube 30mm.")
     parser.add_argument("--grasp-lateral-offset", type=float, default=None,
-                        help="Decalage lateral de la saisie en mm (pince asymetrique SO-101). "
-                             "Defaut PipelineConfig=8 (calibre cube 30mm). Augmente/diminue "
-                             "pour une prise plus 'carree' sur rectangle/cylindre. "
-                             "Conseil reglage : --dry-run d'abord, puis live.")
+                        help="Decalage de la saisie en mm dans le repere BASE, axe Y "
+                             "(Y+ = GAUCHE, Y- = droite). Translation PURE appliquee APRES "
+                             "le centrage cam_2, sur chaque descente (n'affecte pas le wrist). "
+                             "Defaut PipelineConfig=10. Pince asymetrique SO-101 : le doigt "
+                             "fixe doit tomber au bord, pas sur le dessus de l'objet. "
+                             "0 = desactive. Conseil : --dry-run d'abord, puis live.")
     parser.add_argument("--grasp-load-threshold", type=float, default=None,
                         help="Seuil de COUPLE pince (Present_Load, 0-1023). Quand fourni, "
                              "c'est le couple SEUL qui juge la saisie (fermeture ET verif "
@@ -157,6 +159,13 @@ def main():
                              "refuse (l'adaptatif bascule alors en incline). Defaut 0.12. "
                              "Augmente un peu (ex 0.14) si la hauteur mesuree depasse 12cm "
                              "par bruit alors que le top-down passerait.")
+    parser.add_argument("--wrist-flip-max-deg", type=float, default=None,
+                        help="SECURITE : saut max de wrist_roll (deg) tolere depuis la "
+                             "pose courante. Au-dela = demi-tour de poignet (pince a "
+                             "l'envers, plonge vers la table) -> la prise est REFUSEE "
+                             "(echec propre). Defaut 120. Baisse-le si tu vois encore un "
+                             "retournement ; monte-le pour autoriser de plus grands "
+                             "re-orientations (a tes risques).")
     parser.add_argument("--no-lift-check", action="store_true",
                         help="Desactive la VERIF POST-LEVEE (P1'). Par defaut, apres une "
                              "fermeture jugee OK le bras remonte a retract et RE-LIT "
@@ -198,7 +207,9 @@ def main():
     if args.grasp_threshold is not None:
         config.grasp_success_threshold_pct = args.grasp_threshold
     if args.grasp_lateral_offset is not None:
-        config.grasp_lateral_offset_mm = args.grasp_lateral_offset
+        # --grasp-lateral-offset pilote desormais l'offset base-Y (gauche+), pas
+        # l'ancien offset repere-pince (qui partait en X et etait gomme par cam_2).
+        config.grasp_y_offset_base_mm = args.grasp_lateral_offset
     if args.grasp_load_threshold is not None:
         config.grasp_load_threshold = args.grasp_load_threshold
     config.grasp_close_servo = (args.grasp_close_mode == "servo")
@@ -212,6 +223,8 @@ def main():
         config.grasp_yaw_offset_deg = args.grasp_yaw_offset
     if args.tilt_roll_offset is not None:
         config.grasp_tilt_roll_deg = args.tilt_roll_offset
+    if args.wrist_flip_max_deg is not None:
+        config.wrist_flip_max_deg = args.wrist_flip_max_deg
     if args.side_grasp_min_height is not None:
         config.grasp_side_min_height_m = args.side_grasp_min_height
     if args.ik_tol_trans is not None:

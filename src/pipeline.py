@@ -6,17 +6,17 @@ C'est le module qui MET TOUT ENSEMBLE :
   2. Détection 2D (HSV ou HF).
   3. Reconstruction 3D dans le repère base.
   4. Trouve l'objet cible dans la scène.
-  5. Grasp planning (TopDownGrasp).
+  5. Grasp planning (AdaptiveGrasp par défaut) : propose top-down/45/90 selon la
+     ZONE (distance+hauteur), garde le 1er angle ATTEIGNABLE en IK.
   6. IK pour les 3 poses (approach/grasp/retract).
-  7. Génération de trajectoire articulaire complète :
-       config_courante -> approach (pince ouverte)
-                       -> grasp (descendre)
-                       -> grasp (fermer pince)
-                       -> retract (remonter)
-                       -> drop_above (au-dessus de la boite)
-                       -> drop_release (ouvrir pince)
-                       -> rest (config zero)
-  8. Execution sur le robot via MotorController.
+  7. Trajectoire jusqu'à approach, puis RAFFINEMENT cam_2 (boucle fermée) :
+     recale la POSITION (résiduel stéréo) et réaligne les mâchoires sur le grand
+     axe, sous garde-fous (taille du blob, plafond de correction).
+  8. Offset de prise base-Y (gauche) appliqué APRÈS cam_2 (pince asymétrique).
+  9. Descente + FERMETURE ASSERVIE au couple ; vérif après levée ; RETRY si la
+     pince s'est fermée à vide (re-raffinement cam_2 + redescente).
+ 10. Si tenu : dépose (drop_above -> drop_release) puis retour ; sinon abandon.
+ 11. Exécution sur le robot via MotorController.
 
 Usage via le CLI :
   python scripts/pick_and_place.py --target orange_cube --detector hf
@@ -66,6 +66,7 @@ from src.perception.detector import (
     HSVDetector,
     default_hf_labels,
     default_hsv_specs,
+    flatten_specs,
     load_hf_specs,
     load_hsv_specs,
 )
@@ -96,7 +97,35 @@ class PipelineConfig:
     pause_release_s: float = 0.5
     dry_run: bool = False               # True : pas d'envoi moteur, juste log
     closed_loop: bool = True            # Sprint 4 : raffinement cam_2 avant grasp
-    closed_loop_max_correction_mm: float = 80.0  # rejette correction > 8 cm (sanity)
+    # Plafond de la correction cam_2 au 1er refine (a l'approche, ~8cm). L'erreur
+    # stereo realiste est ~30mm max -> une correction au-dela est presque toujours
+    # cam_2 verrouille sur un AUTRE objet. Abaisse 80->40mm (Maxence 2026-06-20 :
+    # "80 c'est beaucoup"). Le retry a un plafond encore plus serre (15mm).
+    closed_loop_max_correction_mm: float = 40.0
+    # Taille MINI du blob cam_2 (fraction du cadre) pour FAIRE CONFIANCE a son
+    # centroide et appliquer la correction de position (Maxence 2026-06-20).
+    # REMPLACE le verrou par `score` (= aire normalisee par max_area_px, une
+    # constante arbitraire -> un petit objet net mais < ~10% du cadre etait
+    # rejete a tort). Ici on juge la TAILLE ABSOLUE : un cube de 30mm a 8cm
+    # remplit ~0.7-1.3% du cadre cam_2 (essais 2026-06-20) -> 0.3% laisse passer
+    # une vraie detection tout en rejetant les fragments de masque / le bruit.
+    cam2_min_blob_frac: float = 0.003
+    # Plafond SERRE pour la correction cam_2 au RETRY (Maxence 2026-06-20). Le
+    # refinement #1 (a l'approche, ~8cm, altitude sure) a deja centre la prise ;
+    # le refinement du RETRY se fait PLUS BAS -> blob qui frole le bord/les doigts,
+    # centroide bruite (essai 2026-06-20 : saut de 30mm a (273,4) loin du cube,
+    # alors que 3 lectures concordaient a (297-302, 18-22)). Une vraie correction
+    # de retry est un PETIT ajustement ; au-dela de ce plafond c'est un outlier
+    # basse-altitude -> on garde la pose deja corrigee par le refinement #1.
+    cam2_retry_max_correction_mm: float = 15.0
+    # Tangage (pitch) AU-DELA duquel on n'utiliserait plus cam_2. DECISION MAXENCE
+    # 2026-06-21 : cam_2 doit servir a TOUS les angles (0/45/90) -> defaut 180 =
+    # jamais bloque. cam_2 sert a (1) recaler la POSITION et (2) aligner les
+    # machoires sur le grand axe de l'objet, utile quel que soit l'angle. Garde-fou
+    # restant : meme a 90 une correction position aberrante (>40mm) ou un blob trop
+    # petit est deja rejete par les autres verrous. Si un jour le 90 derape a cause
+    # de la projection rayon-plan, baisser CE seuil (ex 67.5) -- mais demander avant.
+    cam2_max_pitch_deg: float = 180.0
     display: bool = False               # Affiche les frames camera (cv2.imshow) aux moments cles
 
     # Pose intermediaire "safe" entre drop_release et home (utile pour
@@ -184,11 +213,19 @@ class PipelineConfig:
     # grasp pour que l'objet finisse contre le doigt fixe (le mobile vient
     # l'ecraser), sinon le doigt fixe percute l'objet et le pousse avant la
     # fermeture -> prise "de travers". Calibre a 8mm pour le cube 30mm.
-    # DEFAUT DEPLOIEMENT 0 (2026-06-13, demande de Maxence) : le decalage sert a
-    # "carrer" un objet a FACES PLATES (cube) contre le doigt fixe ; pour un objet
-    # ROND (cylindre) il ne sert pas et risque de faire rater un objet fin.
-    # Passer --grasp-lateral-offset 8 pour un cube. None -> defaut TopDownGrasp(8).
+    # REMIS A 0 (Maxence 2026-06-20) : ce decalage est en repere PINCE, le long de
+    # l'axe des machoires. Avec yaw_offset=90deg il part en X_base (verifie : il
+    # decalait la cible en X, pas en Y) ET cam_2 le gommait au recentrage. Le vrai
+    # besoin de Maxence = un decalage base-Y pur applique APRES cam_2 : voir
+    # grasp_y_offset_base_mm ci-dessous.
     grasp_lateral_offset_mm: Optional[float] = 0.0
+    # OFFSET DE PRISE base-Y (Maxence 2026-06-20). Le robot vise la position de
+    # l'objet (centree par cam_2), PUIS on decale la cible de prise de +Y (vers la
+    # GAUCHE, Y+ = gauche) d'une valeur FIXE, sur CHAQUE descente. Translation pure
+    # en repere base -> n'affecte PAS le wrist/l'orientation. Applique APRES cam_2
+    # (sinon le recentrage cam_2 l'annule). +10mm pour commencer ; signe negatif
+    # = vers la droite. 0 = desactive.
+    grasp_y_offset_base_mm: float = 10.0
 
     # ---------- P1' : verification POST-LEVEE (anti faux positifs) ----------
     # Le couple A LA FERMETURE peut mentir : effleurement du sommet, morsure
@@ -285,10 +322,13 @@ class PipelineConfig:
     grasp_fallback_max_trans_mm: float = 25.0
     grasp_fallback_max_rot_deg: float = 25.0
     # Hauteur de prise mini requise pour une prise INCLINEE (degagement table) :
-    # required = min_clearance + |sin(theta)| * ce terme. None = defaut
-    # AdaptiveGrasp (0.020m). ⚠️ PROVISOIRE : ~demi-empreinte verticale de la
-    # pince a l'horizontale, A MESURER reellement (CAD/terrain) a theta=90.
-    grasp_side_min_height_m: Optional[float] = None
+    # required = min_clearance(5mm) + |sin(theta)| * ce terme. A theta=90 (face) :
+    # required = 5 + 3 = 8mm -> un objet dont le CENTRE est a >=8mm du sol est
+    # saisissable de face. Reglage 2026-06-17 (Maxence) : 25->3mm pour que des
+    # objets bas comme le cube de 30mm (centre a 15mm) soient prenables de face
+    # quand le top-down est hors de portee (machoires ~+/-5mm autour du centre,
+    # ~3mm de marge au sol). A remonter si le bas des doigts TPU touche la table.
+    grasp_side_min_height_m: Optional[float] = 0.003
     # Roll (deg) applique aux prises INCLINEES autour de l'axe d'approche, pour la
     # convention pince. None = reutilise grasp_yaw_offset_deg (90, mesure en
     # TOP-DOWN). ⚠️ Le SIGNE n'a PAS ete valide en incline -> si au 1er essai les
@@ -300,6 +340,16 @@ class PipelineConfig:
     # En adaptatif, au-dela l'incline (45/90) prend le relais. Reglable via
     # --max-top-down-height (utile pres du seuil ou la hauteur mesuree est bruitee).
     grasp_max_top_down_height_m: Optional[float] = None
+
+    # ---------- SECURITE : rejet du demi-tour de poignet ----------
+    # Une prise dont l'IK exige un saut de wrist_roll > ce seuil depuis la pose
+    # COURANTE = la pince se RETOURNE (~180deg) et plonge vers la table, bras
+    # contorsionne (observe + photos 2026-06-17 : a failli casser le support
+    # cam_2). On REFUSE alors d'executer cette prise (echec propre) plutot que de
+    # forcer mecaniquement. Reperes mesures : les prises SAINES sautent <=40deg ;
+    # les retournements dangereux ~178deg -> 120deg les separe largement.
+    # PROVISOIRE (a confirmer en campagne). Override CLI : --wrist-flip-max-deg.
+    wrist_flip_max_deg: float = 120.0
 
 
 # ============================================================
@@ -363,8 +413,9 @@ class PickAndPlacePipeline:
         automatiquement = fond + box_height.
 
         Calcule deux poses cibles au-dessus de la boite :
-          - drop_above   : 5 cm au-dessus du dessus -> approche avec marge.
-          - drop_release : 2 cm au-dessus du dessus -> point de relachement.
+          - drop_above   : 8 cm au-dessus du dessus -> transit, l'objet pendu
+                           sous la pince degage le bord de la boite.
+          - drop_release : 3 cm au-dessus du dessus -> point de relachement.
 
         Emet un avertissement si la position semble incoherente (boite
         chevauche la base du robot ou hors workspace) -- typique d'un
@@ -380,10 +431,15 @@ class PickAndPlacePipeline:
         box_h = float(box["dimensions_m"][2])
         # Dessus de la boite = fond + hauteur
         top_z = float(bottom_center[2]) + box_h
-        # drop_above : 5 cm au-dessus du dessus, drop_release : 2 cm au-dessus
+        # CLEARANCE BOITE (2026-06-17) : l'objet TENU depasse SOUS la pince (un
+        # cylindre saisi pres d'un bout pend de plusieurs cm). A 5cm/2cm il
+        # frolait/cognait le bord de la boite au transit (signale par Maxence).
+        # On transite plus haut (drop_above) pour que l'objet pendu degage le
+        # dessus, puis on descend DROIT dans l'ouverture. 8cm reste atteignable a
+        # la position lointaine de la boite (Y=-225) ; 12cm risquait l'IK depose.
         self.drop_position = np.array([bottom_center[0], bottom_center[1], top_z])
-        self.drop_above   = self.drop_position + np.array([0.0, 0.0, 0.05])
-        self.drop_release = self.drop_position + np.array([0.0, 0.0, 0.02])
+        self.drop_above   = self.drop_position + np.array([0.0, 0.0, 0.08])
+        self.drop_release = self.drop_position + np.array([0.0, 0.0, 0.03])
 
         # AVERTISSEMENT si position incoherente
         x, y = float(bottom_center[0]), float(bottom_center[1])
@@ -425,7 +481,8 @@ class PickAndPlacePipeline:
             specs_path = self.config.hsv_specs_path or (REPO / "configs/perception/hsv_specs.json")
             specs = load_hsv_specs(specs_path) if specs_path.exists() else default_hsv_specs()
             self._detector = HSVDetector(specs)
-            self._specs_meta = {s.label: s.meta for s in specs}
+            # label->meta independant de la camera : union si specs par-camera.
+            self._specs_meta = {s.label: s.meta for s in flatten_specs(specs)}
             self._label_mapping = {}  # HSV : labels = label internes directement
         elif self.config.detector_kind == "hf":
             hf_path = self.config.hf_specs_path or (REPO / "configs/perception/hf_specs.json")
@@ -468,6 +525,19 @@ class PickAndPlacePipeline:
 
     # ----- grasp planning + IK selection ----------------------------------
 
+    @staticmethod
+    def _wrist_jump_deg(q_ref: dict, ik_res) -> float:
+        """Amplitude (deg) du saut de wrist_roll entre la pose de reference et la
+        solution IK. > wrist_flip_max_deg = demi-tour dangereux (pince a l'envers)."""
+        try:
+            if ik_res is None or not getattr(ik_res, "joint_angles_rad", None):
+                return 0.0
+            wr0 = float(np.degrees(q_ref.get("wrist_roll", 0.0)))
+            wr1 = float(np.degrees(ik_res.joint_angles_rad.get("wrist_roll", 0.0)))
+            return abs(wr1 - wr0)
+        except Exception:
+            return 0.0
+
     def _plan_and_solve_grasp(self, target, q_current):
         """Planifie la saisie et resout l'IK ; renvoie (grasp_pose, r_app, r_grp,
         r_ret) ou (None, None, None, None) si rien de faisable.
@@ -504,6 +574,10 @@ class PickAndPlacePipeline:
                     print(f"   (orientation de prise retournee de 180deg retenue, "
                           f"yaw={np.degrees(grasp_pose.meta.get('yaw_rad', 0)):+.0f}deg ; "
                           f"matrices persistees -> cibles coherentes pour la suite)")
+            # NB : en TOP-DOWN la pince pointe toujours vers le bas ; un grand
+            # wrist_roll n'est qu'une rotation des machoires (jamais un
+            # retournement dangereux) -> pas de garde-fou ici. Le garde-fou
+            # anti-retournement ne s'applique qu'aux prises INCLINEES (cf adaptatif).
             return grasp_pose, r_app, r_grp, r_ret
 
         # ---- mode adaptatif : balayage d'angles, choix par faisabilite IK ----
@@ -520,7 +594,8 @@ class PickAndPlacePipeline:
         TRANS_OK_MM, ROT_OK_DEG = c.ik_tol_trans_mm, c.ik_tol_rot_deg
         APP_OK_MM = c.ik_tol_approach_mm
         print(f">> Saisie adaptative : {len(cands)} candidat(s) d'angle, choix par "
-              f"atteignabilite IK (top-down si possible, sinon le plus frontal) :")
+              f"atteignabilite IK + angle prefere selon la ZONE "
+              f"(distance+hauteur : proche/bas->top-down, mi->45, loin/haut->face) :")
         results = []  # (gp, r_app, r_grp, r_ret, reachable)
         for gp in cands:
             if gp.meta.get("yaw_free"):
@@ -534,9 +609,24 @@ class PickAndPlacePipeline:
             # orientation) ET la pose APPROACH (position) soient atteintes : une
             # frontale peut avoir un grasp OK mais un approach recule de 8cm HORS
             # workspace -> a detecter ici. cf reachability-aware grasping.
-            reachable = (r_grp.translation_err_mm <= TRANS_OK_MM
-                         and r_grp.rotation_err_deg <= ROT_OK_DEG
-                         and r_app.translation_err_mm <= APP_OK_MM)
+            # SECURITE : une prise INCLINEE qui exige un demi-tour de poignet
+            # (pince a l'envers, plonge vers la table) est traitee comme NON
+            # atteignable. En top-down (theta=0) un grand wrist_roll = simple
+            # rotation des machoires, jamais dangereux -> on N'applique PAS le
+            # garde-fou (sinon on refuse a tort des prises top-down valides).
+            tilted = abs(gp.meta.get("pitch_deg", 0.0)) > 1e-6
+            wj = self._wrist_jump_deg(q_current, r_grp)
+            flips = tilted and (wj > c.wrist_flip_max_deg)
+            ik_ok = (r_grp.translation_err_mm <= TRANS_OK_MM
+                     and r_grp.rotation_err_deg <= ROT_OK_DEG
+                     and r_app.translation_err_mm <= APP_OK_MM)
+            reachable = ik_ok and not flips
+            if flips:
+                verdict = f"rejete (SAUT poignet {wj:.0f}deg)"
+            elif ik_ok:
+                verdict = "atteignable"
+            else:
+                verdict = "rejete (IK)"
             print(f"   theta={gp.meta['pitch_deg']:+5.0f}deg  "
                   f"roll={np.degrees(gp.meta.get('roll_rad', 0.0)):+4.0f}deg  "
                   f"machoires={gp.meta['jaw_width_mm']:4.0f}mm  "
@@ -544,31 +634,32 @@ class PickAndPlacePipeline:
                   f"IK: grasp {r_grp.translation_err_mm:4.1f}mm/"
                   f"{r_grp.rotation_err_deg:4.1f}deg  "
                   f"app {r_app.translation_err_mm:4.1f}mm  "
-                  f"[{'atteignable' if reachable else 'rejete (IK)'}]")
+                  f"[{verdict}]")
             results.append((gp, r_app, r_grp, r_ret, reachable))
 
         reachable_list = [r for r in results if r[4]]
         if reachable_list:
-            # CHOIX PARMI LES ATTEIGNABLES, LOGIQUE SELON LA POSE DE L'OBJET
-            # (pas "le 1er de la liste") :
-            #  - objet DEBOUT : on grippe le COTE (prise frontale/diagonale, theta
-            #    le PLUS GRAND atteignable). Descendre par le dessus sur un objet
-            #    debout = la pince longe l'objet -> prise basse/instable et tres
-            #    sensible a l'erreur de hauteur ; une prise de cote grippe le flanc
-            #    a la hauteur detectee, quelle qu'elle soit -> plus logique et plus
-            #    robuste.
-            #  - objet COUCHE / PLAT / compact : top-down (0) s'il est atteignable
-            #    (sur, eprouve) ; sinon le plus frontal atteignable.
-            standing = (target.meta or {}).get("pose_class") == "debout"
-            most_frontal = max(reachable_list,
-                               key=lambda r: r[0].meta["pitch_deg"])
-            if standing:
-                best = most_frontal
-            else:
-                top_down = [r for r in reachable_list
-                            if abs(r[0].meta["pitch_deg"]) < 1e-6]
-                best = top_down[0] if top_down else most_frontal
+            # CHOIX = parmi les angles ATTEIGNABLES (IK), celui le plus proche de
+            # l'angle PREFERE selon la ZONE d'usage (distance + hauteur), Maxence
+            # 2026-06-18. Chaque angle a son domaine :
+            #   - top-down (0)   : objet PROCHE et BAS ;
+            #   - diagonale (45) : mi-distance / mi-hauteur (la plus polyvalente) ;
+            #   - face (90)      : objet LOIN et/ou HAUT.
+            # Si le prefere n'est pas atteignable -> on prend le voisin atteignable
+            # (jamais d'echec "top-down force alors qu'une autre prise marchait").
+            # Bornes de zone reglables dans grasp.py (GRASP_ZONE_*). Egalite ->
+            # pitch le plus petit (poignet moins reoriente = plus sur).
+            from src.planning.grasp import preferred_pitch_deg
+            pref = preferred_pitch_deg(target)
+            best = min(reachable_list,
+                       key=lambda r: (abs(abs(r[0].meta["pitch_deg"]) - pref),
+                                      abs(r[0].meta["pitch_deg"])))
             chosen = best[:4]
+            import numpy as _np
+            _d = float(_np.hypot(target.position_base_m[0], target.position_base_m[1]))
+            print(f"   -> zone : d={_d*100:.0f}cm -> angle prefere {pref:+.0f}deg ; "
+                  f"retenu {best[0].meta['pitch_deg']:+.0f}deg parmi "
+                  f"{len(reachable_list)} atteignable(s)")
         else:
             # repli : le moins mauvais (residu grasp), borne dure sinon echec propre.
             best = min(results, key=lambda r: r[2].translation_err_mm)
@@ -576,6 +667,16 @@ class PickAndPlacePipeline:
             ftrans = r_grp.translation_err_mm
             frot = r_grp.rotation_err_deg
             fapp = r_app.translation_err_mm
+            ftilted = abs(gp.meta.get("pitch_deg", 0.0)) > 1e-6
+            fwrist = self._wrist_jump_deg(q_current, r_grp)
+            # SECURITE : ne JAMAIS executer un repli INCLINE qui retourne le poignet
+            # (pince a l'envers). En top-down un grand wrist_roll est inoffensif.
+            if ftilted and fwrist > c.wrist_flip_max_deg:
+                print(f"!! SECURITE : le moins mauvais candidat (incline) exige un "
+                      f"demi-tour de poignet ({fwrist:.0f}deg > "
+                      f"{c.wrist_flip_max_deg:.0f}deg) -> pince a l'envers. "
+                      f"ON N'EXECUTE PAS.")
+                return None, None, None, None
             if (ftrans > c.grasp_fallback_max_trans_mm
                     or frot > c.grasp_fallback_max_rot_deg
                     or fapp > c.grasp_fallback_max_trans_mm):
@@ -725,6 +826,24 @@ class PickAndPlacePipeline:
             target = next((o for o in scene.objects if o.label == self.config.target_label), None)
             if target is None:
                 print(f"!! Objet '{self.config.target_label}' NON DETECTE dans la scene. Annule.")
+                # POURQUOI : la raison precise du rejet est DEJA calculee par le
+                # PoseEstimator (stereo / reproj / workspace / zone d'exclusion).
+                # On l'affichait seulement si la scene etait VIDE -> masquee quand
+                # d'autres objets etaient fusionnes (cas du prisme drope alors que
+                # 3 autres objets etaient la). On la sort systematiquement ici.
+                rej = getattr(self._estimator, "_last_rejections", {}).get(
+                    self.config.target_label)
+                if rej:
+                    print(f"   -> raison du rejet : {rej}")
+                # Rappel des detections 2D brutes : souvent l'objet EST vu, mais les
+                # meilleures bbox par camera (plus grande aire) ne se correspondent
+                # pas en stereo (ex : tache noire du fond choisie a la place du prisme).
+                seen = [f"{cam}:{n}" for cam, dl in dets_by_cam.items()
+                        if (n := sum(1 for d in dl
+                                     if d.label == self.config.target_label))]
+                if seen:
+                    print(f"   -> pourtant detecte en 2D dans {', '.join(seen)} "
+                          f"(non fusionne en 3D)")
                 return
             print(f">> Cible '{target.label}' a position "
                   f"({target.position_base_m[0]*1000:+.1f}, "
@@ -951,42 +1070,72 @@ class PickAndPlacePipeline:
                     detector=self._detector,
                     multi_camera=mc,
                     robot_state=rs_at_approach,
+                    debug_save_dir=((REPO / "outputs" / "perception")
+                                    if self.config.display else None),
                     # IMPORTANT : on passe la hauteur ATTENDUE de l'objet
                     # (= Z de la pose grasp triangulée) pour que la formule
                     # de conversion pixel->m utilise la VRAIE distance
                     # cam_2 -> objet, pas une valeur en dur.
-                    target_z_base_m=float(grasp_pose.T_base_gripper_grasp[2, 3]),
+                    target_z_base_m=float(grasp_pose.meta.get(
+                        "object_center_z_m", grasp_pose.T_base_gripper_grasp[2, 3])),
+                    grasp_xy_base_m=(float(grasp_pose.T_base_gripper_grasp[0, 3]),
+                                     float(grasp_pose.T_base_gripper_grasp[1, 3])),
                     label_mapping=self._label_mapping,
                 )
                 print(f"   {refinement.message}")
-                if refinement.confidence < 0.1:
-                    print("   [WARN] confiance faible, correction NON appliquee "
-                          "(grasp utilise la pose stereo seule)")
+                # cam_2 corrige la POSITION par projection ray-plan, qui suppose une
+                # vue ~top-down. Sur une prise INCLINEE (cote/diagonale) cette
+                # projection est FAUSSE : le centroide du blob d'un objet DEBOUT se
+                # projette systematiquement a cote du vrai centre -> la correction
+                # DIVERGE (Δv ~ -200px constant d'une iteration a l'autre, X qui part
+                # a +13mm au retry) et pousse la prise "devant et bas" -> ferme a vide
+                # (essais cylindre 2026-06-20). On NE corrige donc PAS la position en
+                # incline : la stereo fait foi (X fiable, Z = table + H/2). cam_2 ne
+                # raffine que les prises TOP-DOWN, ou sa geometrie est valide.
+                # cam_2 valide jusqu'a cam2_max_pitch_deg (0 et 45 OK ; 90 trop
+                # horizontal -> rayon rase le plan). 45 RE-ACTIVE a la demande de
+                # Maxence (a surveiller : le 45 oblique peut biaiser un peu).
+                is_tilted = (abs(np.degrees(grasp_pose.meta.get("pitch_rad", 0.0)))
+                             >= self.config.cam2_max_pitch_deg)
+                if is_tilted:
+                    print(f"   (prise theta="
+                          f"{np.degrees(grasp_pose.meta.get('pitch_rad', 0.0)):+.0f}deg "
+                          f">= {self.config.cam2_max_pitch_deg:.0f}deg -> correction cam_2 "
+                          f"IGNOREE : axe optique trop horizontal, ray-plan invalide. "
+                          f"On garde la pose stereo.)")
+                elif refinement.detection is None:
+                    print("   [WARN] cam_2 sans detection exploitable "
+                          "-> correction NON appliquee (pose stereo seule)")
+                elif refinement.area_frac < self.config.cam2_min_blob_frac:
+                    print(f"   [WARN] blob cam_2 trop petit "
+                          f"({100*refinement.area_frac:.2f}% < "
+                          f"{100*self.config.cam2_min_blob_frac:.2f}% cadre) "
+                          "-> correction NON appliquee (centroide peu fiable)")
                 elif refinement.delta_norm_mm > self.config.closed_loop_max_correction_mm:
                     print(f"   [WARN] correction {refinement.delta_norm_mm:.1f} mm > seuil "
                           f"{self.config.closed_loop_max_correction_mm} mm. "
                           "Suspect, on NE corrige PAS (peut etre fausse detection).")
                 else:
                     apply_correction_to_grasp_pose(grasp_pose, refinement.delta_base_m)
-                    print(f"   Correction position appliquee (norme {refinement.delta_norm_mm:.1f} mm)")
-                    # CORRECTION D'ORIENTATION par cam_2 (2026-06-13). cam_2 est
-                    # proche et quasi au-dessus de l'objet -> son grand axe est
-                    # plus FIABLE que la stereo oblique cam_0/cam_1 (dont le masque
-                    # HSV est faible sur le cylindre fin). Si cam_2 voit un objet
-                    # CLAIREMENT allonge, on REORIENTE la prise sur son petit axe
-                    # avant de descendre (reponse au probleme 'pince pas alignee').
+                    print(f"   Correction position appliquee "
+                          f"(norme {refinement.delta_norm_mm:.1f} mm, "
+                          f"blob {100*refinement.area_frac:.1f}% cadre)")
+                    # CORRECTION D'ORIENTATION par cam_2 (2026-06-13, TOP-DOWN seul).
+                    # cam_2 est proche et quasi au-dessus de l'objet -> son grand axe
+                    # est plus FIABLE que la stereo oblique cam_0/cam_1. Si cam_2 voit
+                    # un objet CLAIREMENT allonge, on REORIENTE la prise sur son petit
+                    # axe. ⚠️ reorient_grasp_pose suppose le TOP-DOWN (il pose une
+                    # rotation verticale) : l'appliquer a une prise 45/90 l'APLATIRAIT
+                    # en top-down. Donc le re-alignement ne s'applique qu'au top-down ;
+                    # la correction de POSITION (faite plus haut) reste valable a tous
+                    # les angles. Re-alignement tilt-aware = TODO (a decider avec Maxence).
                     reoriented = False
-                    # GARDE-FOU : reorient_grasp_pose suppose une prise TOP-DOWN
-                    # (elle reconstruit l'orientation via _rotation_top_down). Sur
-                    # une prise INCLINEE (mode adaptatif), l'appliquer aplatirait la
-                    # prise a la verticale -> on la SAUTE. La correction de POSITION
-                    # (ci-dessus) reste appliquee : elle est agnostique a l'angle.
-                    is_tilted = abs(grasp_pose.meta.get("pitch_rad", 0.0)) > 1e-3
-                    cam2_says_reorient = (
+                    _wants_reorient = (
                         self.config.cam2_reorient
                         and refinement.yaw_base_cam2 is not None
                         and refinement.elong_cam2 >= self.config.cam2_reorient_min_elong)
-                    if cam2_says_reorient and not is_tilted:
+                    _is_top_down = abs(np.degrees(grasp_pose.meta.get("pitch_rad", 0.0))) < 1e-3
+                    if _wants_reorient and _is_top_down:
                         from src.planning.grasp import reorient_grasp_pose
                         old_yaw = np.degrees(grasp_pose.meta.get("yaw_rad", 0.0))
                         reorient_grasp_pose(grasp_pose, refinement.yaw_base_cam2)
@@ -995,11 +1144,30 @@ class PickAndPlacePipeline:
                               f"-> {new_yaw:+.0f}deg (objet vu allonge x{refinement.elong_cam2:.1f} "
                               f"par cam_2, plus fiable que la stereo)")
                         reoriented = True
-                    elif cam2_says_reorient and is_tilted:
-                        print(f"   (prise inclinee theta="
-                              f"{np.degrees(grasp_pose.meta.get('pitch_rad', 0.0)):+.0f}deg "
-                              f"-> reorientation cam_2 ignoree : elle suppose le "
-                              f"top-down ; correction de POSITION conservee)")
+                    elif _wants_reorient and not _is_top_down:
+                        # PRISE INCLINEE (45/90) : on REPLANIFIE au MEME pitch avec le
+                        # grand axe vu par cam_2 (reutilise _build_pose -> machoires en
+                        # travers du petit cote, geometrie identique au planning). La
+                        # correction de POSITION cam_2 (deja appliquee a grasp_pose
+                        # ci-dessus) est RE-appliquee a la pose replanifiee.
+                        new_gp = None
+                        if hasattr(self._grasp_strategy, "replan_oriented"):
+                            pitch_deg = np.degrees(grasp_pose.meta.get("pitch_rad", 0.0))
+                            new_gp = self._grasp_strategy.replan_oriented(
+                                target, pitch_deg, refinement.yaw_base_cam2)
+                        if new_gp is not None:
+                            apply_correction_to_grasp_pose(new_gp, refinement.delta_base_m)
+                            grasp_pose = new_gp
+                            print(f"   cam_2 REORIENTE la prise inclinee "
+                                  f"(theta={np.degrees(grasp_pose.meta.get('pitch_rad', 0.0)):+.0f}deg) "
+                                  f"sur le grand axe cam_2 "
+                                  f"({np.degrees(refinement.yaw_base_cam2):+.0f}deg, "
+                                  f"allonge x{refinement.elong_cam2:.1f}) -> machoires en "
+                                  f"travers du petit cote, pitch inchange")
+                            reoriented = True
+                        else:
+                            print(f"   (cam_2 voit l'objet allonge x{refinement.elong_cam2:.1f} "
+                                  f"mais replan incline infaisable -> orientation conservee)")
                     # Re-IK. Si on a reoriente : NON verrouille (l'axe a change ->
                     # re-choisir la meilleure des 2 orientations 180 pour la
                     # continuite). Sinon verrouille (anti bascule).
@@ -1054,20 +1222,29 @@ class PickAndPlacePipeline:
                         detector=self._detector,
                         multi_camera=mc,
                         robot_state=rs_at_intermediate,
-                        target_z_base_m=float(grasp_pose.T_base_gripper_grasp[2, 3]),
+                        target_z_base_m=float(grasp_pose.meta.get(
+                        "object_center_z_m", grasp_pose.T_base_gripper_grasp[2, 3])),
+                        grasp_xy_base_m=(float(grasp_pose.T_base_gripper_grasp[0, 3]),
+                                         float(grasp_pose.T_base_gripper_grasp[1, 3])),
                         label_mapping=self._label_mapping,
+                        debug_save_dir=((REPO / "outputs" / "perception")
+                                        if self.config.display else None),
                     )
                     print(f"   Refinement #2 : {refinement2.message}")
-                    R2_MAX_ABSOLUTE_MM = 30.0
-                    R2_MIN_SCORE = 0.18
-                    score = refinement2.confidence
-                    r2_cap_mm = min(R2_MAX_ABSOLUTE_MM, 12.0 + 40.0 * score)
-                    if score >= R2_MIN_SCORE and refinement2.delta_norm_mm < r2_cap_mm:
+                    # GATING par TAILLE ABSOLUE du blob (Maxence 2026-06-20),
+                    # coherent avec les refinements #1 / retry (plus de `score`).
+                    r2_cap_mm = self.config.closed_loop_max_correction_mm
+                    # cam_2 ne corrige qu'en TOP-DOWN (ray-plan valide) ; incline -> stereo.
+                    _is_tilted2 = (abs(np.degrees(grasp_pose.meta.get("pitch_rad", 0.0)))
+                                   >= self.config.cam2_max_pitch_deg)
+                    if (not _is_tilted2 and refinement2.detection is not None
+                            and refinement2.area_frac >= self.config.cam2_min_blob_frac
+                            and refinement2.delta_norm_mm < r2_cap_mm):
                         apply_correction_to_grasp_pose(grasp_pose,
                                                         refinement2.delta_base_m)
                         print(f"   Correction #2 appliquee "
                               f"(norme {refinement2.delta_norm_mm:.1f} mm, "
-                              f"plafond {r2_cap_mm:.0f}mm @ score {score:.2f})")
+                              f"blob {100*refinement2.area_frac:.1f}% cadre)")
                         r_grp = self._ik.solve(
                             grasp_pose.T_base_gripper_grasp,
                             q_init=r_intermediate.joint_angles_rad)
@@ -1076,9 +1253,11 @@ class PickAndPlacePipeline:
                             q_init=r_grp.joint_angles_rad)
                         self._log_wrist("re-solve apres correction #2",
                                         r_intermediate.joint_angles_rad, r_grp)
-                    elif score < R2_MIN_SCORE and refinement2.delta_norm_mm > 0.5:
-                        print(f"   [INFO] score cam_2 {score:.2f} < {R2_MIN_SCORE} : "
-                              f"correction #2 ({refinement2.delta_norm_mm:.1f}mm) ignoree")
+                    elif refinement2.area_frac < self.config.cam2_min_blob_frac:
+                        print(f"   [INFO] blob cam_2 #2 trop petit "
+                              f"({100*refinement2.area_frac:.2f}% < "
+                              f"{100*self.config.cam2_min_blob_frac:.2f}% cadre) "
+                              f"-> correction #2 ignoree")
                     elif refinement2.delta_norm_mm >= r2_cap_mm:
                         print(f"   [WARN] correction #2 = {refinement2.delta_norm_mm:.1f}mm "
                               f"> plafond {r2_cap_mm:.0f}mm (probable fausse detection), ignoree")
@@ -1100,6 +1279,25 @@ class PickAndPlacePipeline:
                 #   5. Si tenu -> depose ; sinon retry (refinement + redescente).
                 print(f">> Phase 2 : tentative(s) de saisie avec feedback pince + depot + retour ({home_origin})")
                 q_at_intermediate = rs_at_intermediate.joint_angles_rad
+
+                # === OFFSET DE PRISE base-Y (Maxence 2026-06-20) ===
+                # cam_2 a centre grasp_pose sur l'OBJET. On decale maintenant la
+                # cible de +Y (gauche) d'une valeur fixe : translation PURE en repere
+                # base (n'affecte pas le wrist/l'orientation), integree a CHAQUE
+                # prise. APPLIQUE ICI, apres cam_2 : sinon le recentrage cam_2
+                # l'annulerait (verifie 2026-06-20 : l'offset pince partait en X et
+                # etait gomme). Le retry re-applique l'offset apres son eventuelle
+                # correction (cf bloc retry).
+                dy_base = self.config.grasp_y_offset_base_mm / 1000.0
+                if dy_base != 0.0:
+                    for _attr in ("T_base_gripper_approach", "T_base_gripper_grasp",
+                                  "T_base_gripper_retract"):
+                        getattr(grasp_pose, _attr)[1, 3] += dy_base
+                    r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
+                        grasp_pose, q_init=q_at_intermediate, lock_orientation=True)
+                    print(f"   Offset de prise base-Y "
+                          f"{self.config.grasp_y_offset_base_mm:+.0f}mm (gauche) applique "
+                          f"APRES cam_2 (translation pure, orientation inchangee)")
 
                 # Log structure pour campagne experimentale (P4)
                 grasp_attempts_log = []
@@ -1321,25 +1519,48 @@ class PickAndPlacePipeline:
                         detector=self._detector,
                         multi_camera=mc,
                         robot_state=rs_after_lift,
-                        target_z_base_m=float(grasp_pose.T_base_gripper_grasp[2, 3]),
+                        target_z_base_m=float(grasp_pose.meta.get(
+                        "object_center_z_m", grasp_pose.T_base_gripper_grasp[2, 3])),
+                        grasp_xy_base_m=(float(grasp_pose.T_base_gripper_grasp[0, 3]),
+                                         float(grasp_pose.T_base_gripper_grasp[1, 3])),
                         label_mapping=self._label_mapping,
+                        debug_save_dir=((REPO / "outputs" / "perception")
+                                        if self.config.display else None),
                     )
                     print(f"   {refinement_retry.message}")
-                    # Seuil dynamique selon score (meme logique P2) + score
-                    # minimum releve a 0.15 (P4 : le score est un ratio d'aire,
-                    # une correction de 49mm @ 0.28 a deja envoye le bras a cote)
-                    score_r = refinement_retry.confidence
-                    if score_r >= 0.5:
-                        seuil_r_mm = 100.0
-                    elif score_r >= 0.3:
-                        seuil_r_mm = 80.0
+                    # GATING par TAILLE ABSOLUE du blob (Maxence 2026-06-20), plus
+                    # par `score` (= aire normalisee par max_area_px, trompeur).
+                    # Meme logique que le refinement initial : blob assez gros +
+                    # correction sous le plafond de securite + top-down (ray-plan
+                    # valide ; en incline on garde la pose stereo).
+                    seuil_r_mm = self.config.cam2_retry_max_correction_mm
+                    is_tilted = (abs(np.degrees(grasp_pose.meta.get("pitch_rad", 0.0)))
+                                 >= self.config.cam2_max_pitch_deg)
+                    if is_tilted:
+                        print("   (prise >= seuil pitch -> correction retry cam_2 ignoree : "
+                              "axe optique trop horizontal ; pose stereo conservee)")
+                    elif refinement_retry.detection is None:
+                        print("   [INFO] cam_2 sans detection au retry -> pose stereo conservee")
+                    elif refinement_retry.area_frac < self.config.cam2_min_blob_frac:
+                        print(f"   [INFO] blob cam_2 retry trop petit "
+                              f"({100*refinement_retry.area_frac:.2f}% < "
+                              f"{100*self.config.cam2_min_blob_frac:.2f}% cadre) "
+                              "-> correction retry ignoree")
+                    elif refinement_retry.delta_norm_mm >= seuil_r_mm:
+                        print(f"   [WARN] correction retry = {refinement_retry.delta_norm_mm:.1f}mm "
+                              f"> seuil {seuil_r_mm:.0f}mm, ignoree (suspect)")
                     else:
-                        seuil_r_mm = 60.0
-                    if score_r >= 0.15 and refinement_retry.delta_norm_mm < seuil_r_mm:
                         apply_correction_to_grasp_pose(grasp_pose, refinement_retry.delta_base_m)
+                        # RE-APPLIQUE l'offset de prise base-Y : le recentrage cam_2
+                        # du retry vient de l'annuler -> la descente garde son +Y.
+                        if dy_base != 0.0:
+                            for _attr in ("T_base_gripper_approach", "T_base_gripper_grasp",
+                                          "T_base_gripper_retract"):
+                                getattr(grasp_pose, _attr)[1, 3] += dy_base
                         print(f"   Correction retry appliquee "
                               f"(norme {refinement_retry.delta_norm_mm:.1f}mm, "
-                              f"seuil={seuil_r_mm:.0f}mm @ score {score_r:.2f})")
+                              f"blob {100*refinement_retry.area_frac:.1f}% cadre ; "
+                              f"offset base-Y {self.config.grasp_y_offset_base_mm:+.0f}mm re-applique)")
                         # lock_orientation : conserver l'orientation deja
                         # engagee (anti demi-tour 180deg au retry, essai 10).
                         r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
@@ -1347,12 +1568,6 @@ class PickAndPlacePipeline:
                             lock_orientation=True)
                         self._log_wrist("re-solve retry",
                                         rs_after_lift.joint_angles_rad, r_grp)
-                    elif refinement_retry.delta_norm_mm >= seuil_r_mm:
-                        print(f"   [WARN] correction retry = {refinement_retry.delta_norm_mm:.1f}mm "
-                              f"> seuil {seuil_r_mm:.0f}mm (score {score_r:.2f}), ignoree")
-                    elif score_r < 0.15:
-                        print(f"   [INFO] score cam_2 {score_r:.2f} < 0.15 : "
-                              f"correction retry ignoree (detection peu fiable)")
 
                     # Le point de depart de la prochaine descente = position courante
                     q_start_attempt = rs_after_lift.joint_angles_rad

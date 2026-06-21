@@ -38,9 +38,9 @@ reprendre le projet.
 - [x] Calibration hand-eye des 3 caméras (résidus 2.5–7 mm moyens) — voir [PROJECT_STATUS](docs/PROJECT_STATUS.md#2-état-au-2026-05-15)
 - [x] **Sprint 2 — Perception (code)** : 5 modules `src/perception/` + 4 scripts CLI, tous auto-testés (triangulation sub-mm sur synthétique)
 - [ ] Sprint 2 — Validation expérimentale (calibrer HSV sous éclairage + mesurer erreur 3D pied à coulisse)
-- [ ] **Sprint 3** : grasp planning + planification trajectoire + interface LeRobot Python
-- [ ] **Sprint 4** : replanification boucle fermée + active vision
-- [ ] **Sprint 5** : évaluation expérimentale + rédaction du mémoire
+- [x] **Sprint 3** : grasp planning (`src/planning/grasp.py`) + trajectoire (`src/control/`) + interface LeRobot (`pick_and_place.py`)
+- [x] **Sprint 4** : raffinement en boucle fermée par `cam_2` eye-in-hand (`src/control/closed_loop.py`)
+- [~] **Sprint 5** : évaluation expérimentale (en cours) + rédaction du mémoire (`docs/memoire/`)
 
 ## Structure du projet
 
@@ -56,20 +56,27 @@ tfe-lerobot-so101/
 ├── src/
 │   ├── utils/transforms.py         # SE(3) helpers
 │   ├── calibration/                # Hand-eye + FK + motor_to_angle
-│   └── perception/                 # Sprint 2 (NOUVEAU)
-│       ├── scene.py                # Dataclasses Frame, Detection2D, ObjectInstance, Scene
-│       ├── robot_state.py          # Lecture moteurs + FK
-│       ├── camera_io.py            # MultiCamera (live) + ReplayCamera (offline)
-│       ├── detector.py             # ABC + HSVDetector (V1) + HFDetector (stub V2)
-│       └── pose_estimator.py       # Triangulation stéréo + PnP mono fallback
+│   ├── perception/                 # Sprint 2
+│   │   ├── scene.py                # Dataclasses Frame, Detection2D, ObjectInstance, Scene
+│   │   ├── robot_state.py          # Lecture moteurs + FK
+│   │   ├── camera_io.py            # MultiCamera (live) + ReplayCamera (offline)
+│   │   ├── detector.py             # ABC + HSVDetector (V1) + HFDetector (stub V2)
+│   │   └── pose_estimator.py       # Triangulation stéréo + PnP mono fallback
+│   ├── planning/grasp.py           # Sprint 3 : TopDownGrasp + AdaptiveGrasp (0/45/90 par zone)
+│   ├── control/                    # Sprint 3-4
+│   │   ├── ik.py, trajectory.py, motor_controller.py  # IK 5-DOF + traj quintiques + envoi moteur
+│   │   └── closed_loop.py          # Sprint 4 : raffinement cam_2 eye-in-hand
+│   └── pipeline.py                 # Orchestration perception -> planning -> control
 ├── scripts/
 │   ├── (calibration: calibrate*.py, solve_handeye_cam.py, check_calibration.py …)
 │   ├── calibrate_hsv.py            # Échantillonne couleurs → hsv_specs.json
 │   ├── record_perception_frames.py # Enregistre dataset 3 cams + moteurs (replay)
-│   ├── run_perception.py           # Pipeline complet (live / replay / oneshot)
-│   └── check_perception.py         # Validation chiffrée (ground truth pied à coulisse)
+│   ├── run_perception.py           # Pipeline perception (live / replay / oneshot)
+│   ├── check_perception.py         # Validation chiffrée (ground truth pied à coulisse)
+│   └── pick_and_place.py           # Pick-and-place complet (Sprint 3-4)
 ├── tests/
-│   └── perception/test_pipeline.py # Tests d'intégration synthétiques (4 cas)
+│   ├── perception/test_pipeline.py # Tests d'intégration synthétiques
+│   └── planning/test_adaptive_grasp_selection.py  # Sélection d'angle + reorient cam_2
 ├── docs/PROJECT_STATUS.md          # Document vivant
 └── requirements.txt, setup_env.sh
 ```
@@ -102,7 +109,32 @@ python scripts/preview_camera.py
 python scripts/calibrate_hsv.py             # une fois, sous l'éclairage final
 python scripts/run_perception.py            # boucle live des 3 caméras
 python scripts/check_perception.py --gt outputs/perception/gt_test.json   # validation chiffrée
+
+# Sprint 3-4 : pick-and-place complet (perception -> saisie -> dépose)
+python scripts/pick_and_place.py --target orange_cube --display
 ```
+
+## Saisie (pick-and-place)
+
+Chaîne `src/pipeline.py` :
+
+1. **Perception** — détection HSV (ou HF) dans `cam_0`/`cam_1`, triangulation
+   stéréo de la position 3D (repère base, **z=0 = la plaque**) ; la hauteur vient
+   d'une triangulation du sommet. Un biais de calibration est soustrait
+   (`configs/perception/bias_correction.json`).
+2. **Planning** (`src/planning/grasp.py`) — `AdaptiveGrasp` propose plusieurs
+   angles d'attaque — **top-down (0°)**, **diagonale (45°)**, **face avant (90°)** —
+   dans l'ordre de préférence selon la **zone** (distance + hauteur ;
+   `GRASP_ZONE_*`), et garde le 1ᵉʳ angle **atteignable** par l'IK. Pour un objet
+   allongé, l'approche s'aligne sur le grand axe → mâchoires en travers du petit côté.
+3. **Raffinement `cam_2`** (`src/control/closed_loop.py`) — à ~8 cm au-dessus de
+   l'objet, la caméra eye-in-hand recale la **position** (résiduel stéréo) et
+   réaligne les **mâchoires** sur le grand axe, sous garde-fous (taille du blob,
+   plafond de correction).
+4. **Offset de prise** — décalage base-Y (gauche) appliqué après `cam_2` pour la
+   pince asymétrique du SO-101 (`--grasp-lateral-offset`).
+5. **Saisie** — descente + **fermeture asservie au couple**, vérification après
+   levée, **retry** si fermeture à vide, puis dépose dans la boîte.
 
 Pour les procédures détaillées (recalibrer, déboguer un capteur, etc.) et les
 prochaines étapes, voir [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md).

@@ -1,21 +1,28 @@
 {
-  "_doc": "Compensation systematique du biais de calibration mesure empiriquement par Maxence (3 mesures Y differentes, biais moyen +27.8mm +-4.5mm). Ces valeurs sont SOUSTRAITES a chaque position triangulee. Si tu changes la calibration hand-eye, remesure et ajuste ici.",
+  "_doc": "Compensation systematique du biais de calibration stereo. Ces valeurs (mm) sont SOUSTRAITES a chaque position triangulee par la stereo (cf pose_estimator.py:658). Convention : biais = (position_detectee - position_reelle). Si tu changes la calibration hand-eye, REMESURE (de preference via scripts/check_perception.py) et reajuste.",
   "_methode_calibration": [
-    "1. Pose le cube a 3 positions Y differentes (e.g. Y=0, +50, -50 mm).",
-    "2. Pour chaque position, lance check_perception et note la difference Y_detecte - Y_reel.",
-    "3. Calcule la moyenne de ces 3 differences = biais Y.",
-    "4. Idem pour X et Z (optionnel).",
-    "5. Mets les valeurs ici (en mm)."
+    "1. Pose le cube/cylindre a des positions MESUREES depuis le centre de la plaque (base_link).",
+    "2. Lance scripts/check_perception.py (ou lis la ligne 'pos=(...)' de pick_and_place.py).",
+    "3. Pour chaque axe : biais = detecte - reel. Moyenne sur plusieurs positions.",
+    "4. Mets les moyennes ici (dx_mm, dy_mm, dz_mm)."
   ],
-  "dx_mm": 0,
+  "dx_mm": -32,
   "dy_mm": 0,
   "dz_mm": 0,
-  "_caracterisation_experimentale_maxence_2026_05_17": {
-    "cube_a_Y_+100mm": "detecte Y=+121.5 -> biais +21.5",
-    "cube_a_Y_-20mm": "detecte Y=+10.5  -> biais +30.5",
-    "cube_a_Y_-40mm": "detecte Y=-8.5   -> biais +31.5",
-    "moyenne_biais_Y": "+27.8 mm (ecart-type 4.5)",
-    "explication": "addition des residus hand-eye (~6-7mm par cam) amplifiee par baseline stereo majoritairement en Y"
+  "_caracterisation_2026_06_19_maxence": {
+    "_contexte": "Calibration B3b (stereo jointe). Cylindre pose sur la table, X mesure depuis le centre de la plaque (base_link).",
+    "X_a_300mm": "stereo detecte 266.8 -> biais X = -33.2",
+    "X_a_350mm": "stereo detecte 319.4 -> biais X = -30.6  ==> biais X CONSTANT ~-32mm (pas de scaling, 2 points concordent)",
+    "Y_a_0mm_debout": "stereo detecte +15.6 -> biais Y = +15.6",
+    "Y_a_0mm_couche": "stereo detecte +23.8 -> biais Y = +23.8 (pose couchee + yaw, moins fiable)",
+    "Z": "Sous-lecture Z REELLE ~20mm confirmee : un cube 30mm (centre +15mm/table) triangule vers ~-5mm (cf scene.json ligne 35). dz a CARACTERISER proprement (check_perception sur cube) avant de fixer une valeur.",
+    "_note_dy_2026_06_19": "Historique : +18 (sur-corrige objet a gauche) -> 0 -> -3. dy=-3 etait un nudge fin (decalage +3mm vers la gauche) pour des saisies qui touchaient le bord droit. Le biais Y n'est PAS un constant fiable (erreur variable + detection petit-blob bruitee).",
+    "_note_dy_2026_06_21": "REMIS A 0. Le decalage lateral (doigt fixe asymetrique) est desormais gere PROPREMENT et au bon endroit par PipelineConfig.grasp_y_offset_base_mm (option --grasp-lateral-offset), applique APRES le raffinement cam_2. dy faisait DOUBLON avec lui (les deux poussaient a gauche, ~13mm cumules). dy=0 garde la perception 'neutre' en Y ; un seul bouton de decalage = l'offset de saisie."
   },
-  "_disabled_for_B3b_test": "Desactive le 2026-05-20T11:50:16 pour tester la calibration B3b sans double compensation. Valeurs precedentes : {'dx_mm': 0, 'dy_mm': 30, 'dz_mm': 0}. Reactiver avec le backup si besoin."
+  "_attention_cam2": "Ce biais corrige UNIQUEMENT la stereo. cam_2 (closed_loop, chemin separe) a son propre biais Y (~+11mm vu a X=300). Quand cam_2 detecte, son raffinement peut re-introduire une partie du biais Y. cam_2 est par contre FIABLE en X (raffine vers le vrai X). A traiter cote closed_loop.py si la saisie rate encore en Y quand cam_2 detecte.",
+  "_historique": {
+    "2026_05_17": "Ancienne calib (hand-eye separe) : biais Y ~+27.8mm (3 mesures cube). dy etait 30.",
+    "2026_05_20": "dx/dy/dz remis a 0 (desactive) pour tester la calib B3b sans double compensation.",
+    "2026_06_19": "Reactive dx=-32 (biais X stereo, confirme constant sur 2 positions). dy mis a +18 puis REMIS A 0 (sur-correction sur objet a gauche). dz=0 en attente de caracterisation (sous-lecture Z ~20mm reelle a corriger)."
+  }
 }

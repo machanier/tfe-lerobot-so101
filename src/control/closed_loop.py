@@ -1,9 +1,14 @@
 """
 closed_loop.py - Raffinement de la pose de saisie par boucle fermee cam_2.
 
-OBJECTIF : reduire l'erreur 3D de la triangulation stereo (~30 mm, dont
-biais Y constant ~28 mm sur le poste de Maxence) a ~5-10 mm AVANT la
-saisie, grace a la camera eye-in-hand (cam_2).
+OBJECTIF : reduire l'erreur 3D de la saisie AVANT de descendre, grace a la camera
+eye-in-hand (cam_2). L'erreur BRUTE de la triangulation stereo est dominee par un
+biais SYSTEMATIQUE (mesure : ~-32 mm en X constant, ~+16 a +24 mm en Y, ~-20 mm en
+Z ; cf configs/perception/bias_correction.json). Ce biais constant est compense en
+amont (bias_correction.json) ; il reste un RESIDUEL de l'ordre de ~5-15 mm
+(variable, surtout en Y) que cam_2 reduit a quelques mm en regardant l'objet de
+pres (~8 cm). NB : cam_2 a son PROPRE biais Y (~+11 mm) -- fiable en X, a surveiller
+en Y (cf bias_correction.json _attention_cam2).
 
 PRINCIPE :
   1. Le bras execute la trajectoire jusqu'a la pose `approach` (~8 cm
@@ -12,26 +17,21 @@ PRINCIPE :
      a ~8 cm de la camera = beaucoup plus precis.
   3. On detecte l'objet dans cette image (HSV ou HF, comme la perception
      principale).
-  4. On reconstruit la position 3D dans le repere base via PnP monoculaire
-     (l'objet apparait dans une zone connue grace a la pose courante du
-     robot via FK + handeye eye-in-hand) ou via une heuristique simple :
-     l'objet doit etre au centre de l'image. Si decale de Δx_px, Δy_px,
-     on convertit en Δx_m, Δy_m via la geometrie cam_2.
-  5. La correction est appliquee a la pose `grasp` : grasp_corrigé.x += Δx, etc.
-  6. Le pipeline genere une NOUVELLE trajectoire approach -> grasp_corrige
-     et continue.
+  4. PROJECTION RAYON-PLAN : le pixel detecte (undistordu) definit un rayon en
+     repere base (via K + T_base_cam2 du robot courant) ; on l'intersecte avec le
+     plan horizontal z = hauteur de l'objet -> position 3D detectee. On compare a
+     ou l'axe optique vise (meme intersection au point principal) -> ecart Δbase.
+  5. La correction Δbase (XY seulement, Z inchange) est appliquee a la pose grasp.
+  6. cam_2 mesure AUSSI l'orientation (grand axe) ; le pipeline peut realigner les
+     machoires (reorient) si l'objet est vu nettement allonge.
 
-CHOIX D'IMPLEMENTATION V1 : approche "centrage image"
-  - On suppose que cam_2 est calibree pour viser AU CENTRE de l'image quand
-    le bras est en pose approach et que l'objet est PILE en-dessous.
-  - Si l'objet apparait decale de (Δu, Δv) pixels par rapport au centre,
-    on convertit ce decalage en delta_metres dans le plan de la table via
-    une homographie simple (camera fixee, table fixe, distance ~constante).
-  - Correction de la pose grasp : decale dans le plan XY base, ne touche pas Z.
-
-C'est moins rigoureux qu'un PnP mono complet, mais beaucoup plus simple a
-implementer en V1. Si la precision est insuffisante (>10 mm), on passe
-au PnP mono (V2).
+GARDE-FOUS (cote pipeline, cf PipelineConfig) : on n'applique la correction que si
+la detection cam_2 est fiable -- blob assez gros (area_frac >= cam2_min_blob_frac,
+PAS le `score` qui est une aire normalisee trompeuse) et correction sous plafond
+de securite. Bbox tronquee a gauche/droite/bas rejetee (bord haut tolere : l'axe
+optique cam_2 n'est pas aligne avec le bout des pinces). La projection rayon-plan
+HORIZONTAL est exacte en top-down ; a fort tangage (90deg) elle se degrade -- le
+seuil cam2_max_pitch_deg permet de borner les angles (defaut : tous autorises).
 
 References :
   - Chaumette & Hutchinson 2006, "Visual Servoing Control Part I" : c'est
@@ -92,6 +92,13 @@ class RefinementResult:
     # None si l'empreinte n'est pas assez allongee pour trancher.
     yaw_base_cam2: Optional[float] = None
     elong_cam2: float = 1.0
+    # DIAGNOSTIC HANDOFF cams_fixes -> cam_2 : taille ABSOLUE du blob cam_2.
+    # Le `confidence` ci-dessus = `det.score` = aire NORMALISEE par une constante
+    # arbitraire (max_area_px), donc trompeur pour juger la fiabilite du centroide.
+    # area_px (aire absolue) et area_frac (fraction du cadre cam_2) disent VRAIMENT
+    # si cam_2 resout bien l'objet a 8 cm (gros blob = centroide fiable) ou non.
+    area_px: float = 0.0
+    area_frac: float = 0.0
 
     @property
     def delta_norm_mm(self) -> float:
@@ -162,19 +169,92 @@ def long_axis_base_from_contour(contour, K, dist, T_base_cam,
 
 
 def _bbox_touches_border(bbox, img_w: float, img_h: float,
-                         margin_px: float = 4.0) -> bool:
-    """True si la bbox touche le bord de l'image (detection TRONQUEE).
+                         margin_px: float = 4.0,
+                         ignore_top: bool = False) -> bool:
+    """True si la bbox touche un bord DISQUALIFIANT de l'image (centre biaise).
 
     Une bbox tronquee a un centre biaise (la partie hors champ manque) et la
     distorsion est maximale au bord -> les corrections derivees sont fausses
     (cas 'zone Y+100' du 2026-06-12 : objets a u=12-137px -> zigzag 25-50mm).
     On prefere NE PAS corriger plutot que corriger faux.
+
+    ignore_top (Maxence 2026-06-20) : sur cam_2 eye-in-hand, l'axe optique n'est
+    PAS aligne avec le bout des pinces -> un objet correctement place SOUS la
+    pince apparait naturellement HAUT dans l'image et peut froler le bord
+    SUPERIEUR sans etre tronque cote prise. Le bord haut n'est donc PAS
+    disqualifiant. En revanche restent disqualifiants : le BAS (les doigts
+    occupent le bas du cadre), la GAUCHE et la DROITE (un objet tronque
+    lateralement y est de toute facon trop large/loin pour etre saisi).
     """
     if bbox is None:
         return False
     x0, y0, x1, y1 = bbox
-    return (x0 <= margin_px or y0 <= margin_px
-            or x1 >= img_w - margin_px or y1 >= img_h - margin_px)
+    touch = (x0 <= margin_px                 # gauche
+             or x1 >= img_w - margin_px      # droite
+             or y1 >= img_h - margin_px)     # bas (doigts)
+    if not ignore_top:
+        touch = touch or (y0 <= margin_px)   # haut
+    return touch
+
+
+def _save_cam2_debug(out_dir, frame, matches, chosen) -> None:
+    """Sauve la vue cam_2 du raffinement (eye-in-hand) avec les detections.
+
+    Permet de VOIR ce que cam_2 percoit AU MOMENT de la prise : qualite du
+    masque, cadrage, taille du blob, et si la bonne detection a ete choisie.
+    C'est le diagnostic central du handoff cams_fixes -> cam_2 (la croix jaune
+    = axe optique = la ou cam_2 'vise' ; le rectangle rouge = blob retenu).
+    Non-bloquant : toute erreur d'ecriture est avalee (jamais bloquer la prise).
+    """
+    try:
+        from pathlib import Path
+        from datetime import datetime
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        img = frame.image.copy()
+        cx, cy = int(frame.K[0, 2]), int(frame.K[1, 2])
+        cv2.drawMarker(img, (cx, cy), (0, 255, 255), cv2.MARKER_CROSS, 40, 2)
+        for d in matches:
+            if d.bbox is None:
+                continue
+            x0, y0, x1, y1 = (int(v) for v in d.bbox)
+            chosen_one = (d is chosen)
+            col = (0, 0, 255) if chosen_one else (0, 200, 0)
+            cv2.rectangle(img, (x0, y0), (x1, y1), col, 3 if chosen_one else 1)
+            cv2.circle(img, (int(d.center_px[0]), int(d.center_px[1])), 5, col, -1)
+            cv2.putText(img, f"{d.label} s={d.score:.2f}", (x0, max(12, y0 - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        out_path = out_dir / f"cam2_refine_{stamp}.png"
+        cv2.imwrite(str(out_path), img)
+        print(f"   [display] vue cam_2 raffinement sauvee : {out_path}")
+    except Exception as e:  # pragma: no cover - debug seulement
+        print(f"   [display] (vue cam_2 non sauvee : {e})")
+
+
+def _load_cam2_bias_m():
+    """Biais systematique de cam_2 (eye-in-hand), SOUSTRAIT de la position 3D
+    detectee par cam_2 dans la boucle fermee, avant de calculer la correction.
+
+    Chemin SEPARE de la stereo : cam_2 a sa PROPRE calibration hand-eye (residu
+    ~2.5mm, != cam_0/cam_1) donc son PROPRE biais. On ne peut PAS reutiliser le
+    biais stereo (bias_correction.json) ici. Configurable :
+    configs/perception/bias_correction_cam2.json {dx_mm, dy_mm, dz_mm}.
+    Defaut (0,0,0) si le fichier est absent.
+    """
+    import json
+    from pathlib import Path
+    p = (Path(__file__).resolve().parents[2]
+         / "configs" / "perception" / "bias_correction_cam2.json")
+    if not p.exists():
+        return np.zeros(3)
+    try:
+        d = json.load(open(p))
+        return np.array([float(d.get("dx_mm", 0.0)),
+                         float(d.get("dy_mm", 0.0)),
+                         float(d.get("dz_mm", 0.0))], dtype=float) / 1000.0
+    except Exception:
+        return np.zeros(3)
 
 
 def refine_grasp_with_cam2(
@@ -186,6 +266,8 @@ def refine_grasp_with_cam2(
     z_height_above_object_m: float = 0.08,
     label_mapping: Optional[dict] = None,
     verbose: bool = True,
+    debug_save_dir: Optional[object] = None,
+    grasp_xy_base_m: Optional[object] = None,
 ) -> RefinementResult:
     """Raffine la pose de saisie via cam_2 (eye-in-hand).
 
@@ -250,9 +332,13 @@ def refine_grasp_with_cam2(
             message=f"cam_2 n'a pas detecte '{target_label}'",
         )
     h, w = frame_c2.image.shape[:2]
-    # Rejette les bboxes TRONQUEES au bord de l'image : centre biaise +
-    # distorsion maximale -> correction fausse. Mieux vaut ne pas corriger.
-    inside = [d for d in matches if not _bbox_touches_border(d.bbox, w, h)]
+    # FILTRE BORD SELECTIF (Maxence 2026-06-20) : on rejette les detections
+    # tronquees a GAUCHE / DROITE / BAS (centre biaise -> correction fausse),
+    # mais on GARDE celles qui ne touchent QUE le bord HAUT : l'axe optique de
+    # cam_2 n'est pas aligne avec le bout des pinces, donc un objet bien place
+    # apparait haut dans l'image (cf _bbox_touches_border, ignore_top=True).
+    inside = [d for d in matches
+              if not _bbox_touches_border(d.bbox, w, h, ignore_top=True)]
     if not inside:
         return RefinementResult(
             delta_base_m=np.zeros(3),
@@ -266,6 +352,17 @@ def refine_grasp_with_cam2(
         )
     # Garde la detection la plus confiante
     det = max(inside, key=lambda d: d.score)
+
+    # DIAGNOSTIC HANDOFF : taille ABSOLUE du blob cam_2 (vs le score = aire
+    # normalisee, trompeur). Un vrai objet a 8 cm remplit une bonne fraction du
+    # cadre ; un fragment de masque (HSV trop serre) ou un objet au bord = petit.
+    det_area_px = float(getattr(det, "area_px", 0.0) or 0.0)
+    if det_area_px <= 0.0 and det.bbox is not None:
+        bx0, by0, bx1, by1 = det.bbox
+        det_area_px = float(abs((bx1 - bx0) * (by1 - by0)))
+    det_area_frac = det_area_px / float(max(w * h, 1))
+    if debug_save_dir is not None:
+        _save_cam2_debug(debug_save_dir, frame_c2, inside, det)
 
     # Centre detecte vs POINT PRINCIPAL (cx, cy = axe optique), PAS le centre
     # geometrique (w/2, h/2). Le rayon "ou cam_2 vise" est l'axe optique ; et le
@@ -332,14 +429,27 @@ def refine_grasp_with_cam2(
         )
     t = (target_z - o_base[2]) / d_base[2]
     obj_pos_base = o_base + t * d_base  # position 3D detectee de l'objet en repere base
+    # BIAIS cam_2 propre (!= biais stereo). Soustrait pour ramener la detection
+    # cam_2 dans le meme repere "de-biaise" que la pose planifiee. X laisse a 0
+    # (cam_2 precis en X quand le Z est bon) ; dy a regler en testant si la prise
+    # rince en Y. Voir configs/perception/bias_correction_cam2.json.
+    obj_pos_base = obj_pos_base - _load_cam2_bias_m()
 
-    # Position de l'objet ATTENDUE : intersection de l'AXE OPTIQUE (point
-    # principal cx,cy, deja sans distorsion par definition) avec le plan objet
-    # = ou cam_2 vise actuellement. Coherent avec le rayon detecte undistordu.
-    d_cam_center = K_inv @ np.array([cx, cy, 1.0])
-    d_base_center = R_base_cam2 @ d_cam_center
-    t_center = (target_z - o_base[2]) / d_base_center[2]
-    expected_pos_base = o_base + t_center * d_base_center  # ou cam_2 vise actuellement
+    # Position de reference = ou la PINCE va saisir (FIX 2026-06-19).
+    # AVANT : on referencait l'AXE OPTIQUE (point principal cx,cy). Mais cam_2 est
+    # DEPORTEE de la pince (handeye ~+60mm en Y) -> la correction etait biaisee de
+    # cette parallaxe et GONFLEE (ex run reel : 62mm rejetes alors que la vraie
+    # erreur etait 49mm). On reference desormais la position de prise PLANIFIEE
+    # (grasp_xy_base_m) projetee sur le plan objet. Δ = objet_detecte - prise.
+    # Fallback sur l'axe optique si grasp_xy_base_m non fournie (compat).
+    if grasp_xy_base_m is not None:
+        gxy = np.asarray(grasp_xy_base_m, dtype=float).reshape(-1)
+        expected_pos_base = np.array([gxy[0], gxy[1], target_z])
+    else:
+        d_cam_center = K_inv @ np.array([cx, cy, 1.0])
+        d_base_center = R_base_cam2 @ d_cam_center
+        t_center = (target_z - o_base[2]) / d_base_center[2]
+        expected_pos_base = o_base + t_center * d_base_center
 
     # Correction = position reelle - position visee
     delta_base = obj_pos_base - expected_pos_base
@@ -377,9 +487,13 @@ def refine_grasp_with_cam2(
         message=(f"Correction Δbase=({delta_base[0]*1000:+.1f}, "
                  f"{delta_base[1]*1000:+.1f}, 0) mm  "
                  f"(pixel Δu={du_px:+.0f}px Δv={dv_px:+.0f}px, "
-                 f"projection ray-plane)"),
+                 f"projection ray-plane)  "
+                 f"[blob cam_2 {det_area_px/1000:.1f}kpx="
+                 f"{100*det_area_frac:.1f}% cadre, score {det.score:.2f}]"),
         yaw_base_cam2=yaw_cam2,
         elong_cam2=elong_cam2,
+        area_px=det_area_px,
+        area_frac=det_area_frac,
     )
 
 
