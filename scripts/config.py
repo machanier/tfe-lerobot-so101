@@ -79,7 +79,7 @@ HF_USER = "maxence"
 # --- Cameras utilisees pour l'IL (RGB uniquement : ACT n'utilise PAS la stereo) ---
 # Une vue de scene (eye-to-hand, fixe) + la vue poignet (eye-in-hand).
 # Pour changer la camera de scene, remplace "cam_0" par "cam_1" ci-dessous.
-IL_SCENE_CAM = "cam_0"     # vue globale  -> cle LeRobot "front"
+IL_SCENE_CAM = "cam_1"     # vue globale  -> cle LeRobot "front"  (choix Maxence)
 IL_WRIST_CAM = "cam_2"     # vue poignet  -> cle LeRobot "wrist"
 
 # Resolution/fps dedies a l'IL : 640x480 (plus leger que le 1080p de la stereo).

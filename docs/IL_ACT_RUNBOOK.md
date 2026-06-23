@@ -145,3 +145,23 @@ hf auth login                               # token HF
 python scripts/record_dataset.py --push-to-hub
 python scripts/train.py --push-to-hub
 ```
+
+## 9. Dépannage
+
+### Patch local lerobot (compat transformers 5.8) — DÉJÀ appliqué
+Le checkout `lerobot/` (main du 14 mars 2026) a un bug : `GR00TN15Config`
+(`lerobot/src/lerobot/policies/groot/groot_n1.py`) plante à l'import sous
+`transformers 5.8.1` (« non-default argument 'backbone_cfg' follows default
+argument »), ce qui cassait **toutes** les commandes `lerobot-*`.
+
+Correctif appliqué : `@dataclass` -> `@dataclass(init=False)` (la classe a déjà
+un `__init__` custom). N'affecte pas la pipeline classique (qui n'utilise que
+`lerobot.motors`). `lerobot/` est un clone indépendant hors du repo TFE : si tu
+réinstalles/reclones lerobot, **réapplique ce changement** (ou `git -C lerobot
+stash` tes modifs locales avant). On ne touche PAS à transformers (lerobot exige
+`transformers>=5.3,<6`, et OWL-ViT en a besoin).
+
+### Warning `objc[...] AVFFrameReceiver ... implemented in both`
+Bénin (cv2 et av embarquent tous deux libavdevice sur macOS). N'empêche pas
+teleoperate/record. Si un crash caméra survient vraiment, lance avec une seule
+des deux libs (ex. `pip uninstall av`), mais en général on l'ignore.
