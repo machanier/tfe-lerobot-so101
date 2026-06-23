@@ -1,46 +1,76 @@
 #!/usr/bin/env python3
 """
-train.py – Entrainer une politique d'imitation learning
+train.py – Entrainer une politique d'imitation learning (LeRobot)
 
-Usage:
-    python scripts/train.py --policy act --dataset maxence/so101_pick
+Usage (valeurs par defaut = config.py : ACT, dataset orange, MPS) :
+    python scripts/train.py
 
-Politiques disponibles dans LeRobot :
-    - act       : Action Chunking with Transformers
-    - diffusion : Diffusion Policy
-    - tdmpc     : TD-MPC
-    - vqbet     : VQ-BeT
+    ou en personnalisant :
+    python scripts/train.py --policy act --dataset maxence/so101_orange_cube --steps 100000
+
+Politiques LeRobot : act (defaut, recommande), diffusion, tdmpc, vqbet, ...
+
+NB : ACT compte en STEPS (pas en epochs). Defaut LeRobot = 100 000 steps,
+"quelques heures sur 1 GPU NVIDIA". Sur M4/MPS c'est plus lent : si trop long
+ou si un operateur n'est pas supporte (PYTORCH_ENABLE_MPS_FALLBACK=1), bascule
+sur le notebook Colab officiel ACT. Repli local : --device cpu.
+
+Le modele entraine reste LOCAL (checkpoints dans outputs/). Ajoute
+--push-to-hub pour l'envoyer sur le Hub (necessite `hf auth login`).
 """
 
 import argparse
 import subprocess
 import sys
 
+from config import (
+    IL_BATCH_SIZE,
+    IL_POLICY_DEVICE,
+    IL_POLICY_TYPE,
+    IL_REPO_ID,
+    IL_STEPS,
+)
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Entrainer une politique LeRobot")
-    parser.add_argument(
-        "--policy", type=str, default="act", help="Type de politique (act, diffusion, ...)"
-    )
-    parser.add_argument("--dataset", type=str, required=True, help="ID du dataset HuggingFace")
-    parser.add_argument("--epochs", type=int, default=100, help="Nombre d'epochs")
-    parser.add_argument("--output-dir", type=str, default="outputs/", help="Dossier de sortie")
+    parser = argparse.ArgumentParser(description="Entrainer une politique LeRobot (IL/ACT)")
+    parser.add_argument("--policy", type=str, default=IL_POLICY_TYPE,
+                        help=f"Type de politique (defaut: {IL_POLICY_TYPE})")
+    parser.add_argument("--dataset", type=str, default=IL_REPO_ID,
+                        help=f"ID du dataset (defaut: {IL_REPO_ID})")
+    parser.add_argument("--steps", type=int, default=IL_STEPS,
+                        help=f"Nombre de steps (defaut: {IL_STEPS})")
+    parser.add_argument("--batch-size", type=int, default=IL_BATCH_SIZE,
+                        help=f"Taille de batch (defaut: {IL_BATCH_SIZE})")
+    parser.add_argument("--device", type=str, default=IL_POLICY_DEVICE,
+                        help=f"mps | cpu | cuda (defaut: {IL_POLICY_DEVICE})")
+    parser.add_argument("--output-dir", type=str, default=None,
+                        help="Dossier de sortie (defaut: outputs/train/<job>)")
+    parser.add_argument("--push-to-hub", action="store_true",
+                        help="Envoyer le modele sur le Hub (defaut: local seulement)")
     args = parser.parse_args()
+
+    # Nom de job lisible derive du dataset (ex: act_so101_orange_cube)
+    dataset_slug = args.dataset.split("/")[-1]
+    job_name = f"{args.policy}_{dataset_slug}"
+    output_dir = args.output_dir or f"outputs/train/{job_name}"
 
     cmd = [
         "lerobot-train",
-        f"--policy.type={args.policy}",
         f"--dataset.repo_id={args.dataset}",
-        f"--training.num_epochs={args.epochs}",
-        f"--output_dir={args.output_dir}",
+        f"--policy.type={args.policy}",
+        f"--policy.device={args.device}",
+        f"--policy.push_to_hub={'true' if args.push_to_hub else 'false'}",
+        f"--batch_size={args.batch_size}",
+        f"--steps={args.steps}",
+        f"--output_dir={output_dir}",
+        f"--job_name={job_name}",
     ]
 
-    print(f"Entrainement de la politique '{args.policy}'")
-    print(f"  Dataset: {args.dataset}")
-    print(f"  Epochs: {args.epochs}")
-    print(f"  Output: {args.output_dir}")
-    print(f"  Commande: {' '.join(cmd)}")
-    print()
+    print(f"Entrainement '{args.policy}' sur '{args.dataset}'")
+    print(f"  Steps: {args.steps}   Batch: {args.batch_size}   Device: {args.device}")
+    print(f"  Output: {output_dir}")
+    print(f"  Commande: {' '.join(cmd)}\n")
 
     try:
         subprocess.run(cmd, check=True)

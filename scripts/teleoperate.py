@@ -1,66 +1,39 @@
 #!/usr/bin/env python3
 """
-teleoperate.py – Téléopération du SO-101 (leader → follower)
+teleoperate.py – Teleoperation du SO-101 (leader -> follower)
 
 Usage:
     python scripts/teleoperate.py
 
-    Arrêter avec Ctrl+C.
+    Arreter avec Ctrl+C.
+
+But : verifier que leader, follower ET les 2 cameras IL (front + wrist)
+fonctionnent, AVANT d'enregistrer un dataset. Le decor que tu vois ici doit
+etre celui de l'enregistrement (memes cameras, meme cadrage).
 
 Note:
-    Les ports USB changent à chaque branchement sur macOS !
-    Si ça ne marche pas, modifie scripts/config.py
-    ou lance : ls /dev/tty.usbmodem*
+    Les ports USB changent a chaque branchement sur macOS !
+    Si ca ne marche pas : `lerobot-find-port`, puis corrige scripts/config.py.
 """
 
-import glob
 import subprocess
 import sys
 
 from config import (
-    CAMERA_FPS,
-    CAMERA_HEIGHT,
-    CAMERA_INDEX,
-    CAMERA_WIDTH,
     FOLLOWER_ID,
-    FOLLOWER_PORT,
     LEADER_ID,
-    LEADER_PORT,
+    il_cameras_flag,
+    pick_ports,
 )
-
-
-def pick_ports():
-    """Choisit automatiquement les ports si ceux configurés ne sont pas tous présents."""
-    ports_detectes = glob.glob("/dev/tty.usbmodem*")
-
-    if not ports_detectes:
-        print("Aucun port USB detecte !")
-        print("  Le robot est-il branche en USB ET alimente sur secteur ?")
-        return None, None
-
-    follower = FOLLOWER_PORT if FOLLOWER_PORT in ports_detectes else None
-    leader = LEADER_PORT if LEADER_PORT in ports_detectes else None
-
-    if follower and leader:
-        return follower, leader
-
-    if len(ports_detectes) >= 2:
-        follower, leader = ports_detectes[:2]
-        print(f"Ports auto-selectionnes : {follower}, {leader}")
-        return follower, leader
-
-    if len(ports_detectes) == 1:
-        print(f"Un seul port detecte : {ports_detectes[0]}")
-        print("  Branche aussi le leader ou corrige scripts/config.py")
-        return ports_detectes[0], None
-
-    return follower, leader
 
 
 def main():
     follower_port, leader_port = pick_ports()
 
     if not follower_port or not leader_port:
+        print("Ports USB introuvables (follower et/ou leader).")
+        print("  Le robot est-il branche en USB ET alimente sur secteur ?")
+        print("  Liste : ls /dev/tty.usbmodem*   ou   lerobot-find-port")
         sys.exit(1)
 
     cmd = [
@@ -68,18 +41,18 @@ def main():
         "--robot.type=so101_follower",
         f"--robot.port={follower_port}",
         f"--robot.id={FOLLOWER_ID}",
-        f'--robot.cameras={{"front": {{"type": "opencv", "index_or_path": {CAMERA_INDEX}, "width": {CAMERA_WIDTH}, "height": {CAMERA_HEIGHT}, "fps": {CAMERA_FPS}}}}}',
+        il_cameras_flag(),
         "--teleop.type=so101_leader",
         f"--teleop.port={leader_port}",
         f"--teleop.id={LEADER_ID}",
         "--display_data=true",
     ]
 
-    print(f"Lancement de la teleoperation SO-101...")
+    print("Lancement de la teleoperation SO-101 (2 cameras IL)...")
     print(f"  Follower: {follower_port}")
     print(f"  Leader:   {leader_port}")
-    print(f"  Camera front: index {CAMERA_INDEX} ({CAMERA_WIDTH}x{CAMERA_HEIGHT}@{CAMERA_FPS})")
-    print(f"  Arreter avec Ctrl+C\n")
+    print(f"  Cameras:  {il_cameras_flag()}")
+    print("  Arreter avec Ctrl+C\n")
 
     try:
         subprocess.run(cmd, check=True)
