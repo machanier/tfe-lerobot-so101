@@ -45,6 +45,8 @@ def main():
                         help=f"HuggingFace repo id (defaut: {IL_REPO_ID})")
     parser.add_argument("--push-to-hub", action="store_true",
                         help="Envoyer le dataset sur le Hub (defaut: local seulement)")
+    parser.add_argument("--no-display", action="store_true",
+                        help="Desactiver la visu rerun (reduit la charge ; utile si la camera time-out)")
     args = parser.parse_args()
 
     follower_port, leader_port = pick_ports()
@@ -62,7 +64,7 @@ def main():
         "--teleop.type=so101_leader",
         f"--teleop.port={leader_port}",
         f"--teleop.id={LEADER_ID}",
-        "--display_data=true",
+        f"--display_data={'false' if args.no_display else 'true'}",
         f"--dataset.repo_id={args.repo_id}",
         f"--dataset.num_episodes={args.episodes}",
         f"--dataset.single_task={args.task}",
