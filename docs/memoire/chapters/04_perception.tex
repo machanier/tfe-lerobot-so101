@@ -68,7 +68,9 @@ résoudre par moindres carrés, puis pour raffiner conjointement $K$, la
 distorsion et les poses par minimisation de l'erreur de reprojection
 (Levenberg--Marquardt). C'est exactement ce que réalise
 \texttt{cv2.calibrateCamera}, employé ici pour les trois caméras du poste avec
-le damier $9 \times 6$ asymétrique (carrés de 22~mm).
+un damier de $7 \times 7$ coins internes (carrés de 22~mm). Le damier
+asymétrique $9 \times 6$ n'intervient qu'à l'étape \textit{hand-eye} ci-dessous,
+où la cohérence des poses entre elles devient critique.
 
 Résultats (erreur de reprojection moyenne) :
 \begin{center}
@@ -77,8 +79,8 @@ Résultats (erreur de reprojection moyenne) :
 Caméra & Erreur de reprojection \\
 \midrule
 \texttt{cam\_0} (stéréo gauche, eye-to-hand) & 0.19 px \\
-\texttt{cam\_1} (stéréo droite, eye-to-hand) & 0.14 px \\
-\texttt{cam\_2} (eye-in-hand) & 0.20 px \\
+\texttt{cam\_1} (stéréo droite, eye-to-hand) & 0.17 px \\
+\texttt{cam\_2} (eye-in-hand) & 0.14 px \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -155,19 +157,23 @@ Résultats finaux :
 \toprule
 Caméra & Translation moy./max & Rotation moy./max \\
 \midrule
-\texttt{cam\_0} (eye-to-hand) & 5.82 / 12.78 mm & 2.12\textdegree{} / 3.39\textdegree{} \\
-\texttt{cam\_1} (eye-to-hand) & 6.80 / 15.04 mm & 1.89\textdegree{} / 2.97\textdegree{} \\
+\texttt{cam\_0} (eye-to-hand) & 6.58 / 20.79 mm & 1.44\textdegree{} / 2.35\textdegree{} \\
+\texttt{cam\_1} (eye-to-hand) & 11.77 / 26.78 mm & 2.85\textdegree{} / 7.21\textdegree{} \\
 \texttt{cam\_2} (eye-in-hand) & 2.48 / 4.77 mm  & 0.41\textdegree{} / 0.76\textdegree{} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Les résidus de \texttt{cam\_0}/\texttt{cam\_1} ($\sim$6~mm en moyenne)
-correspondent au \textbf{plancher de bruit de répétabilité du SO-101}
-($\sim$5--10~mm d'après la spécification constructeur) : ils ne traduisent pas
-une calibration imparfaite mais la limite physique d'un bras low-cost, et seront
-absorbés par la replanification en boucle fermée (objectif~4 du cahier des
-charges). La \texttt{cam\_2} (eye-in-hand) atteint une meilleure précision parce
+Les résidus des caméras eye-to-hand --- de l'ordre de $6{,}6$~mm en moyenne pour
+\texttt{cam\_0} et $\sim$11{,}8~mm pour \texttt{cam\_1} --- restent dans l'ordre
+de grandeur du \textbf{bruit de répétabilité d'un bras low-cost}
+($\sim$5--10~mm d'après la spécification constructeur) : ils ne traduisent pas une
+calibration ratée mais la limite physique du SO-101. Ce qui importe pour la
+triangulation n'est du reste pas le résidu \emph{individuel} de chaque caméra,
+mais leur \textbf{cohérence stéréo} (leur accord sur un même point 3D), que la
+calibration conjointe (décision~D11 ci-dessous) rend excellente ; ces résidus
+seront par ailleurs absorbés par la replanification en boucle fermée (objectif~4
+du cahier des charges). La \texttt{cam\_2} (eye-in-hand) atteint une meilleure précision parce
 que son montage est plus rigide : la mire est fixée sur la scène, sans le jeu de
 collage qui affecte un montage embarqué sur la pince.
 
@@ -293,7 +299,8 @@ un détecteur \textit{open-vocabulary} de la famille
 OWL-ViT~\cite{minderer_owlv2_2023}. Il prend en entrée une image et une
 \textbf{liste de descriptions textuelles}, et renvoie pour chaque description les
 \emph{bounding boxes} des régions visuellement les plus proches, assorties d'un
-score (seuil retenu : 0.15). Servi sur le GPU MPS du MacBook M4, il tourne à
+score (seuil retenu : 0.25, relevé depuis 0.15 pour réduire les faux positifs,
+typiquement le bras orange pris pour un cube). Servi sur le GPU MPS du MacBook M4, il tourne à
 $\sim$3--5~FPS.
 
 \paragraph{Décision~D13 (passage anticipé au V2).} Initialement, ce détecteur

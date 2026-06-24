@@ -219,9 +219,10 @@ explique pourquoi le top-down s'impose comme l'approche robuste.
 
 \paragraph{Validation.} Le module embarque six self-tests
 (\texttt{python -m src.control.ik}). Le roundtrip $\mathrm{FK}\to\mathrm{IK}$ sur
-cinq configurations aléatoires retombe à moins de $0{,}5$~mm et $0{,}5$\textdegree{}
-d'erreur. Une pose top-down atteignable se résout à environ $7$~mm, soit le
-plancher de bruit de répétabilité du bras. Une pose volontairement hors espace
+cinq configurations aléatoires retombe à environ $0{,}8$~mm et $0{,}4$\textdegree{}
+d'erreur (le test impose un seuil de $1$~mm). Une pose top-down typique se résout
+à environ $9{,}7$~mm, que le solveur signale comme \emph{non exactement convergée}
+--- le résidu attendu de la sous-actuation 5/6~DDL. Une pose volontairement hors espace
 de travail (cible à 2~m) ne converge pas mais ne provoque \emph{aucun crash} :
 la non-convergence est détectée et signalée proprement. Un test dédié vérifie
 enfin le contrat de persistance d'orientation pour plusieurs yaw.
@@ -448,17 +449,14 @@ fixe quatre indicateurs, que je conserve comme cadre d'évaluation :
         appliquée à la pose moteur réellement lue.
 \end{description}
 
-\paragraph{Campagne informelle (préliminaire).} À ce stade, la chaîne complète a
-été éprouvée de manière \emph{informelle}, sans protocole standardisé ni
-échantillon suffisant pour des conclusions statistiques. Sur un cylindre violet,
-posé dans différentes orientations (parallèle à l'axe $X$, parallèle à $Y$, en
-biais à 45\textdegree, debout), j'ai observé \textbf{5~saisies réussies sur 6}
-— l'une au second essai après un retry. Le couple tenu lors du transport était de
-l'ordre de 270 à 336, et la vérification post-levée a confirmé « objet tenu ».
-Ces chiffres sont \emph{indicatifs} : ils montrent que la boucle complète
-fonctionne de bout en bout sur un objet, mais ne constituent pas une mesure des
-quatre métriques ci-dessus. Ils ne doivent pas être lus comme un taux de réussite
-validé.
+\paragraph{Évaluation à ce stade.} La chaîne complète est \emph{implémentée} et
+s'exécute de bout en bout : perception, planification, cinématique inverse,
+trajectoires, raffinement en boucle fermée, saisie asservie au couple, retry et
+vérification post-levée s'enchaînent sur le robot. En revanche, sa
+\emph{fiabilité} n'a pas encore été \emph{mesurée} : aucune campagne formelle n'a
+été conduite, et aucun taux de réussite, nombre de replans ni précision de prise
+n'est donc rapporté ici. Ces chiffres ne seront renseignés qu'une fois le
+protocole ci-dessous exécuté et journalisé.
 
 \subsection{Protocole de la campagne formelle}
 

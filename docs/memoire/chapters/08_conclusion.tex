@@ -68,26 +68,21 @@ l'ouverture de la pince est calculée à partir de la largeur mesurée
 du petit axe de l'empreinte (yaw libre pour les objets debout à empreinte ronde,
 aligné sur le grand axe pour les objets couchés), et la profondeur est ancrée sur
 la mi-hauteur de l'objet posé sur la table~\cite{bohg_data-driven_2014}.
-L'analyse de la prise latérale, conduite numériquement sur environ
-$2\times10^{5}$ configurations, a montré qu'une prise horizontale autour d'un
-flanc vertical est \emph{mal conditionnée} sur ce bras à 5~DDL (erreur d'IK de
-l'ordre de 38 à 60~mm, contre moins de 1~mm pour un top-down accessible) : sans
-être catégoriquement impossible, elle n'est pas fiable, ce qui justifie de
-retenir le top-down comme approche robuste --- au prix de borner l'ensemble des
+La prise latérale, en revanche, n'a pas été implémentée : une prise horizontale
+autour d'un flanc vertical demande d'orienter l'approche hors du plan de tangage
+du bras, ce que la sous-actionation à 5~DDL ne permet pas de façon fiable. Le
+top-down s'impose donc comme l'approche robuste, au prix de borner l'ensemble des
 objets effectivement saisissables.
 
 \paragraph{Objectif 6 --- Évaluation expérimentale (\emph{partiel}).} C'est la
-limite la plus importante à reconnaître. Le système a été éprouvé de façon
-\emph{informelle} : sur le cylindre violet, j'ai obtenu 5~saisies réussies sur 6
-(dont une au second essai) à travers plusieurs poses (parallèle à $X$, parallèle
-à $Y$, en biais à 45\textdegree{}, debout), avec un couple de maintien tenu entre
-270 et 336 et la confirmation \og{}objet tenu\fg{}. Mais une campagne
-\emph{formelle} et chiffrée --- taux de réussite par classe d'objet, nombre de
-replans, comparaison V1/V2/SmolVLA --- reste à mener avec le script dédié.
+limite la plus importante à reconnaître. La chaîne complète est implémentée et
+s'exécute de bout en bout, mais sa \emph{fiabilité n'a pas encore été mesurée} :
+la campagne \emph{formelle} et chiffrée --- taux de réussite par classe d'objet,
+nombre de replans, comparaison V1/V2/SmolVLA --- reste à mener avec le script
+dédié, puis à journaliser.
 \todoF{Insérer ici la synthèse chiffrée de la campagne formelle une fois
-exécutée (script \texttt{experiment\_campaign.py}). Ne reporter aucune valeur
-tant que la campagne n'a pas tourné. La campagne informelle ci-dessus est à
-présenter comme préliminaire.}
+exécutée et journalisée (script \texttt{experiment\_campaign.py}). Ne reporter
+aucune valeur tant que la campagne n'a pas tourné.}
 
 En résumé, trois objectifs sont atteints (1, 4, 5), un l'est de façon partielle
 mais opérationnelle (2), un l'est de façon limitée (3), et un dépend d'une
@@ -105,8 +100,8 @@ au-delà de ce travail.
   \item \textbf{Une pipeline modulaire reproductible et auto-testée.} Chaque
         étape (FK, IK, triangulation, planification de saisie) est validée par
         des tests de cohérence interne (par exemple le roundtrip FK$\rightarrow$IK
-        à moins de 0,5~mm, ou le self-test synthétique de triangulation à moins
-        de $10^{-4}$~mm), ce qui permet d'attribuer toute erreur résiduelle à la
+        à environ 0,8~mm, ou le self-test synthétique de triangulation sous le
+        micromètre, $<10^{-4}$~mm), ce qui permet d'attribuer toute erreur résiduelle à la
         calibration ou à la détection 2D plutôt qu'au code géométrique.
   \item \textbf{Une calibration hand-eye robuste et une calibration stéréo
         conjointe.} Le solveur hand-eye traite l'ambiguïté planaire et rejette
@@ -137,11 +132,11 @@ au-delà de ce travail.
         \texttt{Present\_Load} et s'arrête au contact, avec vérification après
         levée --- une boucle de retour effective sur du matériel low-cost et une
         pince TPU compliante.
-  \item \textbf{L'analyse de la sous-actuation à 5~DDL et de la prise latérale},
-        qui transforme une limitation matérielle en résultat documenté : le bras
-        atteint de nombreuses orientations dans son plan de tangage mais ne peut
-        pas pointer fiablement une approche hors de ce plan, ce qui borne
-        rationnellement les stratégies de saisie.
+  \item \textbf{La caractérisation de la sous-actuation à 5~DDL}, qui explicite
+        une limitation matérielle : le bras atteint de nombreuses orientations
+        dans son plan de tangage mais ne peut pas pointer fiablement une approche
+        hors de ce plan, ce qui borne rationnellement les stratégies de saisie
+        (et écarte la prise latérale).
 \end{itemize}
 
 Je tiens à corriger ici une formulation du brouillon : la \emph{comparaison

@@ -64,9 +64,9 @@ cette fois :
 \end{itemize}
 
 Une limite supplémentaire est apparue tardivement, sur le cylindre violet utilisé
-comme objet de test principal : le score de détection plafonne à $\sim$0{,}05, à
-la limite du seuil retenu (0{,}15 pour OWL-ViTv2). Ce score faible dégrade à la
-fois la position triangulée et l'orientation estimée du grand axe. Recalibrer le
+comme objet de test principal : sa \emph{détection HSV de secours} est très
+faible, le score d'aire tombant à son plancher ($\sim$0{,}05). Ce score faible
+dégrade à la fois la position triangulée et l'orientation estimée du grand axe. Recalibrer le
 descripteur textuel ou les plages HSV de secours améliorerait les deux
 simultanément --- c'est une limite documentée, non un défaut de conception.
 
@@ -88,8 +88,8 @@ de fait l'ensemble des objets saisissables :
         limite de ce que permet le plancher de bruit de répétabilité.
   \item La pince TPU est compliante et le cylindre de test est rond : si le centre
         de prise est légèrement décentré, l'objet peut glisser entre les mâchoires
-        au moment du serrage. C'est l'une des sources de l'unique reprise observée
-        lors des essais informels.
+        au moment du serrage --- un risque de glissement qu'une campagne formelle
+        permettrait de quantifier.
 \end{itemize}
 
 La principale limite n'est cependant pas le top-down lui-même mais le fait qu'il
@@ -98,10 +98,11 @@ soit la \emph{seule} approche fiable disponible sur ce bras. La section
 
 \subsection{Limites de la précision géométrique}
 
-Les résidus \emph{hand-eye} de 5--10~mm pour \texttt{cam\_0}/\texttt{cam\_1}
-correspondent au \textbf{plancher de bruit de répétabilité du SO-101}
+Les résidus \emph{hand-eye} mesurés --- $\sim$6{,}6~mm en moyenne pour
+\texttt{cam\_0}, $\sim$11{,}8~mm pour \texttt{cam\_1} --- restent dans l'ordre de
+grandeur du \textbf{bruit de répétabilité du SO-101}
 ($\sim$5--10~mm en spécification constructeur) ; la caméra \texttt{cam\_2}
-eye-in-hand fait mieux (2{,}48/4{,}77~mm) grâce à un montage plus rigide. Cette
+eye-in-hand fait nettement mieux (2{,}48/4{,}77~mm) grâce à un montage plus rigide. Cette
 imprécision se propage en aval :
 \begin{itemize}
   \item L'objet est localisé en 3D à $\pm$5--10~mm près.
@@ -124,9 +125,9 @@ trajectoire par intersection rayon-plan avant la descente finale.
 Toute limite de perception peut, en principe, se corriger par un meilleur modèle.
 La sous-actionation du bras, elle, est structurelle : c'est une contrainte
 mécanique que ni le code ni la calibration ne peuvent contourner. Cette section
-explicite trois choix qui méritent d'être justifiés, dont le dernier --- la
-faisabilité de la prise latérale --- constitue l'un des résultats négatifs les
-plus instructifs du travail.
+explicite trois choix qui méritent d'être justifiés, dont le dernier --- le
+renoncement à la prise latérale --- découle directement de la cinématique du
+bras.
 
 \subsection{Pourquoi OWL-ViTv2 plutôt que Grounding-DINO ?}
 
@@ -159,9 +160,9 @@ libre (\texttt{wrist\_roll}) : la pose désirée fixe la position (3 contraintes
 deux composantes de l'orientation (axe d'approche vertical), tandis que le
 \emph{yaw} reste libre. On a donc cinq contraintes pour cinq articulations, dont
 une laissée libre et compensée par l'IK --- \textbf{le système est bien posé}, et
-le roundtrip FK$\rightarrow$IK le confirme (erreur $<0{,}5$~mm sur des
-configurations aléatoires, $\sim$7~mm sur une pose top-down réelle, soit le
-plancher de bruit).
+le roundtrip FK$\rightarrow$IK le confirme (erreur $\sim$0{,}8~mm sur des
+configurations aléatoires) ; une pose top-down typique se résout à $\sim$9{,}7~mm,
+résidu de la sous-actuation que le solveur signale comme non exactement convergé.
 
 \paragraph{Ce que le bras peut et ne peut pas faire.}
 Les trois articulations de tangage (\texttt{shoulder\_lift}, \texttt{elbow\_flex},
@@ -171,30 +172,18 @@ ce plan --- verticale, inclinée, voire horizontale frontale --- mais il ne peut
 pas orienter l'approche \emph{hors} de ce plan. C'est cette restriction qui
 détermine ce qui est préhensible.
 
-\paragraph{Résultat : la prise latérale est mal conditionnée sur 5~DDL.}
+\paragraph{Pourquoi la prise latérale n'a pas été retenue.}
 La question s'est posée concrètement : pourrait-on saisir un objet par le flanc,
 pince horizontale se refermant autour de sa paroi verticale, comme une main qui
-attrape une canette ? J'ai voulu en avoir le c{\oe}ur net plutôt que de trancher
-par intuition. L'hypothèse a donc été testée numériquement, en balayant de l'ordre
-de $200\,000$ configurations articulaires et en mesurant, pour chacune, la qualité
-d'alignement de la pince avec une fermeture latérale idéale puis l'erreur de
-cinématique inverse résultante. Le constat est net : le meilleur alignement
-atteint plafonne à $0{,}063$ (sur une échelle où $1$ serait l'alignement parfait) ;
-l'IK laisse alors une erreur de $38$ à $60$~mm sur une fermeture horizontale autour
-d'un flanc vertical, à comparer aux $<1$~mm obtenus pour un top-down accessible.
-Seule une approche frontale strictement radiale s'en approche
-($\sim$9~mm, et encore sans convergence franche du solveur), sans offrir le moindre
-avantage sur le top-down.
-
-J'insiste sur la formulation, car elle est facile à exagérer : la prise latérale
-n'est pas \emph{catégoriquement impossible} sur ce bras, mais elle est
-\textbf{mal conditionnée et pas fiable}. Le top-down s'impose donc comme la seule
-approche robuste, ce qui borne mécaniquement l'ensemble des objets saisissables
-(un objet trop haut, ou trop éloigné en position debout, sort de l'espace
-préhensible). Un bras à six degrés de liberté lèverait cette contrainte en rendant
-l'orientation d'approche libre. Ce résultat remplace ce qui figurait initialement
-comme une piste de travail (« implémenter le side-grasp ») : ce n'est plus une
-extension à faire, c'est une limite démontrée du matériel.
+attrape une canette ? Une telle fermeture exige précisément d'orienter l'approche
+\emph{hors} du plan de tangage décrit ci-dessus --- ce qui, sur ce bras à cinq
+articulations, n'est pas atteignable de façon fiable. La prise latérale n'a donc
+\textbf{pas été implémentée} : le travail s'en tient à la saisie top-down. Sans
+être catégoriquement impossible, cette famille de prises n'est pas robuste sur
+5~DDL ; un bras à six degrés de liberté lèverait la contrainte en rendant
+l'orientation d'approche libre. Ce choix borne mécaniquement l'ensemble des objets
+saisissables : un objet trop haut, ou en position debout hors de portée par le
+dessus, sort de l'espace préhensible.
 
 \subsection{La convention de fermeture à 90\textdegree{} : un débogage révélateur}
 
@@ -270,10 +259,8 @@ sur un protocole commun (taux de réussite, nombre de replans, collisions évit�
 précision de prise). Cette comparaison est donc présentée ici comme une
 \emph{perspective}, pas comme une contribution réalisée. Les tableaux chiffrés
 correspondants (chapitre Résultats) restent des placeholders tant que la campagne
-formelle --- script \texttt{experiment\_campaign.py} --- n'a pas été menée. Seule
-une campagne \emph{informelle} a été conduite (cylindre violet, 5 saisies réussies
-sur 6, dont une au second essai, couple tenu 270--336, « OBJET TENU » confirmé),
-qui ne saurait tenir lieu d'évaluation comparative.}
+formelle --- script \texttt{experiment\_campaign.py} --- n'a pas été menée ni
+journalisée.}
 
 \section{Pistes d'amélioration}
 \label{sec:disc_pistes}

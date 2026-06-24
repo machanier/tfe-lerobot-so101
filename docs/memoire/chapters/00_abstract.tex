@@ -1,9 +1,12 @@
-Les bras robotiques low-cost se démocratisent, mais la chaîne logicielle qui leur
-permet de percevoir, planifier puis agir reste souvent dispersée ou enfouie dans
-des solutions propriétaires. Plutôt que de partir d'une politique apprise de bout
-en bout, ce travail explore la voie complémentaire d'une \emph{pipeline modulaire
-explicite}, entièrement \emph{open-source} et reproductible, construite sur le
-bras SO-101 et l'écosystème LeRobot. L'objectif est d'assembler une chaîne
+Les bras robotiques low-cost se démocratisent~: une mécanique imprimable, des
+servomoteurs économiques et des écosystèmes logiciels ouverts les mettent à la
+portée d'un projet étudiant. Deux grandes manières de les amener à saisir un objet
+coexistent aujourd'hui~: une politique apprise de bout en bout
+(\emph{imitation learning}), et une chaîne \emph{modulaire explicite}
+perception~$\rightarrow$~planification~$\rightarrow$~contrôle. Ce travail explore
+la seconde~: il assemble une pipeline complète, bâtie sur des briques entièrement
+\emph{open-source} et pensée pour être reproductible, sur le bras SO-101 et
+l'écosystème LeRobot, et la met en perspective avec la première. L'objectif est d'assembler une chaîne
 complète perception~$\rightarrow$~planification~$\rightarrow$~contrôle et de la
 mettre en perspective avec le paradigme end-to-end de l'apprentissage par
 imitation, dans le cadre du cahier des charges, qui vise à terme la saisie en
@@ -22,9 +25,10 @@ Levenberg--Marquardt) et des trajectoires articulaires quintiques. Le
 \emph{contrôle} pilote les servos Feetech avec une fermeture de pince asservie au
 couple.
 
-Sur le plan des résultats, la pipeline \textit{pick-and-place} fonctionne de bout
-en bout~; une validation \emph{préliminaire et informelle} confirme des saisies
-répétées d'un objet de référence. \todoF{Insérer les chiffres quantitatifs
+Sur le plan des résultats, la pipeline \textit{pick-and-place} est
+\emph{implémentée} et s'exécute de bout en bout ; sa fiabilité reste toutefois à
+\emph{mesurer}, la campagne expérimentale formelle n'ayant pas encore été conduite.
+\todoF{Insérer les chiffres quantitatifs
 (taux de réussite, nombre de replanifications, précision de prise, comparaison
 V1/V2/SmolVLA) une fois la campagne expérimentale formelle réalisée~; aucun
 chiffre n'est inventé ici.} Ce mémoire montre ainsi qu'une chaîne perception-action

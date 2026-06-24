@@ -23,6 +23,11 @@ $\rightarrow$ planification $\rightarrow$ contrôle}, dans la lignée de la
 robotique classique~\cite{siciliano_robotics_2009}. Chaque étage y est
 inspectable et substituable, au prix d'une intégration plus lourde.
 
+Ce travail trouve son origine dans une démarche personnelle. Avant même qu'un
+sujet ne soit défini, j'avais découvert le SO-101 et assemblé le robot de A à Z
+durant l'été, sans bagage préalable en robotique. C'est autour de cette
+plateforme que le sujet a ensuite été construit, puis validé avec mon encadrant.
+
 Ma motivation première n'a pas été de résoudre un problème théorique ouvert,
 mais de \textbf{construire de bout en bout une pipeline modulaire complète,
 reproductible et open-source} sur ce matériel low-cost, et de la mettre en
@@ -93,13 +98,14 @@ qui n'a pas été mené à son terme.
   \item Définir et sélectionner des stratégies de \textbf{saisie} adaptées à la
         géométrie et à l'accessibilité de l'objet (grasp planning).
         \emph{(Réalisé : saisie top-down adaptative en ouverture, orientation et
-        profondeur ; l'analyse montre que la prise latérale est mal
-        conditionnée sur 5~DDL, cf.\ chapitre~\ref{ch:discussion}.)}
+        profondeur ; la prise latérale, elle, n'est pas accessible de façon
+        fiable sur 5~DDL et n'a pas été implémentée, cf.\ chapitre~\ref{ch:discussion}.)}
   \item \textbf{Évaluer expérimentalement} le système à l'aide de métriques
         telles que le taux de réussite, le nombre de replans, les collisions
-        évitées et la précision de la prise. \emph{(Partiel : auto-tests
-        quantitatifs et campagne informelle ; la campagne formelle et la
-        comparaison avec l'imitation learning restent une perspective.)}
+        évitées et la précision de la prise. \emph{(Partiel : la pipeline est
+        implémentée et auto-testée, mais sa fiabilité n'est pas encore mesurée ;
+        la campagne formelle et la comparaison avec l'imitation learning restent
+        une perspective.)}
 \end{enumerate}
 
 Concrètement, la prise de décision repose sur des règles heuristiques et des

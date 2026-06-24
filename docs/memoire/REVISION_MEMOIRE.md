@@ -76,14 +76,14 @@ Actuellement il dit « IK à créer au Sprint 3 », « trajectoire à compléter
   hauteur triangulée du sommet de l'objet.
 
 ### Chapitre 07 (Discussion) — un RÉSULTAT FORT à ajouter
-- **Le side-grasp (prise latérale) est kinématiquement INFAISABLE sur le SO-101
-  5 DDL** (vérifié numériquement : ~200k configurations, alignement max 0.063 ;
-  IK 38-60 mm d'erreur sur une fermeture horizontale autour d'un flanc vertical ;
-  seule l'approche frontale donne ~9 mm/10° non-convergé, équivalent à un
-  top-down difficile). C'est une **limite cinématique structurelle à documenter**,
-  pas un manque d'implémentation. → Remplacer la piste « implémenter le side grasp
-  (V2) » par cette analyse. Renforce parfaitement la section « Pourquoi 5 DDL ? »
-  (l.84-91), qui est déjà bonne.
+- **Le side-grasp (prise latérale) n'a PAS été implémenté.** ⚠️ Les chiffres qui
+  figuraient ici (« ~200k configurations, alignement 0.063, IK 38-60 mm,
+  ~9 mm non-convergé ») étaient **FABRIQUÉS** : aucun script ni log ne les produit
+  dans le dépôt (vérifié 2026-06-14). RETIRÉS du mémoire, NE PAS les réutiliser.
+  Seul l'argument **qualitatif** est défendable : les 3 articulations de tangage
+  plient dans un même plan, donc le bras n'oriente pas l'approche hors de ce plan
+  → prise latérale non fiable sur 5 DDL, le top-down s'impose. → Remplacer la piste
+  « implémenter le side grasp (V2) » par ce cadrage qualitatif.
 - **Découverte de convention pince** : les mâchoires se ferment à 90° de la
   convention nominale du code → l'alignement échouait systématiquement jusqu'à ce
   qu'on l'identifie via un log diagnostic par caméra + un test empirique

@@ -41,6 +41,7 @@ reprendre le projet.
 - [x] **Sprint 3** : grasp planning (`src/planning/grasp.py`) + trajectoire (`src/control/`) + interface LeRobot (`pick_and_place.py`)
 - [x] **Sprint 4** : raffinement en boucle fermée par `cam_2` eye-in-hand (`src/control/closed_loop.py`)
 - [~] **Sprint 5** : évaluation expérimentale (en cours) + rédaction du mémoire (`docs/memoire/`)
+  - Saisie **fiable en objet seul** (2026-06-23) : `orange_cube` et `purple_cylinder` (debout, couché //X, couché //Y) saisis et déposés, souvent du 1ᵉʳ coup. Repose sur deux offsets de prise (cf section *Saisie*) qui compensent le décalage entre le repère outil et le point de préhension. Reste : scènes encombrées / occlusion (objectif du cahier des charges encore ouvert), et robustesse perception sous éclairage variable.
 
 ## Structure du projet
 
@@ -111,8 +112,14 @@ python scripts/run_perception.py            # boucle live des 3 caméras
 python scripts/check_perception.py --gt outputs/perception/gt_test.json   # validation chiffrée
 
 # Sprint 3-4 : pick-and-place complet (perception -> saisie -> dépose)
-python scripts/pick_and_place.py --target orange_cube --display
+python scripts/pick_and_place.py --target orange_cube
 ```
+
+Les **snapshots de diagnostic** (vues caméras + vues `cam_2` au moment de la prise)
+sont sauvés dans `outputs/perception/` **par défaut, sans `--display`**. Réserver
+`--display` à la fenêtre temps réel : elle capture les 3 caméras en continu pendant
+le mouvement et peut faire **décrocher `cam_2`** sur le hub USB. `--no-snapshots`
+coupe la sauvegarde.
 
 ## Saisie (pick-and-place)
 
@@ -131,8 +138,17 @@ Chaîne `src/pipeline.py` :
    l'objet, la caméra eye-in-hand recale la **position** (résiduel stéréo) et
    réaligne les **mâchoires** sur le grand axe, sous garde-fous (taille du blob,
    plafond de correction).
-4. **Offset de prise** — décalage base-Y (gauche) appliqué après `cam_2` pour la
-   pince asymétrique du SO-101 (`--grasp-lateral-offset`).
+4. **Offsets de prise** (appliqués après `cam_2`, en repère image `cam_2`) — ils
+   compensent le fait que le repère outil commandé (`gripper_frame_link`, sur l'axe
+   du poignet) **n'est pas** le point où les mâchoires serrent (le mécanisme est
+   monté ~3 cm à côté de cet axe). Deux composantes horizontales :
+   - **latéral** (`--grasp-lateral-offset`, par défaut **adaptatif = ½ largeur +
+     marge**) : amène le doigt FIXE à fleur de l'arête, quelle que soit la taille ;
+   - **profondeur** (`--grasp-forward-offset`, défaut 15 mm, constant) : avance la
+     prise vers le point de fermeture réel des doigts.
+
+   La composante verticale (le long de la pince) est, elle, gérée par la hauteur de
+   descente — pas d'offset nécessaire.
 5. **Saisie** — descente + **fermeture asservie au couple**, vérification après
    levée, **retry** si fermeture à vide, puis dépose dans la boîte.
 
