@@ -47,6 +47,8 @@ def main():
                         help="Envoyer le dataset sur le Hub (defaut: local seulement)")
     parser.add_argument("--no-display", action="store_true",
                         help="Desactiver la visu rerun (reduit la charge ; utile si la camera time-out)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Reprendre/ajouter des episodes a un dataset --repo-id existant (apres crash, ou phase 2)")
     args = parser.parse_args()
 
     follower_port, leader_port = pick_ports()
@@ -69,6 +71,7 @@ def main():
         f"--dataset.num_episodes={args.episodes}",
         f"--dataset.single_task={args.task}",
         f"--dataset.push_to_hub={'true' if args.push_to_hub else 'false'}",
+        f"--resume={'true' if args.resume else 'false'}",
     ]
 
     print(f"Enregistrement de {args.episodes} episodes -- tache : '{args.task}'")
