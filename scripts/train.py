@@ -20,6 +20,7 @@ Le modele entraine reste LOCAL (checkpoints dans outputs/). Ajoute
 """
 
 import argparse
+import os
 import subprocess
 import sys
 
@@ -48,6 +49,8 @@ def main():
                         help="Dossier de sortie (defaut: outputs/train/<job>)")
     parser.add_argument("--push-to-hub", action="store_true",
                         help="Envoyer le modele sur le Hub (defaut: local seulement)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Reprendre l'entrainement depuis le dernier checkpoint et continuer jusqu'a --steps (TOTAL, pas en plus). Ex: entraine a 30000 puis --resume --steps 50000 = +20000.")
     args = parser.parse_args()
 
     # Nom de job lisible derive du dataset (ex: act_so101_orange_cube)
@@ -55,21 +58,37 @@ def main():
     job_name = f"{args.policy}_{dataset_slug}"
     output_dir = args.output_dir or f"outputs/train/{job_name}"
 
-    cmd = [
-        "lerobot-train",
-        f"--dataset.repo_id={args.dataset}",
-        f"--policy.type={args.policy}",
-        f"--policy.device={args.device}",
-        f"--policy.push_to_hub={'true' if args.push_to_hub else 'false'}",
-        f"--batch_size={args.batch_size}",
-        f"--steps={args.steps}",
-        f"--output_dir={output_dir}",
-        f"--job_name={job_name}",
-    ]
-
-    print(f"Entrainement '{args.policy}' sur '{args.dataset}'")
-    print(f"  Steps: {args.steps}   Batch: {args.batch_size}   Device: {args.device}")
-    print(f"  Output: {output_dir}")
+    if args.resume:
+        # Reprise : tout est relu depuis la config du dernier checkpoint ;
+        # on ne re-surcharge que --steps (la cible TOTALE a atteindre).
+        ckpt_config = f"{output_dir}/checkpoints/last/pretrained_model/train_config.json"
+        if not os.path.exists(ckpt_config):
+            print(f"Checkpoint introuvable pour reprendre : {ckpt_config}")
+            print("  (as-tu deja lance un entrainement dans ce dossier ?)")
+            sys.exit(1)
+        cmd = [
+            "lerobot-train",
+            f"--config_path={ckpt_config}",
+            "--resume=true",
+            f"--steps={args.steps}",
+        ]
+        print(f"REPRISE de l'entrainement -> cible totale : {args.steps} steps")
+        print(f"  Checkpoint: {ckpt_config}")
+    else:
+        cmd = [
+            "lerobot-train",
+            f"--dataset.repo_id={args.dataset}",
+            f"--policy.type={args.policy}",
+            f"--policy.device={args.device}",
+            f"--policy.push_to_hub={'true' if args.push_to_hub else 'false'}",
+            f"--batch_size={args.batch_size}",
+            f"--steps={args.steps}",
+            f"--output_dir={output_dir}",
+            f"--job_name={job_name}",
+        ]
+        print(f"Entrainement '{args.policy}' sur '{args.dataset}'")
+        print(f"  Steps: {args.steps}   Batch: {args.batch_size}   Device: {args.device}")
+        print(f"  Output: {output_dir}")
     print(f"  Commande: {' '.join(cmd)}\n")
 
     try:
