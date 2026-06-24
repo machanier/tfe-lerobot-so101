@@ -337,16 +337,20 @@ class PipelineConfig:
     # A la pose approach standard (8cm), l'objet apparait juste AU-DESSUS des
     # doigts (v/H~0.57) : son bord PROCHE est mordu par les doigts -> le centroide
     # detecte est tire vers le bord ARRIERE (cote cams fixes) -> la prise tombe
-    # sur ce bord. En RECULANT (montant) la pince AVANT la capture cam_2, l'objet
-    # remonte vers le centre optique (v/H~0.51 a +4cm) et S'ELOIGNE des doigts ->
-    # objet entier visible, centroide non biaise. Verifie par projection (sim) :
-    # +40mm => objet a v/H 0.57->0.51, ecart aux doigts 0.25->0.31, blob encore
-    # ~1.3% du cadre (> seuil 0.3%). La capture se fait a cette hauteur ; la
-    # DESCENTE reste monotone (observation -> approach corrige 8cm -> grasp), donc
-    # PAS de "descend/remonte/redescend". 0 = comportement historique (capture a
-    # 8cm). Reglable via --cam2-observe-height (mm). Si le blob devient trop petit
-    # (objet loin/petit) le gating area_frac retombe proprement sur la stereo.
-    cam2_observe_extra_height_m: float = 0.04
+    # sur ce bord. HAUTEUR D'OBSERVATION cam_2 = REFERENCE DE DETECTION
+    # (Maxence 2026-06-24) : la capture cam_2 se fait a CETTE hauteur AU-DESSUS DE
+    # L'OBJET (12cm), pas a la hauteur d'approche. En RECULANT (montant) la pince
+    # a 12cm AVANT la capture, l'objet remonte vers le centre optique et S'ELOIGNE
+    # des doigts (qui occupent le bas du cadre) -> objet entier visible, centroide
+    # non biaise (verifie sim : a 12cm le blob fait encore ~1.3% du cadre > seuil
+    # 0.3%). Le surplus reel au-dessus de l'approche est calcule a l'execution
+    # (12cm - hauteur d'approche) -> observation a 12cm de l'objet QUEL QUE SOIT
+    # l'angle de prise (top-down ou incline). La DESCENTE reste monotone
+    # (observation 12cm -> approach corrige 8cm -> grasp), PAS de
+    # "descend/remonte/redescend". Reglable via --cam2-observe-height (mm, defaut
+    # 120). Si le blob devient trop petit (objet loin/petit) le gating area_frac
+    # retombe proprement sur la stereo.
+    cam2_observe_height_m: float = 0.12
 
     # ---------- AFFICHAGE : throttle des captures pendant les trajectoires ----
     # Avec --display, on_step capturait les 3 cameras 1080p a CHAQUE pas de
@@ -1257,13 +1261,19 @@ class PickAndPlacePipeline:
             live_callback = make_live_callback(initial_dets=dets_by_cam)
 
             if self.config.closed_loop and not self.config.dry_run:
-                # --- RECUL d'observation cam_2 (Maxence 2026-06-22) ---
-                # On MONTE la pince au-dessus de l'approche AVANT la capture cam_2
-                # pour degager l'objet des doigts (cf cam2_observe_extra_height_m).
+                # --- RECUL d'observation cam_2 (Maxence 2026-06-22, ref 12cm 2026-06-24) ---
+                # On MONTE la pince a la HAUTEUR D'OBSERVATION = 12cm AU-DESSUS DE
+                # L'OBJET (reference de detection) AVANT la capture cam_2, pour
+                # degager l'objet des doigts (cf cam2_observe_height_m). Le surplus
+                # reel au-dessus de l'approche = 12cm - hauteur d'approche, donc
+                # l'observation est a 12cm de l'objet quel que soit l'angle de prise.
                 # La capture se fait a cette hauteur ; la descente reste MONOTONE
-                # (observation -> approach corrige 8cm -> grasp), aucune remontee.
+                # (observation 12cm -> approach corrige 8cm -> grasp), aucune remontee.
                 r_phase1_target = r_app
-                observe_extra_m = float(self.config.cam2_observe_extra_height_m)
+                approach_height_m = float(grasp_pose.T_base_gripper_approach[2, 3]
+                                          - grasp_pose.T_base_gripper_grasp[2, 3])
+                observe_height_m = float(self.config.cam2_observe_height_m)
+                observe_extra_m = max(0.0, observe_height_m - approach_height_m)
                 if observe_extra_m > 1e-4:
                     T_observe = grasp_pose.T_base_gripper_approach.copy()
                     T_observe[2, 3] += observe_extra_m
@@ -1279,14 +1289,15 @@ class PickAndPlacePipeline:
                     # REELLE des moteurs (FK), pas la cible IK -> auto-coherente.
                     if r_obs.translation_err_mm <= self.config.ik_tol_approach_mm:
                         r_phase1_target = r_obs
-                        print(f"   [recul cam_2] observation a +{observe_extra_m*1000:.0f}mm "
-                              f"au-dessus de l'approche (Z pince={T_observe[2,3]*1000:.0f}mm, "
+                        print(f"   [recul cam_2] observation/detection a "
+                              f"{observe_height_m*1000:.0f}mm au-dessus de l'objet "
+                              f"(Z pince={T_observe[2,3]*1000:.0f}mm, "
                               f"IK trans={r_obs.translation_err_mm:.1f}mm) "
                               f"pour eloigner l'objet des doigts dans l'image")
                     else:
-                        print(f"   [recul cam_2] pose d'observation "
-                              f"+{observe_extra_m*1000:.0f}mm hors portee "
-                              f"(IK trans={r_obs.translation_err_mm:.1f}mm > "
+                        print(f"   [recul cam_2] pose d'observation a "
+                              f"{observe_height_m*1000:.0f}mm au-dessus de l'objet "
+                              f"hors portee (IK trans={r_obs.translation_err_mm:.1f}mm > "
                               f"{self.config.ik_tol_approach_mm:.0f}mm) "
                               f"-> capture a l'approche standard")
                 # --- Phase 1 : trajectoire courant -> approach (ou observation) ---
@@ -1440,8 +1451,10 @@ class PickAndPlacePipeline:
                 # TOUT DROIT sur l'objet -> "analyse avant de descendre".
                 if not self.config.closed_loop_two_stage:
                     rs_at_intermediate = rs_at_approach
-                    print(">> Un seul refinement (a 8cm) -> repositionnement a 8cm "
-                          "puis DESCENTE DROITE (pas de mini-descente basse altitude)")
+                    print(f">> Un seul refinement (detection a "
+                          f"{self.config.cam2_observe_height_m*1000:.0f}mm = hauteur "
+                          f"d'observation) -> repositionnement lateral en hauteur puis "
+                          f"DESCENTE DROITE (pas de mini-descente basse altitude)")
                     print()
                 else:
                     # --- A4 : Mini-descente + Refinement #2 (cam_2 plus pres) ---
@@ -1779,7 +1792,10 @@ class PickAndPlacePipeline:
                     # hauteur de RECUL (vue degagee des doigts) -> on peut alors faire
                     # plus confiance a une grosse correction (plafond elargi).
                     retry_observe = False
-                    observe_extra_m = float(self.config.cam2_observe_extra_height_m)
+                    _appr_h = float(grasp_pose.T_base_gripper_approach[2, 3]
+                                    - grasp_pose.T_base_gripper_grasp[2, 3])
+                    observe_extra_m = max(0.0,
+                                          float(self.config.cam2_observe_height_m) - _appr_h)
 
                     if failed_stage == "lift":
                         # Deja a retract, pince fermee sur rien : OUVRIR en

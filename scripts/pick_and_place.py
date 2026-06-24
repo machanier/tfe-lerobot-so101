@@ -163,13 +163,14 @@ def main():
                              "cam_2 voit un faux objet a l'autre bout de la plaque. Mettre "
                              "tres grand (ex 200) = faire TOUJOURS confiance a cam_2.")
     parser.add_argument("--cam2-observe-height", type=float, default=None,
-                        help="RECUL d'observation cam_2 en mm : hauteur AJOUTEE au-dessus "
-                             "de la pose d'approche avant la capture cam_2, pour eloigner "
-                             "l'objet des doigts dans l'image (ceux-ci occupent toujours le "
-                             "bas du cadre) -> centroide moins tire vers le bord arriere. "
-                             "Defaut PipelineConfig=40. La descente reste monotone "
-                             "(observation -> approche 8cm -> grasp). 0 = capture a 8cm "
-                             "(historique). Trop haut -> blob trop petit (gating -> stereo).")
+                        help="HAUTEUR D'OBSERVATION cam_2 en mm, AU-DESSUS DE L'OBJET = "
+                             "reference de detection. La capture cam_2 se fait a cette "
+                             "hauteur (120mm=12cm par defaut) pour eloigner l'objet des "
+                             "doigts dans l'image (ils occupent le bas du cadre) -> "
+                             "centroide non biaise, quel que soit l'angle de prise. "
+                             "Defaut PipelineConfig=120. La descente reste monotone "
+                             "(observation 12cm -> approche corrigee 8cm -> grasp). "
+                             "Trop haut -> blob trop petit (gating -> stereo).")
     parser.add_argument("--top-down", action="store_true",
                         help="Revient a la saisie VERTICALE PAR LE HAUT uniquement "
                              "(comportement de reference eprouve). Par defaut (sans "
@@ -273,7 +274,7 @@ def main():
     if args.closed_loop_max_correction is not None:
         config.closed_loop_max_correction_mm = args.closed_loop_max_correction
     if args.cam2_observe_height is not None:
-        config.cam2_observe_extra_height_m = args.cam2_observe_height / 1000.0
+        config.cam2_observe_height_m = args.cam2_observe_height / 1000.0
     if args.grasp_load_threshold is not None:
         config.grasp_load_threshold = args.grasp_load_threshold
     config.grasp_close_servo = (args.grasp_close_mode == "servo")
