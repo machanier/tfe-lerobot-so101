@@ -13,7 +13,8 @@
     "a colorful rubiks cube with multiple square faces",
     "a rectangular cardboard tissue box",
     "a tall transparent plastic cup",
-    "a metallic robotic arm with a gripper"
+    "a metallic robotic arm with a gripper",
+    "a rubiks cube with multiple square faces"
   ],
   "_labels_doc": "Conseils pour ajouter / modifier :\n  - 3 a 8 mots ideal (pas plus).\n  - article 'a' ou 'the' aide.\n  - structure 'a [size] [color] [material] [shape/object]' marche bien.\n  - 'metallic robotic arm' pour le robot le distingue mieux du cube orange que juste 'robot arm'.\n  - Pour les tests A/B : changer une description et comparer le score de detection.",
   "_label_mapping": {
@@ -27,6 +28,7 @@
     "a colorful rubiks cube with multiple square faces": "rubiks_cube",
     "a rectangular cardboard tissue box": "tissue_box",
     "a tall transparent plastic cup": "tall_plastic_cup",
-    "a metallic robotic arm with a gripper": "robot_arm"
+    "a metallic robotic arm with a gripper": "robot_arm",
+    "a rubiks cube with multiple square faces": "rubiks_cube"
   }
 }

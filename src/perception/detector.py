@@ -128,6 +128,10 @@ class ObjectSpec:
                        la distance camera-objet.
         max_area_px  : aire maximale (rejette les "blobs" qui prennent toute
                        l'image, e.g. fond colore mal eclaire).
+        top_k        : nb max de blobs gardes pour CET objet. None -> defaut du
+                       detecteur (1). Utile pour le noir (top_k=3) : sur fond
+                       sombre encombre, on garde plusieurs candidats et le
+                       filtre workspace 3D tranche lequel est sur la table.
         meta         : metadonnees libres (e.g. forme attendue, taille reelle
                        en mm pour PnP monoculaire).
     """
@@ -136,6 +140,7 @@ class ObjectSpec:
     hsv: HSVRange
     min_area_px: float = 300.0
     max_area_px: float = 1.0e6
+    top_k: Optional[int] = None
     meta: dict = field(default_factory=dict)
 
 
@@ -203,13 +208,24 @@ class HSVDetector(ObjectDetector):
     `scripts/calibrate_hsv.py` (a venir) qui ecrit configs/perception/hsv_*.json.
     """
 
-    def __init__(self, specs: list[ObjectSpec], *,
+    def __init__(self, specs, *,
                  morph_kernel: int = 5,
                  top_k_per_label: int = 1,
                  emit_mask: bool = False):
-        if not specs:
-            raise ValueError("HSVDetector: au moins une ObjectSpec requise.")
-        self.specs = specs
+        # `specs` peut etre :
+        #   - list[ObjectSpec] : spec GLOBALE appliquee a toutes les cameras ;
+        #   - dict[str, list[ObjectSpec]] : spec PAR cam_key (cam_0/cam_1/cam_2).
+        # En mode par-camera, self.specs est l'union (fallback + name + meta).
+        if isinstance(specs, dict):
+            if not specs or not any(specs.values()):
+                raise ValueError("HSVDetector: dict de specs par camera vide.")
+            self._specs_by_cam = specs
+            self.specs = flatten_specs(specs)
+        else:
+            if not specs:
+                raise ValueError("HSVDetector: au moins une ObjectSpec requise.")
+            self._specs_by_cam = None
+            self.specs = specs
         self.morph_kernel = morph_kernel
         self.top_k_per_label = top_k_per_label
         self.emit_mask = emit_mask
@@ -219,14 +235,24 @@ class HSVDetector(ObjectDetector):
 
     @property
     def name(self) -> str:
+        if self._specs_by_cam is not None:
+            per = ", ".join(f"{k}={len(v)}" for k, v in self._specs_by_cam.items())
+            return f"HSVDetector(per-cam[{per}])"
         return f"HSVDetector(n={len(self.specs)})"
 
     # ----- API ------------------------------------------------------------
 
     def detect(self, frame: Frame) -> list[Detection2D]:
         hsv = cv2.cvtColor(frame.image, cv2.COLOR_BGR2HSV)
+        # Selection des specs : par camera si disponible, sinon globales.
+        # cam_key inconnu -> repli sur l'union (self.specs) pour ne jamais
+        # planter ni perdre silencieusement une camera.
+        if self._specs_by_cam is not None:
+            specs = self._specs_by_cam.get(frame.cam_key, self.specs)
+        else:
+            specs = self.specs
         detections: list[Detection2D] = []
-        for spec in self.specs:
+        for spec in specs:
             detections.extend(self._detect_one_spec(frame, hsv, spec))
         return detections
 
@@ -242,9 +268,11 @@ class HSVDetector(ObjectDetector):
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         valid = [(c, cv2.contourArea(c)) for c in contours]
         valid = [(c, a) for c, a in valid if spec.min_area_px <= a <= spec.max_area_px]
-        # tri decroissant par aire ; on garde les top_k
+        # tri decroissant par aire ; on garde les top_k (par-spec si defini,
+        # sinon le defaut du detecteur).
         valid.sort(key=lambda ca: -ca[1])
-        valid = valid[: self.top_k_per_label]
+        k = spec.top_k if spec.top_k is not None else self.top_k_per_label
+        valid = valid[:k]
 
         out: list[Detection2D] = []
         for cnt, area in valid:
@@ -492,34 +520,10 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_SPECS_PATH = REPO / "configs" / "perception" / "hsv_specs.json"
 
 
-def load_hsv_specs(path: Optional[Path] = None) -> list[ObjectSpec]:
-    """Charge la liste d'ObjectSpec depuis un fichier JSON.
-
-    Format attendu (`configs/perception/hsv_specs.json`) :
-
-        {
-          "specs": [
-            {
-              "label": "red_cube",
-              "h_lo": 0, "h_hi": 10, "hue_extra_lo": 170, "hue_extra_hi": 179,
-              "s_lo": 100, "s_hi": 255, "v_lo": 50, "v_hi": 255,
-              "min_area_px": 500, "max_area_px": 200000,
-              "meta": {"shape": "cube", "side_mm": 30.0}
-            },
-            ...
-          ]
-        }
-    """
-    path = path or DEFAULT_SPECS_PATH
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Specs HSV introuvables : {path}\n"
-            "Genere un fichier via scripts/calibrate_hsv.py (a venir), ou "
-            "utilise default_hsv_specs() pour partir des plages standards."
-        )
-    data = json.load(open(path))
+def _parse_spec_dicts(items: list[dict]) -> list[ObjectSpec]:
+    """Construit une liste d'ObjectSpec depuis une liste de dicts JSON."""
     out = []
-    for s in data.get("specs", []):
+    for s in items:
         hsv = HSVRange(
             h_lo=int(s.get("h_lo", 0)), h_hi=int(s.get("h_hi", 179)),
             s_lo=int(s.get("s_lo", 0)), s_hi=int(s.get("s_hi", 255)),
@@ -531,9 +535,53 @@ def load_hsv_specs(path: Optional[Path] = None) -> list[ObjectSpec]:
             label=str(s["label"]), hsv=hsv,
             min_area_px=float(s.get("min_area_px", 300)),
             max_area_px=float(s.get("max_area_px", 1.0e6)),
+            top_k=(int(s["top_k"]) if s.get("top_k") is not None else None),
             meta=s.get("meta", {}),
         ))
     return out
+
+
+def load_hsv_specs(path: Optional[Path] = None):
+    """Charge les ObjectSpec depuis un JSON. Deux formats supportes :
+
+    - GLOBAL (historique) : {"specs": [ {...}, ... ]}
+      -> renvoie list[ObjectSpec], appliquee a TOUTES les cameras.
+    - PAR CAMERA : {"specs_by_cam": {"cam_0": [...], "cam_1": [...], "cam_2": [...]}}
+      -> renvoie dict[str, list[ObjectSpec]]. HSVDetector route alors selon
+      frame.cam_key. Utile car la reponse photometrique de cam_2 (eye-in-hand,
+      vue rapprochee, souvent surexposee/delavee) differe de la paire stereo
+      cam_0/cam_1 : un meme objet y est moins sature. Extension par camera
+      coherente avec la calibration intrinseque/hand-eye deja par camera. D12.
+
+    Exemple de spec : {"label": "red_cube", "h_lo": 0, "h_hi": 10,
+    "s_lo": 100, "v_lo": 50, "min_area_px": 500, "max_area_px": 200000,
+    "meta": {"shape": "cube", "side_mm": 30.0}}.
+    """
+    path = path or DEFAULT_SPECS_PATH
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Specs HSV introuvables : {path}\n"
+            "Genere un fichier via scripts/calibrate_hsv.py, ou "
+            "utilise default_hsv_specs() pour partir des plages standards."
+        )
+    data = json.load(open(path))
+    if "specs_by_cam" in data:
+        return {cam: _parse_spec_dicts(items)
+                for cam, items in data["specs_by_cam"].items()}
+    return _parse_spec_dicts(data.get("specs", []))
+
+
+def flatten_specs(specs) -> list[ObjectSpec]:
+    """Renvoie une liste plate d'ObjectSpec (union dedupliquee par label), que
+    `specs` soit global (list) ou par camera (dict). Sert a construire le mapping
+    label->meta (taille/forme), qui est independant de la camera."""
+    if isinstance(specs, dict):
+        seen: dict[str, ObjectSpec] = {}
+        for cam_specs in specs.values():
+            for s in cam_specs:
+                seen.setdefault(s.label, s)
+        return list(seen.values())
+    return specs
 
 
 def default_hsv_specs() -> list[ObjectSpec]:

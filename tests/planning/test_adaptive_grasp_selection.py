@@ -89,26 +89,27 @@ def test_top_down_mode_rejects_tall_object():
 
 
 def test_preferred_pitch_zones():
-    """L'angle prefere suit les ZONES (distance + hauteur), reglables."""
+    """L'angle prefere est pilote par la HAUTEUR DU SOMMET (politique 2026-06-21)."""
     from src.planning.grasp import preferred_pitch_deg
-    # --- objet BAS : la distance decide ---
+    # --- objet BAS/PLAT (h_top < 12cm) : top-down (proche) ou 45 (sinon), JAMAIS 90 ---
     # proche (d<=33cm) -> top-down
     assert preferred_pitch_deg(_obj([0.20, 0.0, 0.015], (0.05, 0.05, 0.02))) == 0.0
     # mi-distance (33<d<42cm) -> diagonale
     assert preferred_pitch_deg(_obj([0.37, 0.0, 0.015], (0.03, 0.03, 0.03))) == 45.0
-    # loin (d>=42cm) ET BAS/PLAT -> diagonale 45, JAMAIS 90 (revision 2026-06-21,
-    # essais cube : une 90 sur un objet plat ferme au-dessus / pousse l'objet ;
-    # le 90 est reserve aux objets hauts/debout qui ont un vrai flanc a serrer).
+    # loin (d>=42cm) ET BAS/PLAT -> diagonale 45, JAMAIS 90 (essais cube : une 90
+    # sur un objet plat ferme au-dessus / pousse l'objet).
     assert preferred_pitch_deg(_obj([0.43, 0.0, 0.015], (0.03, 0.03, 0.03))) == 45.0
-    # --- objet HAUT (sommet>12cm) ou DEBOUT -> TOUJOURS face (90), jamais 45 ---
-    # (Maxence 2026-06-20 : limite de hauteur sur le 45 ; un objet haut se prend
-    # par le flanc. Si 90 inatteignable de pres, le pipeline retombe sur 45/0.)
-    # haut + proche -> 90 (plus de 45 pour un objet haut)
-    assert preferred_pitch_deg(_obj([0.20, 0.0, 0.09], (0.04, 0.04, 0.18))) == 90.0
-    # haut + mi -> face (objet haut = angle plus grand des la mi-distance)
-    assert preferred_pitch_deg(_obj([0.37, 0.0, 0.09], (0.04, 0.04, 0.18))) == 90.0
-    # haut + loin -> face
-    assert preferred_pitch_deg(_obj([0.43, 0.0, 0.09], (0.04, 0.04, 0.18))) == 90.0
+    # --- debout COURT (sommet < 12cm) : se prend par le DESSUS de pres (plus de
+    # 90 force) -> evite la prise "sur le bord haut" (essais 2026-06-21) ---
+    assert preferred_pitch_deg(_obj([0.30, 0.0, 0.029], (0.027, 0.027, 0.058))) == 0.0
+    # --- objet MOYENNEMENT haut (12cm <= h_top < 20cm) -> diagonale 45 ---
+    # h_top = 0.06 + 0.18/2 = 0.15
+    assert preferred_pitch_deg(_obj([0.20, 0.0, 0.06], (0.04, 0.04, 0.18))) == 45.0
+    assert preferred_pitch_deg(_obj([0.37, 0.0, 0.06], (0.04, 0.04, 0.18))) == 45.0
+    # --- objet HAUT (h_top >= 20cm, seuil face_m A REVOIR) -> face 90 ---
+    # h_top = 0.10 + 0.30/2 = 0.25
+    assert preferred_pitch_deg(_obj([0.20, 0.0, 0.10], (0.04, 0.04, 0.30))) == 90.0
+    assert preferred_pitch_deg(_obj([0.43, 0.0, 0.10], (0.04, 0.04, 0.30))) == 90.0
 
 
 def test_reorient_oriented_aligns_jaws_tilted():

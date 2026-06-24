@@ -48,6 +48,16 @@ import numpy as np
 from src.perception.scene import Detection2D, Frame, ObjectInstance, Scene
 
 
+# Offset horizontal MAX (m) entre le sommet triangule et le centroide pour qu'un
+# objet a bbox image haute & fine soit accepte comme DEBOUT. Au-dela, le "sommet"
+# de la bbox est en realite le BOUT LOINTAIN d'un objet allonge qui FUIT vers les
+# cameras (cylindre couche // X) -> on REFUSE le classement "debout" (sinon hauteur
+# = longueur -> prise bien trop haute). ~ rayon max plausible d'un dessus d'objet
+# debout (nos objets <= 30mm de diametre -> rayon <= 15mm ; couche // X -> offset
+# ~ demi-longueur ~ 30mm). Reglable. cf grasp-frame-bias-diagnostic.
+DEBOUT_TOP_OFFSET_MAX_M = 0.025
+
+
 # ============================================================
 # Helpers de geometrie projective
 # ============================================================
@@ -520,6 +530,55 @@ class PoseEstimator:
             height = float(bbox_old[2])
             meta["height_method"] = "proxy_bbox"
 
+        # --- 1bis. OBJET HAUT detecte en IMAGE (bbox haute & fine, 2 vues) ---
+        # Un objet DEBOUT (cylindre, boite verticale) a une bbox image nettement
+        # plus HAUTE que LARGE. Le detecter ICI evite deux pieges qui cassaient
+        # la hauteur des cylindres debout (-> Z de prise trop bas -> cam_2
+        # sur-corrige X) :
+        #   (a) le sommet triangule sous-estime un DESSUS DE CYLINDRE (cercle,
+        #       pas un point : le haut de bbox des 2 vues n'est pas le meme point),
+        #   (b) la projection de l'empreinte sur le plan table cree une fausse
+        #       elongation -> classe 'couche' + h_cap qui rabote la hauteur.
+        # Pour ces objets : classe 'debout', yaw libre (dessus rond), hauteur =
+        # extent VERTICAL de la bbox image (proxy fiable pour un debout), SANS
+        # passer par l'empreinte projetee ni h_cap.
+        def _img_aspect(det):
+            b = getattr(det, "bbox", None)
+            if b is None:
+                return None
+            w, h = abs(float(b[2] - b[0])), abs(float(b[3] - b[1]))
+            return (h / w) if w > 1e-6 else None
+        a_L, a_R = _img_aspect(det_L), _img_aspect(det_R)
+        # GARDE-FOU anti-FORESHORTENING (cylindre COUCHE pointant VERS les cameras,
+        # ex // X) : une bbox image HAUTE & FINE peut venir d'un objet DEBOUT *ou*
+        # d'un objet allonge qui S'ELOIGNE (le "haut" de bbox = le BOUT LOINTAIN,
+        # pas un sommet a la verticale du centre). On les separe par la position 3D
+        # du sommet triangule : un vrai DEBOUT a son sommet ~A LA VERTICALE du
+        # centroide (offset horizontal ~ rayon du dessus, petit) ; un COUCHE qui fuit
+        # a son "sommet" sur le bout lointain (offset horizontal ~ demi-longueur,
+        # grand). L'offset est INVARIANT au biais (X_top et X_base le portent tous
+        # deux). Sans ce garde-fou, un cylindre // X -> hauteur = longueur -> prise
+        # ancree a table + longueur/2 = bien trop haut + cam_2 projette sur un plan
+        # Z errone -> X ET Y faux (essai // X 2026-06-21 "trop haut + decale a droite").
+        foreshortened = False
+        if (X_top is not None and X_base is not None
+                and a_L is not None and a_R is not None
+                and a_L >= 1.4 and a_R >= 1.4):
+            off_xy = float(np.hypot(X_top[0] - X_base[0], X_top[1] - X_base[1]))
+            if off_xy > DEBOUT_TOP_OFFSET_MAX_M:
+                foreshortened = True
+                meta["debout_rejete_offset_mm"] = round(off_xy * 1000.0, 0)
+        if (not foreshortened
+                and a_L is not None and a_R is not None
+                and a_L >= 1.4 and a_R >= 1.4 and bbox_old is not None):
+            diam = float(bbox_old[0])              # largeur ~ diametre (dessus rond)
+            h_up = float(bbox_old[2])              # extent vertical bbox = hauteur
+            meta["height_method"] = "bbox_haute_debout"
+            meta["pose_class"] = "debout"
+            meta["yaw_base_rad"] = None
+            meta["img_aspect"] = round(min(a_L, a_R), 2)
+            return (diam, diam, h_up), meta
+
         # --- 2. classe debout / couche / compact ---
         # Largeur d'empreinte approx = extent HORIZONTAL image (peu pollue par
         # la hauteur), le min des deux vues.
@@ -530,7 +589,13 @@ class PoseEstimator:
                 foot_w = b[0] if foot_w is None else min(foot_w, b[0])
         dx = float(bbox_old[0]) if bbox_old else 0.03
         dy = float(bbox_old[1]) if bbox_old else 0.03
-        if foot_w is not None and height > 1.6 * max(foot_w, 1e-3):
+        # MEME garde-fou foreshortening : un objet allonge qui FUIT vers les cameras
+        # (couche // X) a une hauteur 3D (sommet triangule = bout lointain) qui peut
+        # depasser 1.6x l'empreinte -> ne PAS le classer debout non plus. On le
+        # laisse a la classification couche/compact (section 3), avec la hauteur =
+        # diametre (sommet du bout lointain ~ table + diametre).
+        if (not foreshortened and foot_w is not None
+                and height > 1.6 * max(foot_w, 1e-3)):
             meta["pose_class"] = "debout"
             meta["yaw_base_rad"] = None            # empreinte ~circulaire vue du haut
             return (dx, dy, height), meta
@@ -738,7 +803,17 @@ class PoseEstimator:
             wb = self._workspace_bounds
             if not (wb["x_min"] <= x <= wb["x_max"]): return f"X={x*1000:.0f}mm hors bornes scene [{wb['x_min']*1000:.0f},{wb['x_max']*1000:.0f}]"
             if not (wb["y_min"] <= y <= wb["y_max"]): return f"Y={y*1000:.0f}mm hors bornes scene [{wb['y_min']*1000:.0f},{wb['y_max']*1000:.0f}]"
-            if not (wb["z_min"] <= z <= wb["z_max"]): return f"Z={z*1000:.0f}mm hors bornes scene [{wb['z_min']*1000:.0f},{wb['z_max']*1000:.0f}]"
+            # Borne Z INFERIEURE : tolerance vers le bas. Le Z du CENTROIDE stereo
+            # est notoirement sous-estime sur les objets non plats (debout/couche) :
+            # le centroide de la silhouette se triangule trop bas, jusqu'a passer
+            # SOUS la table (ex. cylindre couche : Z=-23mm alors qu'il est pose
+            # dessus). La PRISE n'utilise pas ce Z (elle ancre Z=table+H/2), donc
+            # rejeter la detection sur ce Z faux fait perdre un objet bien vu en 2D
+            # (// X "impossible", 2026-06-20). On tolere Z_UNDERSHOOT_TOL_M sous
+            # z_min ; la borne HAUTE reste stricte (un objet trop HAUT est suspect).
+            Z_UNDERSHOOT_TOL_M = 0.030
+            if not (wb["z_min"] - Z_UNDERSHOOT_TOL_M <= z <= wb["z_max"]):
+                return f"Z={z*1000:.0f}mm hors bornes scene [{wb['z_min']*1000:.0f},{wb['z_max']*1000:.0f}] (tol basse {Z_UNDERSHOOT_TOL_M*1000:.0f}mm)"
         # Zones d'exclusion : la position ne doit etre dans AUCUNE zone.
         # CARVE-OUT TABLE (2026-06-13) : la zone 'robot_arm_envelope' (box
         # englobant le bras replie) couvre x[0,0.20] z[0,0.30] et avalait donc
@@ -850,6 +925,10 @@ if __name__ == "__main__":
     # load_scene_config=False pour test independant des configs reelles
     spec_meta = {"x": {"shape": "cube", "side_mm": 30.0}}
     est = PoseEstimator(specs_by_label=spec_meta, load_scene_config=False)
+    # Ce test valide la GEOMETRIE de triangulation, qui doit etre independante de
+    # la compensation de biais empirique (bias_correction.json). On la desactive
+    # ici, sinon le biais courant (~-32mm en X) fait echouer le seuil <1mm.
+    est._bias_m = None
     img = np.zeros((1080, 1920, 3), dtype=np.uint8)
     frames = {
         "cam_0": Frame(cam_key="cam_0", image=img, K=K, dist=dist, T_base_cam=T_L),
@@ -994,5 +1073,35 @@ if __name__ == "__main__":
     assert abs(np.degrees(yaw_est) - 30.0) < 4.0
     assert elong > 2.0
     assert abs(ext_l - 0.090) < 0.012 and abs(ext_c - 0.030) < 0.010
+
+    # 8. GARDE-FOU anti-FORESHORTENING : un cylindre DEBOUT reste 'debout' ; un
+    #    cylindre COUCHE qui FUIT vers les cameras (// X, "sommet" de bbox = bout
+    #    lointain) N'est PAS classe debout (sinon hauteur = longueur -> prise trop
+    #    haute). Distinction = offset horizontal sommet-vs-centroide.
+    est3._bias_m = None  # test dans un repere coherent (X_top et X_base non biaises)
+
+    def _dets_haute(centroid, apex, halfw_px, h_px):
+        out = []
+        for f2 in (f_L2, f_R2):
+            c = proj(f2.T_base_cam, centroid)
+            a = proj(f2.T_base_cam, apex)
+            out.append(Detection2D(
+                cam_key=f2.cam_key, label="cyl", center_px=(c[0], c[1]),
+                bbox=(a[0] - halfw_px, a[1], a[0] + halfw_px, a[1] + h_px)))
+        return out
+    # DEBOUT : sommet A LA VERTICALE du centroide -> garde 'debout'
+    dL, dR = _dets_haute([0.25, 0.0, 0.03], [0.25, 0.0, 0.06], 50, 180)
+    _, m_deb = est3._estimate_geometry(dL, dR, f_L2, f_R2, np.array([0.25, 0.0, 0.03]))
+    assert m_deb.get("pose_class") == "debout", \
+        f"un vrai debout doit rester debout, recu {m_deb.get('pose_class')}"
+    # COUCHE // X : 'sommet' = bout lointain (offset ~30mm) -> PAS debout, hauteur ~ diametre
+    dL, dR = _dets_haute([0.25, 0.0, 0.0125], [0.22, 0.0, 0.025], 50, 180)
+    b_cou, m_cou = est3._estimate_geometry(dL, dR, f_L2, f_R2, np.array([0.25, 0.0, 0.0125]))
+    assert m_cou.get("pose_class") != "debout", \
+        f"un cylindre couche // X ne doit PAS etre classe debout, recu {m_cou.get('pose_class')}"
+    assert b_cou[2] < 0.035, \
+        f"hauteur couche // X attendue ~diametre (<35mm), recu {b_cou[2]*1000:.0f}mm"
+    print(f"  [OK] garde-fou foreshortening : debout garde, couche // X reclasse "
+          f"(hauteur {b_cou[2]*1000:.0f}mm = diametre, offset {m_cou.get('debout_rejete_offset_mm')}mm)")
 
     print("Tous les tests passent.")

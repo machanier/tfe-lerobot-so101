@@ -12,7 +12,8 @@ C'est le module qui MET TOUT ENSEMBLE :
   7. Trajectoire jusqu'à approach, puis RAFFINEMENT cam_2 (boucle fermée) :
      recale la POSITION (résiduel stéréo) et réaligne les mâchoires sur le grand
      axe, sous garde-fous (taille du blob, plafond de correction).
-  8. Offset de prise base-Y (gauche) appliqué APRÈS cam_2 (pince asymétrique).
+  8. Offset latéral de prise en repère PINCE (le long des mâchoires) appliqué
+     APRÈS cam_2 et aligné sur l'orientation finale du grasp (pince asymétrique).
   9. Descente + FERMETURE ASSERVIE au couple ; vérif après levée ; RETRY si la
      pince s'est fermée à vide (re-raffinement cam_2 + redescente).
  10. Si tenu : dépose (drop_above -> drop_release) puis retour ; sinon abandon.
@@ -97,11 +98,17 @@ class PipelineConfig:
     pause_release_s: float = 0.5
     dry_run: bool = False               # True : pas d'envoi moteur, juste log
     closed_loop: bool = True            # Sprint 4 : raffinement cam_2 avant grasp
-    # Plafond de la correction cam_2 au 1er refine (a l'approche, ~8cm). L'erreur
-    # stereo realiste est ~30mm max -> une correction au-dela est presque toujours
-    # cam_2 verrouille sur un AUTRE objet. Abaisse 80->40mm (Maxence 2026-06-20 :
-    # "80 c'est beaucoup"). Le retry a un plafond encore plus serre (15mm).
-    closed_loop_max_correction_mm: float = 40.0
+    # Plafond de la correction cam_2. PHILOSOPHIE (Maxence 2026-06-23) : cam_2 EST
+    # le raffinement (proche, vue de dessus, calib plus fine) ; la stereo ne sert
+    # qu'a amener le bras dans la zone. Une fois la, c'est cam_2 qui FAIT FOI. Un
+    # GROS ecart cam_2<->stereo veut dire que la STEREO etait mauvaise = justement
+    # le cas ou cam_2 est la plus utile -> on ne doit PAS jeter cam_2 pour ca. Le
+    # vrai garde-fou de fiabilite, c'est la QUALITE du blob (cam2_min_blob_frac +
+    # filtre de bord), PAS l'ampleur de l'ecart. Ce plafond ne sert donc plus qu'a
+    # rejeter le cas RARISSIME ou cam_2 verrouille un objet a l'autre bout de la
+    # plaque (> ~8cm = clairement un faux). 40->80mm (le cylindre couche, stereo
+    # fausse de 47mm avec cam_2 juste, etait jete a tort). Reglable --closed-loop-max-correction.
+    closed_loop_max_correction_mm: float = 80.0
     # Taille MINI du blob cam_2 (fraction du cadre) pour FAIRE CONFIANCE a son
     # centroide et appliquer la correction de position (Maxence 2026-06-20).
     # REMPLACE le verrou par `score` (= aire normalisee par max_area_px, une
@@ -126,7 +133,14 @@ class PipelineConfig:
     # petit est deja rejete par les autres verrous. Si un jour le 90 derape a cause
     # de la projection rayon-plan, baisser CE seuil (ex 67.5) -- mais demander avant.
     cam2_max_pitch_deg: float = 180.0
-    display: bool = False               # Affiche les frames camera (cv2.imshow) aux moments cles
+    display: bool = False               # FENETRE LIVE cv2.imshow + grab continu des 3 cams pendant le mouvement (sature le bus -> cam_2 decroche ; cf display_grab_stride). N'a PLUS rien a voir avec la SAUVEGARDE des snapshots.
+    # SAUVEGARDE des snapshots (.png) dans outputs/perception/ : snapshot perception
+    # initial, vues cam_2 du raffinement, et surtout snapshots "PRISE" verite-terrain
+    # (machoires + objet au moment de fermer). DECOUPLE de `display` (Maxence
+    # 2026-06-23) : ces ecritures ne font que sauver une frame DEJA capturee (zero
+    # grab continu) -> on peut les avoir SANS la fenetre live qui fait decrocher
+    # cam_2. Actif par defaut ; --no-snapshots pour couper.
+    save_snapshots: bool = True
 
     # Pose intermediaire "safe" entre drop_release et home (utile pour
     # eviter que le bras traverse la zone de l'objet pendant le retour).
@@ -213,19 +227,55 @@ class PipelineConfig:
     # grasp pour que l'objet finisse contre le doigt fixe (le mobile vient
     # l'ecraser), sinon le doigt fixe percute l'objet et le pousse avant la
     # fermeture -> prise "de travers". Calibre a 8mm pour le cube 30mm.
-    # REMIS A 0 (Maxence 2026-06-20) : ce decalage est en repere PINCE, le long de
-    # l'axe des machoires. Avec yaw_offset=90deg il part en X_base (verifie : il
-    # decalait la cible en X, pas en Y) ET cam_2 le gommait au recentrage. Le vrai
-    # besoin de Maxence = un decalage base-Y pur applique APRES cam_2 : voir
-    # grasp_y_offset_base_mm ci-dessous.
+    # Ce champ-ci (offset repere PINCE applique au moment du PLAN) reste a 0 :
+    # applique au plan, cam_2 le GOMME au recentrage (verifie 2026-06-20). Le
+    # decalage ACTIF est grasp_lateral_tool_offset_mm ci-dessous, applique APRES
+    # cam_2 dans le MEME repere pince.
     grasp_lateral_offset_mm: Optional[float] = 0.0
-    # OFFSET DE PRISE base-Y (Maxence 2026-06-20). Le robot vise la position de
-    # l'objet (centree par cam_2), PUIS on decale la cible de prise de +Y (vers la
-    # GAUCHE, Y+ = gauche) d'une valeur FIXE, sur CHAQUE descente. Translation pure
-    # en repere base -> n'affecte PAS le wrist/l'orientation. Applique APRES cam_2
-    # (sinon le recentrage cam_2 l'annule). +10mm pour commencer ; signe negatif
-    # = vers la droite. 0 = desactive.
-    grasp_y_offset_base_mm: float = 10.0
+    # OFFSET LATERAL DE PRISE -- repere IMAGE cam_2, "vers la GAUCHE de l'image"
+    # (Maxence 2026-06-23, via _cam2_image_left_base). Applique APRES cam_2 pour
+    # amener le doigt fixe a fleur de l'arete gauche de l'objet TEL QU'IL APPARAIT
+    # dans le snapshot cam_2. Constant dans l'image -> reparti differemment sur X/Y
+    # base selon l'orientation de la tete. But : doigt fixe au BORD, pas sur le
+    # dessus. 10->15mm (Maxence 2026-06-23 : "pas assez decale a gauche"). Reglable
+    # en direct via --grasp-lateral-offset (ex 18, 20) ; valeur NEGATIVE = inverse
+    # le cote. 0 = desactive (centre sur l'objet).
+    # NB : sert de VALEUR MANUELLE / fallback quand grasp_lateral_offset_auto=False
+    # ou que la largeur d'objet est inconnue (cf ci-dessous).
+    grasp_lateral_tool_offset_mm: float = 15.0
+    # OFFSET LATERAL ADAPTATIF (Maxence 2026-06-23) : au lieu d'une constante, on
+    # decale le doigt fixe de (DEMI-LARGEUR de l'objet + marge) pour qu'il tombe a
+    # fleur de l'arete QUELLE QUE SOIT LA TAILLE -> exigence "le robot s'adapte a la
+    # geometrie, pas de valeur par objet" (cf [[grasp-adaptatif-exigence]]). La
+    # largeur vient de la prise (meta jaw_width_mm = petit cote de l'empreinte).
+    # ATTENTION (honnete) : la STEREO sur-lit la largeur des objets ronds/obliques
+    # (ex cylindre couche lu ~54mm pour un diametre ~25mm) -> l'auto peut sur-decaler
+    # ces objets. Pour eux, override avec --grasp-lateral-offset <mm> (auto OFF).
+    grasp_lateral_offset_auto: bool = True
+    # Marge constante ajoutee a la demi-largeur (le "au cas ou la largeur est mal
+    # calculee" de Maxence). Petite : juste de quoi degager l'arete. mm.
+    grasp_lateral_offset_margin_mm: float = 5.0
+    # OFFSET DE PROFONDEUR (Maxence 2026-06-23) -- repere IMAGE cam_2, "vers le BAS
+    # de l'image". Les snapshots PRISE montrent (cube ET cylindre) que l'objet finit
+    # TROP HAUT dans l'image / les machoires se ferment dans le vide AU-DESSUS de
+    # lui : les doigts (rigides a cam_2) ferment a un endroit FIXE plus bas que l'axe
+    # optique, mais le raffinement centre l'objet sur ~l'axe optique. On avance donc
+    # la prise de cette distance le long de l'axe vertical-image (vers le bas image =
+    # cote base) pour ramener les machoires SUR l'objet. CALIBRATION GEOMETRIQUE du
+    # montage (machoires <-> axe optique cam_2) : CONSTANTE, identique pour TOUT
+    # objet (pas un reglage par objet). Applique APRES cam_2, aux 3 sites, comme
+    # l'offset lateral. Reglable --grasp-forward-offset ; NEGATIF = recule ; 0 = off.
+    # 15 = estimation de depart (a affiner en regardant les snapshots PRISE).
+    grasp_forward_offset_mm: float = 15.0
+    # OFFSET DE SERRAGE PINCE (Z, le long de l'axe d'approche). Distance ajoutee
+    # AU-DESSUS du centre de l'objet (table + H/2). None = garde le defaut de la
+    # strategie, qui vaut DESORMAIS 0.0 (2026-06-21) : la pince vise le CENTRE
+    # geometrique table + H/2, point. L'ancien +14mm etait une rustine qui
+    # compensait une hauteur SOUS-LUE sur un grand cylindre debout ; faux en
+    # general -> sur un objet court il visait AU-DESSUS du sommet (machoires dans
+    # le vide -> "aucun contact"). Reglable via --grab-offset pour le reintroduire
+    # ponctuellement (ex objet haut dont H est sous-estimee).
+    grasp_gripper_grab_offset_m: Optional[float] = None
 
     # ---------- P1' : verification POST-LEVEE (anti faux positifs) ----------
     # Le couple A LA FERMETURE peut mentir : effleurement du sommet, morsure
@@ -280,6 +330,54 @@ class PipelineConfig:
     # essais du 2026-06-12) -> correction Y parasite ~-15mm. On laisse le bras
     # SE STABILISER avant de lire l'etat + capturer.
     cam2_settle_s: float = 0.25
+
+    # ---------- RECUL d'observation cam_2 (Maxence 2026-06-22) ----------
+    # cam_2 (eye-in-hand) est RIGIDEMENT montee pres des doigts -> ceux-ci
+    # occupent toujours ~le bas du cadre (v/H~0.82, INDEPENDANT de l'altitude).
+    # A la pose approach standard (8cm), l'objet apparait juste AU-DESSUS des
+    # doigts (v/H~0.57) : son bord PROCHE est mordu par les doigts -> le centroide
+    # detecte est tire vers le bord ARRIERE (cote cams fixes) -> la prise tombe
+    # sur ce bord. En RECULANT (montant) la pince AVANT la capture cam_2, l'objet
+    # remonte vers le centre optique (v/H~0.51 a +4cm) et S'ELOIGNE des doigts ->
+    # objet entier visible, centroide non biaise. Verifie par projection (sim) :
+    # +40mm => objet a v/H 0.57->0.51, ecart aux doigts 0.25->0.31, blob encore
+    # ~1.3% du cadre (> seuil 0.3%). La capture se fait a cette hauteur ; la
+    # DESCENTE reste monotone (observation -> approach corrige 8cm -> grasp), donc
+    # PAS de "descend/remonte/redescend". 0 = comportement historique (capture a
+    # 8cm). Reglable via --cam2-observe-height (mm). Si le blob devient trop petit
+    # (objet loin/petit) le gating area_frac retombe proprement sur la stereo.
+    cam2_observe_extra_height_m: float = 0.04
+
+    # ---------- AFFICHAGE : throttle des captures pendant les trajectoires ----
+    # Avec --display, on_step capturait les 3 cameras 1080p a CHAQUE pas de
+    # trajectoire (~32/s sur 7s) -> SATURATION USB -> cam_2 (eye-in-hand, connecteur
+    # fragile) decroche en plein run ("grab() KO", Maxence 2026-06-23, 4 runs/6
+    # morts ainsi). On ne rafraichit l'affichage que tous les N pas -> le bus reste
+    # libre pour les captures IMPORTANTES (refine/snapshot). Display SEUL, aucun
+    # effet sur la prise. 1 = ancien comportement (capture chaque pas).
+    display_grab_stride: int = 5
+
+    # ---------- RETRY : stabilisation PLUS LONGUE avant re-capture ----------
+    # Sur un RETRY (1re tentative ratee), l'objet a souvent BOUGE (effleure /
+    # pousse) et le bras vient de remonter -> on prend le TEMPS de se stabiliser
+    # avant de re-detecter, pour repartir d'une perception PROPRE (demande Maxence
+    # 2026-06-21 : "qu'il ait le temps de recapter correctement l'objet"). Plus
+    # long que cam2_settle_s (le settle normal en vol). Reglable.
+    retry_settle_s: float = 1.0
+
+    # ---------- RETRY : RE-PERCEPTION par les cameras FIXES ----------
+    # Au RETRY, cam_2 (eye-in-hand) est parquee AU-DESSUS de l'ANCIENNE position ->
+    # si l'objet a roule/bouge ailleurs, cam_2 ne le voit plus (ou voit du vide) et
+    # on redescendait au meme endroit. Avec ce flag (defaut True), on relance une
+    # PERCEPTION STEREO COMPLETE (cam_0 + cam_1, champ large) pour RE-LOCALISER la
+    # cible dans toute la scene, puis on REPLANIFIE la prise depuis sa nouvelle
+    # position (l'objet a pu changer de pose -> nouvel angle). Demande Maxence
+    # 2026-06-21 : "lui associer les cams fixes, l'objet est decale la ou cam_2 ne
+    # voit pas". Si la re-perception ne retrouve pas la cible -> on retombe sur le
+    # raffinement cam_2 seul (comportement precedent). Re-plan SEULEMENT si la cible
+    # a BOUGE de plus de ce seuil (sinon on garde la pose courante + cam_2).
+    retry_reperceive: bool = True
+    retry_reperceive_move_mm: float = 12.0
 
     # ---------- RAFFINEMENT SIMPLE vs DOUBLE ----------
     # Si False (defaut, 2026-06-13) : UN SEUL refinement cam_2 a la pose approach
@@ -379,6 +477,8 @@ class PickAndPlacePipeline:
             grasp_kwargs["gripper_open_margin_mm"] = self.config.grasp_gripper_open_margin_mm
         if self.config.grasp_yaw_offset_deg is not None:
             grasp_kwargs["yaw_offset_deg"] = self.config.grasp_yaw_offset_deg
+        if self.config.grasp_gripper_grab_offset_m is not None:
+            grasp_kwargs["gripper_grab_offset_m"] = self.config.grasp_gripper_grab_offset_m
         if self.config.grasp_max_top_down_height_m is not None:
             grasp_kwargs["max_object_height_m"] = self.config.grasp_max_top_down_height_m
         # Strategie de saisie : adaptative (defaut) ou top-down (--top-down).
@@ -699,6 +799,108 @@ class PickAndPlacePipeline:
               f"(ouverture pince={gp.gripper_open_pct:.0f}%)")
         return gp, r_app, r_grp, r_ret
 
+    @property
+    def _T_gripper_cam2(self):
+        """Transform hand-eye cam_2 (eye-in-hand), charge une fois."""
+        if getattr(self, "_t_gripper_cam2_cache", None) is None:
+            from src.perception.camera_io import load_handeye
+            self._t_gripper_cam2_cache = np.asarray(
+                load_handeye("cam_2")["transform"], dtype=float)
+        return self._t_gripper_cam2_cache
+
+    def _cam2_image_left_base(self, robot_state):
+        """Direction "GAUCHE DANS L'IMAGE cam_2" en repere base, horizontale.
+
+        Maxence (2026-06-23) : le decalage de degagement du doigt fixe se definit
+        PAR RAPPORT AU SNAPSHOT cam_2 (l'avis propre de cam_2 sur l'objet), PAS en
+        repere pince ni base. Le but : amener le doigt fixe a fleur de l'arete
+        GAUCHE de l'objet TELLE QU'ELLE APPARAIT DANS L'IMAGE. "Gauche image" =
+        -X camera (u decroissant). On la ramene en base via la pose REELLE de
+        cam_2 = T_base_gripper(q) @ T_gripper_cam2, puis on PROJETTE sur
+        l'horizontale (le decalage de prise est dans le plan table) et on
+        normalise. Consequence (exactement ce que Maxence decrit) : un MEME
+        "gauche image" -> direction base DIFFERENTE selon l'orientation de la tete,
+        donc attribuee differemment a X/Y de la position calculee, mais le
+        decalage reste CONSTANT du point de vue de la camera. Signe : +lat_mm =
+        vers la gauche image ; passer une valeur NEGATIVE inverse le cote.
+        """
+        R_base_cam2 = (np.asarray(robot_state.T_base_gripper, float)[:3, :3]
+                       @ self._T_gripper_cam2[:3, :3])
+        img_left = R_base_cam2 @ np.array([-1.0, 0.0, 0.0])  # -X cam = gauche image
+        img_left[2] = 0.0                                    # projette sur la table
+        n = float(np.linalg.norm(img_left))
+        if n < 1e-9:
+            return np.zeros(3)
+        return img_left / n
+
+    def _cam2_image_down_base(self, robot_state):
+        """Direction "VERS LE BAS DE L'IMAGE cam_2" en repere base, horizontale.
+
+        Jumeau de _cam2_image_left_base sur l'AUTRE axe image (+Y camera = v
+        croissant = bas de l'image). Sert au DECALAGE DE PROFONDEUR : sur les
+        snapshots PRISE, les machoires (rigides a cam_2) occupent un endroit FIXE
+        plus BAS dans le cadre que l'axe optique, alors que le raffinement centre
+        l'objet sur ~l'axe optique -> l'objet finit AU-DESSUS de la ligne de
+        fermeture -> machoires dans le vide (Maxence 2026-06-23, vu sur cube ET
+        cylindre). Avancer la prise de quelques mm le long de cette direction (vers
+        le bas image = cote base, -X ici) ramene les machoires SUR l'objet. C'est
+        une CALIBRATION GEOMETRIQUE du montage (decalage machoires<->axe optique
+        cam_2), CONSTANTE et identique pour tout objet -- pas un reglage par objet.
+        """
+        R_base_cam2 = (np.asarray(robot_state.T_base_gripper, float)[:3, :3]
+                       @ self._T_gripper_cam2[:3, :3])
+        img_down = R_base_cam2 @ np.array([0.0, 1.0, 0.0])   # +Y cam = bas image
+        img_down[2] = 0.0                                    # projette sur la table
+        n = float(np.linalg.norm(img_down))
+        if n < 1e-9:
+            return np.zeros(3)
+        return img_down / n
+
+    def _effective_lateral_offset_mm(self, grasp_pose) -> float:
+        """Magnitude de l'offset lateral de prise (mm), ADAPTATIVE a la taille.
+
+        Maxence 2026-06-23 : l'offset qui amene le doigt FIXE a fleur de l'arete
+        doit valoir ~(DEMI-LARGEUR de l'objet + marge), pas une constante codee en
+        dur (sinon trop sur les gros objets, trop peu sur les petits -> pas
+        adaptatif). La largeur vient de la prise (meta `jaw_width_mm` = petit cote
+        de l'empreinte = ce que les machoires serrent). Signe : + = gauche image.
+
+        Fallback sur la valeur MANUELLE `grasp_lateral_tool_offset_mm` si l'auto est
+        coupe (override `--grasp-lateral-offset`) ou si la largeur est inconnue.
+        """
+        manual = float(self.config.grasp_lateral_tool_offset_mm)
+        if not self.config.grasp_lateral_offset_auto:
+            return manual
+        w = grasp_pose.meta.get("jaw_width_mm")
+        if not w or w <= 0:
+            return manual
+        return 0.5 * float(w) + float(self.config.grasp_lateral_offset_margin_mm)
+
+    def _reperceive_target(self, mc):
+        """Re-capture cam_0/cam_1/cam_2 + build_scene -> ObjectInstance cible (ou None).
+
+        Utilise au RETRY pour "reprendre conscience de la scene" : si l'objet a
+        bouge hors du champ de cam_2 (eye-in-hand parquee au-dessus de l'ancienne
+        position), les cameras FIXES cam_0/cam_1 (champ large) le retrouvent. Ne
+        touche PAS la perception initiale (chemin teste) ; meme detecteur/estimateur.
+        """
+        rs = (self._provider.read_live() if not self.config.dry_run
+              else self._provider.from_angles({j: 0.0 for j in ARM_JOINTS}))
+        # warmup court (autoexposure) + capture
+        for _ in range(2):
+            mc.grab(robot_state=rs)
+            time.sleep(0.05)
+        frames = mc.grab(robot_state=rs)
+        dets_by_cam = self._detector.detect_multi(frames)
+        if self._label_mapping:
+            for _ck, _dl in dets_by_cam.items():
+                for _d in _dl:
+                    if _d.label in self._label_mapping:
+                        _d.label = self._label_mapping[_d.label]
+        scene = self._estimator.build_scene(dets_by_cam, frames)
+        return next((o for o in scene.objects
+                     if o.label == self.config.target_label), None)
+
     # ----- main entry point -----------------------------------------------
 
     def run(self):
@@ -815,8 +1017,9 @@ class PickAndPlacePipeline:
             print(scene.pretty())
             print()
 
-            # === DISPLAY OPTIONNEL : montre les 3 frames avec detections ===
-            if self.config.display:
+            # === SNAPSHOT PERCEPTION : sauve toujours (si save_snapshots), n'affiche
+            # la fenetre live que si --display. Decouple save vs show (2026-06-23). ===
+            if self.config.save_snapshots or self.config.display:
                 self._show_perception_snapshot(frames, dets_by_cam, scene,
                                                 title="Perception initiale (Sprint 2)")
 
@@ -994,7 +1197,20 @@ class PickAndPlacePipeline:
                 # Memorise pour pouvoir l'arreter proprement dans finally
                 self._live_stop_event = stop_event
 
+                _grab_stride = max(1, int(self.config.display_grab_stride))
+
                 def on_step(i, trajectory):
+                    # THROTTLE USB (Maxence 2026-06-23) : capturer les 3 cams 1080p a
+                    # CHAQUE pas saturait le bus -> cam_2 decrochait en plein run.
+                    # On ne rafraichit l'affichage que tous les _grab_stride pas (le
+                    # dernier pas est toujours affiche). waitKey garde la fenetre
+                    # reactive. Aucun effet sur la prise (display only).
+                    if (i % _grab_stride) != 0 and i != (len(trajectory) - 1):
+                        try:
+                            cv2.waitKey(1)
+                        except Exception:
+                            pass
+                        return
                     try:
                         rs = self._provider.read_live()
                     except Exception:
@@ -1041,10 +1257,42 @@ class PickAndPlacePipeline:
             live_callback = make_live_callback(initial_dets=dets_by_cam)
 
             if self.config.closed_loop and not self.config.dry_run:
-                # --- Phase 1 : trajectoire courant -> approach ---
+                # --- RECUL d'observation cam_2 (Maxence 2026-06-22) ---
+                # On MONTE la pince au-dessus de l'approche AVANT la capture cam_2
+                # pour degager l'objet des doigts (cf cam2_observe_extra_height_m).
+                # La capture se fait a cette hauteur ; la descente reste MONOTONE
+                # (observation -> approach corrige 8cm -> grasp), aucune remontee.
+                r_phase1_target = r_app
+                observe_extra_m = float(self.config.cam2_observe_extra_height_m)
+                if observe_extra_m > 1e-4:
+                    T_observe = grasp_pose.T_base_gripper_approach.copy()
+                    T_observe[2, 3] += observe_extra_m
+                    r_obs = self._ik.solve(T_observe, q_init=r_app.joint_angles_rad)
+                    # Gate = erreur de TRANSLATION sous le seuil approche (15mm),
+                    # PAS r_obs.converged. converged exige tol_residual=1mm (combine
+                    # translation + rotation) : sur ce bras 5-DDL une pose top-down a
+                    # ~5mm de residu d'ORIENTATION -> jamais "converged" -> le recul
+                    # etait TOUJOURS rejete (run orange 2026-06-23 "+40mm hors IK"
+                    # alors que app trans=5.5mm). Meme critere que l'approche
+                    # (ik_tol_approach_mm). Le residu d'orientation est sans
+                    # consequence ici : la geometrie ray-plan de cam_2 utilise la pose
+                    # REELLE des moteurs (FK), pas la cible IK -> auto-coherente.
+                    if r_obs.translation_err_mm <= self.config.ik_tol_approach_mm:
+                        r_phase1_target = r_obs
+                        print(f"   [recul cam_2] observation a +{observe_extra_m*1000:.0f}mm "
+                              f"au-dessus de l'approche (Z pince={T_observe[2,3]*1000:.0f}mm, "
+                              f"IK trans={r_obs.translation_err_mm:.1f}mm) "
+                              f"pour eloigner l'objet des doigts dans l'image")
+                    else:
+                        print(f"   [recul cam_2] pose d'observation "
+                              f"+{observe_extra_m*1000:.0f}mm hors portee "
+                              f"(IK trans={r_obs.translation_err_mm:.1f}mm > "
+                              f"{self.config.ik_tol_approach_mm:.0f}mm) "
+                              f"-> capture a l'approche standard")
+                # --- Phase 1 : trajectoire courant -> approach (ou observation) ---
                 print(">> Phase 1 : courant -> approach (boucle fermee Sprint 4)")
                 traj_phase1 = self._build_phase1_trajectory(
-                    q_current, r_app,
+                    q_current, r_phase1_target,
                     gripper_open_pct=grasp_pose.gripper_open_pct)
                 print(f"   {len(traj_phase1)} points, duree {traj_phase1.duration_s:.1f}s")
                 controller.execute_trajectory(traj_phase1, verbose=True,
@@ -1071,7 +1319,7 @@ class PickAndPlacePipeline:
                     multi_camera=mc,
                     robot_state=rs_at_approach,
                     debug_save_dir=((REPO / "outputs" / "perception")
-                                    if self.config.display else None),
+                                    if self.config.save_snapshots else None),
                     # IMPORTANT : on passe la hauteur ATTENDUE de l'objet
                     # (= Z de la pose grasp triangulée) pour que la formule
                     # de conversion pixel->m utilise la VRAIE distance
@@ -1139,10 +1387,13 @@ class PickAndPlacePipeline:
                         from src.planning.grasp import reorient_grasp_pose
                         old_yaw = np.degrees(grasp_pose.meta.get("yaw_rad", 0.0))
                         reorient_grasp_pose(grasp_pose, refinement.yaw_base_cam2)
-                        new_yaw = np.degrees(refinement.yaw_base_cam2)
+                        applied_yaw = np.degrees(grasp_pose.meta.get("yaw_rad", 0.0))
+                        raw_yaw = np.degrees(refinement.yaw_base_cam2)
                         print(f"   cam_2 REORIENTE la prise : yaw {old_yaw:+.0f}deg "
-                              f"-> {new_yaw:+.0f}deg (objet vu allonge x{refinement.elong_cam2:.1f} "
-                              f"par cam_2, plus fiable que la stereo)")
+                              f"-> {applied_yaw:+.0f}deg (axe cam_2 {raw_yaw:+.0f}deg replie "
+                              f"sur l'equivalent +-180 le plus proche -> poignet bouge de "
+                              f"{abs(applied_yaw-old_yaw):.0f}deg, PAS de demi-tour ; "
+                              f"objet allonge x{refinement.elong_cam2:.1f})")
                         reoriented = True
                     elif _wants_reorient and not _is_top_down:
                         # PRISE INCLINEE (45/90) : on REPLANIFIE au MEME pitch avec le
@@ -1228,7 +1479,7 @@ class PickAndPlacePipeline:
                                          float(grasp_pose.T_base_gripper_grasp[1, 3])),
                         label_mapping=self._label_mapping,
                         debug_save_dir=((REPO / "outputs" / "perception")
-                                        if self.config.display else None),
+                                        if self.config.save_snapshots else None),
                     )
                     print(f"   Refinement #2 : {refinement2.message}")
                     # GATING par TAILLE ABSOLUE du blob (Maxence 2026-06-20),
@@ -1280,24 +1531,41 @@ class PickAndPlacePipeline:
                 print(f">> Phase 2 : tentative(s) de saisie avec feedback pince + depot + retour ({home_origin})")
                 q_at_intermediate = rs_at_intermediate.joint_angles_rad
 
-                # === OFFSET DE PRISE base-Y (Maxence 2026-06-20) ===
-                # cam_2 a centre grasp_pose sur l'OBJET. On decale maintenant la
-                # cible de +Y (gauche) d'une valeur fixe : translation PURE en repere
-                # base (n'affecte pas le wrist/l'orientation), integree a CHAQUE
-                # prise. APPLIQUE ICI, apres cam_2 : sinon le recentrage cam_2
-                # l'annulerait (verifie 2026-06-20 : l'offset pince partait en X et
-                # etait gomme). Le retry re-applique l'offset apres son eventuelle
-                # correction (cf bloc retry).
-                dy_base = self.config.grasp_y_offset_base_mm / 1000.0
-                if dy_base != 0.0:
+                # === OFFSET LATERAL DE PRISE -- REPERE IMAGE cam_2 (Maxence 2026-06-23) ===
+                # But : degager la machoire FIXE (qui ne s'ecarte PAS a l'ouverture)
+                # pour qu'elle arrive A FLEUR DE L'ARETE GAUCHE de l'objet TEL QU'IL
+                # APPARAIT DANS LE SNAPSHOT cam_2. Le decalage est donc defini DANS
+                # L'IMAGE cam_2 ("vers la gauche de l'image") : constant du point de
+                # vue de la camera, mais correspondant a une direction base
+                # DIFFERENTE selon l'orientation de la tete (donc reparti autrement
+                # sur X/Y de la position calculee). C'est EXACTEMENT la demande de
+                # Maxence -- et la raison pour laquelle un offset en repere
+                # pince/base donnait des comportements incoherents selon l'objet.
+                # _cam2_image_left_base = -X camera projete sur l'horizontale, calcule
+                # depuis la pose REELLE de cam_2 a l'observation. +lat_mm = gauche
+                # image ; valeur NEGATIVE = inverse le cote (si mauvais cote au robot).
+                # APPLIQUE APRES cam_2 (sinon le recentrage l'annule) ; retry idem.
+                lat_mm = self._effective_lateral_offset_mm(grasp_pose)
+                fwd_mm = float(self.config.grasp_forward_offset_mm)
+                if lat_mm != 0.0 or fwd_mm != 0.0:
+                    offset_vec = (self._cam2_image_left_base(rs_at_intermediate)
+                                  * (lat_mm / 1000.0)
+                                  + self._cam2_image_down_base(rs_at_intermediate)
+                                  * (fwd_mm / 1000.0))
                     for _attr in ("T_base_gripper_approach", "T_base_gripper_grasp",
                                   "T_base_gripper_retract"):
-                        getattr(grasp_pose, _attr)[1, 3] += dy_base
+                        getattr(grasp_pose, _attr)[:3, 3] += offset_vec
                     r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
                         grasp_pose, q_init=q_at_intermediate, lock_orientation=True)
-                    print(f"   Offset de prise base-Y "
-                          f"{self.config.grasp_y_offset_base_mm:+.0f}mm (gauche) applique "
-                          f"APRES cam_2 (translation pure, orientation inchangee)")
+                    _jw = grasp_pose.meta.get("jaw_width_mm")
+                    _mode = (f"AUTO=½×{_jw:.0f}+{self.config.grasp_lateral_offset_margin_mm:.0f}"
+                             if (self.config.grasp_lateral_offset_auto and _jw)
+                             else "manuel")
+                    print(f"   Offset prise : gauche-image {lat_mm:+.0f}mm [{_mode}] "
+                          f"+ profondeur(bas-image) {fwd_mm:+.0f}mm "
+                          f"-> base Δ=({offset_vec[0]*1000:+.0f},"
+                          f"{offset_vec[1]*1000:+.0f},{offset_vec[2]*1000:+.0f})mm "
+                          f"(orientation inchangee)")
 
                 # Log structure pour campagne experimentale (P4)
                 grasp_attempts_log = []
@@ -1339,6 +1607,25 @@ class PickAndPlacePipeline:
                           f"duree {traj_grasp.duration_s:.1f}s")
                     controller.execute_trajectory(traj_grasp, verbose=True,
                                                   on_step=live_callback)
+
+                    # SNAPSHOT VERITE-TERRAIN (Maxence 2026-06-23) : cam_2 AU MOMENT
+                    # de la prise (basse altitude, machoires OUVERTES juste AVANT la
+                    # fermeture). Montre OU les machoires finissent par rapport a
+                    # l'objet -> on VOIT si l'objet est bien entre elles ou a cote,
+                    # et dans quelle direction IMAGE c'est decale (au lieu de
+                    # deviner). C'est le diagnostic qui tranche XY-image vs reste.
+                    if self.config.save_snapshots:
+                        from src.control.closed_loop import capture_cam2_snapshot
+                        time.sleep(self.config.cam2_settle_s)
+                        capture_cam2_snapshot(
+                            target_label=self.config.target_label,
+                            detector=self._detector,
+                            multi_camera=mc,
+                            robot_state=self._provider.read_live(),
+                            out_dir=(REPO / "outputs" / "perception"),
+                            label_mapping=self._label_mapping,
+                            tag=f"PRISE-attempt{attempt}",
+                        )
 
                     # 2. FERMETURE asservie au couple (P5)
                     close_info = None
@@ -1488,6 +1775,12 @@ class PickAndPlacePipeline:
                               else "fermeture a vide")
                     print(f"   >> RETRY ({reason}) : refinement cam_2 + redescente")
 
+                    # retry_observe : True si la re-capture cam_2 se fait depuis la
+                    # hauteur de RECUL (vue degagee des doigts) -> on peut alors faire
+                    # plus confiance a une grosse correction (plafond elargi).
+                    retry_observe = False
+                    observe_extra_m = float(self.config.cam2_observe_extra_height_m)
+
                     if failed_stage == "lift":
                         # Deja a retract, pince fermee sur rien : OUVRIR en
                         # place (le bras ne bouge pas) puis refinement.
@@ -1495,25 +1788,130 @@ class PickAndPlacePipeline:
                         time.sleep(0.6)
                         rs_after_lift = self._provider.read_live()
                     else:
-                        # 1. Remontee a approach AVEC pince ouverte (libere ce
-                        # qu'on aurait pu saisir partiellement)
+                        # 1. Remontee a la pose d'OBSERVATION (approach + RECUL cam_2)
+                        # AVEC pince ouverte (libere ce qu'on aurait pu saisir). On
+                        # remonte au MEME niveau que la capture initiale (recul) pour
+                        # que cam_2 voie l'objet DEGAGE des doigts au retry AUSSI ->
+                        # sinon (run orange 2026-06-23) la re-capture se fait trop bas,
+                        # la pince devant occulte le cube, la correction est bruitee
+                        # (Maxence : "il n'a meme pas repris la hauteur pour mieux se
+                        # replacer"). Fallback approche standard si le recul est hors IK.
                         rs_at_grasp = self._provider.read_live()
+                        r_lift_target = r_app
+                        if observe_extra_m > 1e-4:
+                            T_obs_r = grasp_pose.T_base_gripper_approach.copy()
+                            T_obs_r[2, 3] += observe_extra_m
+                            r_obs_r = self._ik.solve(
+                                T_obs_r, q_init=r_app.joint_angles_rad)
+                            if (r_obs_r.translation_err_mm
+                                    <= self.config.ik_tol_approach_mm):
+                                r_lift_target = r_obs_r
+                                retry_observe = True
                         traj_lift = self._build_retry_lift_traj(
                             rs_at_grasp.joint_angles_rad,
-                            r_app.joint_angles_rad,
+                            r_lift_target.joint_angles_rad,
                             grip_open_pct=grasp_pose.gripper_open_pct,
                         )
-                        print(f"   Remontee a approach : {len(traj_lift)} points, "
-                              f"duree {traj_lift.duration_s:.1f}s")
+                        print(f"   Remontee a "
+                              f"{'observation +recul' if retry_observe else 'approach'} : "
+                              f"{len(traj_lift)} points, duree {traj_lift.duration_s:.1f}s")
                         controller.execute_trajectory(traj_lift, verbose=False,
                                                       on_step=live_callback)
                         rs_after_lift = self._provider.read_live()
 
-                    # 2. Refinement cam_2 (l'objet peut avoir bouge a cause du
-                    # contact rate) — SETTLE avant capture (anti biais vertical).
-                    time.sleep(self.config.cam2_settle_s)
+                    # 2a. RE-PERCEPTION par cameras FIXES (l'objet a-t-il BOUGE ?)
+                    # cam_2 (eye-in-hand) est parquee au-dessus de l'ANCIENNE
+                    # position ; si l'objet a roule ailleurs elle ne le voit plus et
+                    # on redescendait au meme endroit. On relance une perception
+                    # STEREO complete (cam_0/cam_1, champ large) pour le RE-LOCALISER,
+                    # puis on REPLANIFIE depuis sa nouvelle position avant de
+                    # redescendre (demande Maxence 2026-06-21). Si non retrouve ou
+                    # ~immobile -> on retombe sur le raffinement cam_2 (ci-dessous).
+                    if self.config.retry_reperceive and failed_stage != "lift":
+                        time.sleep(self.config.retry_settle_s)
+                        try:
+                            new_t = self._reperceive_target(mc)
+                        except Exception as _e:
+                            new_t = None
+                            print(f"   [re-perception] echec capture ({_e}) "
+                                  "-> raffinement cam_2")
+                        if new_t is not None:
+                            move_mm = float(np.hypot(
+                                new_t.position_base_m[0] - target.position_base_m[0],
+                                new_t.position_base_m[1] - target.position_base_m[1])
+                                * 1000.0)
+                            if move_mm >= self.config.retry_reperceive_move_mm:
+                                p = new_t.position_base_m * 1000.0
+                                print(f"   [re-perception cam_0/cam_1] cible RE-LOCALISEE "
+                                      f"a ({p[0]:+.0f},{p[1]:+.0f},{p[2]:+.0f}) mm "
+                                      f"(deplacement {move_mm:.0f}mm) -> REPLANIFICATION")
+                                ng, na, ngr, nr = self._plan_and_solve_grasp(
+                                    new_t, rs_after_lift.joint_angles_rad)
+                                if ng is not None:
+                                    grasp_pose, r_app, r_grp, r_ret = ng, na, ngr, nr
+                                    target = new_t
+                                    # Re-plan stereo (sans cam_2) -> re-applique
+                                    # l'offset lateral pince le long des machoires
+                                    # de la NOUVELLE orientation.
+                                    lat_mm = self._effective_lateral_offset_mm(grasp_pose)
+                                    fwd_mm = float(self.config.grasp_forward_offset_mm)
+                                    if lat_mm != 0.0 or fwd_mm != 0.0:
+                                        offset_vec = (
+                                            self._cam2_image_left_base(rs_after_lift)
+                                            * (lat_mm / 1000.0)
+                                            + self._cam2_image_down_base(rs_after_lift)
+                                            * (fwd_mm / 1000.0))
+                                        for _attr in ("T_base_gripper_approach",
+                                                      "T_base_gripper_grasp",
+                                                      "T_base_gripper_retract"):
+                                            getattr(grasp_pose, _attr)[:3, 3] += offset_vec
+                                        r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
+                                            grasp_pose,
+                                            q_init=rs_after_lift.joint_angles_rad,
+                                            lock_orientation=True)
+                                    # SNAPSHOT cam_2 de comparaison (Maxence
+                                    # 2026-06-22) : cette branche court-circuite le
+                                    # raffinement cam_2 -> sans capture explicite,
+                                    # aucune image cam_2 ne serait sauvee pour la
+                                    # tentative suivante (impossible de comparer #1/#2).
+                                    if self.config.save_snapshots:
+                                        from src.control.closed_loop import (
+                                            capture_cam2_snapshot,
+                                        )
+                                        capture_cam2_snapshot(
+                                            target_label=self.config.target_label,
+                                            detector=self._detector,
+                                            multi_camera=mc,
+                                            robot_state=rs_after_lift,
+                                            out_dir=(REPO / "outputs" / "perception"),
+                                            label_mapping=self._label_mapping,
+                                            tag="retry/replan",
+                                        )
+                                    # -> on redescend DIRECTEMENT sur la nouvelle
+                                    # prise (pas de cam_2 : on a une perception fraiche).
+                                    q_start_attempt = rs_after_lift.joint_angles_rad
+                                    print()
+                                    continue
+                                print("   [re-perception] re-plan infaisable "
+                                      "-> raffinement cam_2")
+                            else:
+                                print(f"   [re-perception cam_0/cam_1] cible ~au meme "
+                                      f"endroit (deplacement {move_mm:.0f}mm < "
+                                      f"{self.config.retry_reperceive_move_mm:.0f}mm) "
+                                      f"-> raffinement cam_2")
+                        else:
+                            print("   [re-perception cam_0/cam_1] cible non retrouvee "
+                                  "-> raffinement cam_2")
+
+                    # 2b. Refinement cam_2 (l'objet peut avoir bouge a cause du
+                    # contact rate) — SETTLE PLUS LONG avant re-capture : on prend
+                    # le temps de se stabiliser pour re-detecter PROPREMENT l'objet
+                    # (eventuellement deplace), au lieu de redescendre au meme
+                    # endroit (demande Maxence 2026-06-21).
+                    time.sleep(self.config.retry_settle_s)
                     rs_after_lift = self._provider.read_live()
-                    print(f"   Refinement cam_2 retry...")
+                    print(f"   Stabilisation {self.config.retry_settle_s:.1f}s puis "
+                          f"re-capture cam_2 (retry)...")
                     refinement_retry = refine_grasp_with_cam2(
                         target_label=self.config.target_label,
                         detector=self._detector,
@@ -1525,7 +1923,7 @@ class PickAndPlacePipeline:
                                          float(grasp_pose.T_base_gripper_grasp[1, 3])),
                         label_mapping=self._label_mapping,
                         debug_save_dir=((REPO / "outputs" / "perception")
-                                        if self.config.display else None),
+                                        if self.config.save_snapshots else None),
                     )
                     print(f"   {refinement_retry.message}")
                     # GATING par TAILLE ABSOLUE du blob (Maxence 2026-06-20), plus
@@ -1533,7 +1931,14 @@ class PickAndPlacePipeline:
                     # Meme logique que le refinement initial : blob assez gros +
                     # correction sous le plafond de securite + top-down (ray-plan
                     # valide ; en incline on garde la pose stereo).
-                    seuil_r_mm = self.config.cam2_retry_max_correction_mm
+                    # Plafond de correction : SERRE (15mm) si la re-capture s'est
+                    # faite bas (vue bruitee) ; ELARGI au plafond normal (40mm) si on
+                    # a repris la hauteur de RECUL (vue degagee -> grosse correction
+                    # fiable, ex objet pousse par le contact rate). Le motif du cap
+                    # serre etait justement le blob bruite en re-capture basse.
+                    seuil_r_mm = (self.config.closed_loop_max_correction_mm
+                                  if retry_observe
+                                  else self.config.cam2_retry_max_correction_mm)
                     is_tilted = (abs(np.degrees(grasp_pose.meta.get("pitch_rad", 0.0)))
                                  >= self.config.cam2_max_pitch_deg)
                     if is_tilted:
@@ -1551,16 +1956,24 @@ class PickAndPlacePipeline:
                               f"> seuil {seuil_r_mm:.0f}mm, ignoree (suspect)")
                     else:
                         apply_correction_to_grasp_pose(grasp_pose, refinement_retry.delta_base_m)
-                        # RE-APPLIQUE l'offset de prise base-Y : le recentrage cam_2
-                        # du retry vient de l'annuler -> la descente garde son +Y.
-                        if dy_base != 0.0:
+                        # RE-APPLIQUE les offsets pince (lateral + profondeur) : le
+                        # recentrage cam_2 du retry vient de les annuler. Recalcule
+                        # depuis l'orientation COURANTE (le long des machoires / bas-image).
+                        lat_mm = self._effective_lateral_offset_mm(grasp_pose)
+                        fwd_mm = float(self.config.grasp_forward_offset_mm)
+                        if lat_mm != 0.0 or fwd_mm != 0.0:
+                            offset_vec = (self._cam2_image_left_base(rs_after_lift)
+                                          * (lat_mm / 1000.0)
+                                          + self._cam2_image_down_base(rs_after_lift)
+                                          * (fwd_mm / 1000.0))
                             for _attr in ("T_base_gripper_approach", "T_base_gripper_grasp",
                                           "T_base_gripper_retract"):
-                                getattr(grasp_pose, _attr)[1, 3] += dy_base
+                                getattr(grasp_pose, _attr)[:3, 3] += offset_vec
                         print(f"   Correction retry appliquee "
                               f"(norme {refinement_retry.delta_norm_mm:.1f}mm, "
                               f"blob {100*refinement_retry.area_frac:.1f}% cadre ; "
-                              f"offset base-Y {self.config.grasp_y_offset_base_mm:+.0f}mm re-applique)")
+                              f"offsets pince lateral {lat_mm:+.0f}mm + profondeur "
+                              f"{fwd_mm:+.0f}mm re-appliques)")
                         # lock_orientation : conserver l'orientation deja
                         # engagee (anti demi-tour 180deg au retry, essai 10).
                         r_app, r_grp, r_ret = self._ik.solve_grasp_pose(
@@ -1727,12 +2140,14 @@ class PickAndPlacePipeline:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_path = out_dir / f"pipeline_snapshot_{stamp}.png"
         cv2.imwrite(str(out_path), mosaic)
-        print(f"   [display] snapshot sauve : {out_path}")
+        print(f"   [snapshot] perception sauve : {out_path}")
 
-        # Affichage NON BLOQUANT : 1.5 sec puis on continue
-        cv2.imshow("Pipeline perception", mosaic)
-        cv2.waitKey(1500)   # 1.5s = visualisation suffisante
-        # La fenetre reste ouverte ; sera mise a jour ou fermee plus tard
+        # Affichage NON BLOQUANT seulement si --display (la fenetre live + ses
+        # grabs sont ce qui fait decrocher cam_2 ; la sauvegarde ci-dessus, non).
+        if self.config.display:
+            cv2.imshow("Pipeline perception", mosaic)
+            cv2.waitKey(1500)   # 1.5s = visualisation suffisante
+            # La fenetre reste ouverte ; sera mise a jour ou fermee plus tard
 
     def _live_display_during_execution(self, mc, robot_state_provider,
                                         every_n_frames: int = 30):

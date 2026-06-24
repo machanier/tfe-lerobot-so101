@@ -58,6 +58,7 @@ from src.perception.detector import (  # noqa: E402
     HSVDetector,
     default_hf_labels,
     default_hsv_specs,
+    flatten_specs,
     load_hf_specs,
     load_hsv_specs,
 )
@@ -110,8 +111,9 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
             specs = default_hsv_specs()
             print("  (specs HSV par defaut - resultats indicatifs)")
         detector = HSVDetector(specs)
-        specs_meta = {s.label: s.meta for s in specs}
-        known_labels = [s.label for s in specs]
+        flat = flatten_specs(specs)  # union si specs par-camera
+        specs_meta = {s.label: s.meta for s in flat}
+        known_labels = [s.label for s in flat]
     elif detector_kind == "hf":
         if hf_specs_path and Path(hf_specs_path).exists():
             cfg = load_hf_specs(Path(hf_specs_path))
@@ -246,7 +248,7 @@ def main():
             specs = load_hsv_specs(Path(args.specs))
         else:
             specs = default_hsv_specs()
-        gt = prompt_ground_truth([s.label for s in specs])
+        gt = prompt_ground_truth([s.label for s in flatten_specs(specs)])
     else:
         print("Specifie --gt FICHIER ou --interactive")
         sys.exit(2)

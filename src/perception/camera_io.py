@@ -256,13 +256,21 @@ class MultiCamera:
 
     # ----- capture ---------------------------------------------------------
 
-    def grab(self, robot_state: Optional[RobotState] = None
-             ) -> dict[str, Optional[Frame]]:
+    def grab(self, robot_state: Optional[RobotState] = None,
+             flush: int = 0) -> dict[str, Optional[Frame]]:
         """Capture synchronisee des cameras ouvertes.
 
         Args:
             robot_state : etat courant du robot, OBLIGATOIRE si au moins une
                 camera est eye-in-hand. Peut etre None si toutes sont eye-to-hand.
+            flush : nombre de frames a VIDER du buffer pilote avant la capture.
+                cv2.VideoCapture.grab() rend la frame la PLUS ANCIENNE non lue
+                (FIFO) : apres un mouvement du bras, cam_2 (eye-in-hand) a un buffer
+                rempli de frames PERIMEES (prises pendant le deplacement) -> sans
+                flush on lit une vieille image (detection "derriere l'objet",
+                observe par Maxence 2026-06-21). flush=3 purge ~3 frames (~100ms a
+                30fps) pour lire du FRAIS. Defaut 0 : la perception INITIALE draine
+                deja via le warmup d'open() -> on ne change RIEN pour elle.
 
         Returns:
             dict {cam_key: Frame or None}. Les cameras qui ont echoue
@@ -270,6 +278,15 @@ class MultiCamera:
         """
         if not self._opened:
             raise RuntimeError("MultiCamera n'est pas ouvert. Appelle open() d'abord.")
+
+        # 0. DRAIN : vide les frames PERIMEES du buffer (cf docstring `flush`).
+        #    grab() seul (sans retrieve) decode pas -> purge rapide.
+        for _ in range(max(0, int(flush))):
+            for k in self.cam_keys:
+                try:
+                    self._caps[k].grab()
+                except Exception:
+                    pass
 
         # 1. emet grab() pour les N cameras de facon rapprochee.
         # Petit retry en cas d'echec ponctuel (rejet USB intermittent sur macOS).

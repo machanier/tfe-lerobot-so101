@@ -97,12 +97,31 @@ def main():
                              "Defaut PipelineConfig=8. Baisse si faux negatifs, monte si "
                              "faux positifs. Maxence a calibre ~8-9 pour le cube 30mm.")
     parser.add_argument("--grasp-lateral-offset", type=float, default=None,
-                        help="Decalage de la saisie en mm dans le repere BASE, axe Y "
-                             "(Y+ = GAUCHE, Y- = droite). Translation PURE appliquee APRES "
-                             "le centrage cam_2, sur chaque descente (n'affecte pas le wrist). "
-                             "Defaut PipelineConfig=10. Pince asymetrique SO-101 : le doigt "
-                             "fixe doit tomber au bord, pas sur le dessus de l'objet. "
-                             "0 = desactive. Conseil : --dry-run d'abord, puis live.")
+                        help="OVERRIDE MANUEL de l'offset lateral de prise (mm). Par "
+                             "DEFAUT l'offset est ADAPTATIF (= ½ largeur de l'objet + "
+                             "marge, voir --lateral-offset-margin) pour amener le doigt "
+                             "FIXE a fleur de l'arete QUELLE QUE SOIT LA TAILLE -- pas de "
+                             "valeur codee par objet. Passer ce flag FIGE l'offset a la "
+                             "valeur donnee et coupe l'auto. Repere IMAGE cam_2, le long "
+                             "des machoires (suit la pince si l'objet tourne ; n'affecte "
+                             "pas le wrist) ; +N = gauche image, NEGATIF = inverse le cote, "
+                             "0 = centre. Utile si la stereo sur-lit la largeur (cylindre "
+                             "rond) ou pour tester un cote.")
+    parser.add_argument("--lateral-offset-margin", type=float, default=None,
+                        help="Marge constante (mm) ajoutee a la ½ largeur dans l'offset "
+                             "lateral ADAPTATIF (le \"au cas ou la largeur est mal lue\"). "
+                             "Defaut PipelineConfig=5. Sans effet si --grasp-lateral-offset "
+                             "(override manuel) est fourni.")
+    parser.add_argument("--grasp-forward-offset", type=float, default=None,
+                        help="OFFSET DE PROFONDEUR (mm) -- repere IMAGE cam_2, vers le BAS "
+                             "de l'image (= cote base). Corrige le defaut vu sur les "
+                             "snapshots PRISE : l'objet finit TROP HAUT dans l'image, les "
+                             "machoires ferment dans le vide AU-DESSUS de lui (les doigts, "
+                             "rigides a cam_2, ferment plus bas que l'axe optique). "
+                             "CALIBRATION GEOMETRIQUE du montage, CONSTANTE pour tout objet. "
+                             "Defaut PipelineConfig=15 (estimation). A AFFINER en regardant "
+                             "les snapshots PRISE : monte si encore en arriere, baisse si "
+                             "passe devant. NEGATIF = recule, 0 = desactive.")
     parser.add_argument("--grasp-load-threshold", type=float, default=None,
                         help="Seuil de COUPLE pince (Present_Load, 0-1023). Quand fourni, "
                              "c'est le couple SEUL qui juge la saisie (fermeture ET verif "
@@ -132,6 +151,25 @@ def main():
                              "montage : la pince ferme a 90deg de la convention nominale). "
                              "Passe 0 pour revenir au comportement nominal, ou une autre valeur "
                              "si la pince est remontee differemment.")
+    parser.add_argument("--grab-offset", type=float, default=None,
+                        help="Offset de serrage pince en mm (Z, le long de l'axe d'approche) : "
+                             "distance entre le point vise par l'IK et la hauteur ou les machoires "
+                             "serrent. DEFAUT 14mm (mesure : machoires au centre de l'objet). "
+                             "Passe 0 pour tester sans compensation (saisie plus basse).")
+    parser.add_argument("--closed-loop-max-correction", type=float, default=None,
+                        help="Plafond (mm) de la correction cam_2 : au-dela, on garde la "
+                             "stereo (cam_2 jugee suspecte). DEFAUT 80. cam_2 etant le "
+                             "raffinement fiable, ce plafond ne sert qu'au cas rarissime ou "
+                             "cam_2 voit un faux objet a l'autre bout de la plaque. Mettre "
+                             "tres grand (ex 200) = faire TOUJOURS confiance a cam_2.")
+    parser.add_argument("--cam2-observe-height", type=float, default=None,
+                        help="RECUL d'observation cam_2 en mm : hauteur AJOUTEE au-dessus "
+                             "de la pose d'approche avant la capture cam_2, pour eloigner "
+                             "l'objet des doigts dans l'image (ceux-ci occupent toujours le "
+                             "bas du cadre) -> centroide moins tire vers le bord arriere. "
+                             "Defaut PipelineConfig=40. La descente reste monotone "
+                             "(observation -> approche 8cm -> grasp). 0 = capture a 8cm "
+                             "(historique). Trop haut -> blob trop petit (gating -> stereo).")
     parser.add_argument("--top-down", action="store_true",
                         help="Revient a la saisie VERTICALE PAR LE HAUT uniquement "
                              "(comportement de reference eprouve). Par defaut (sans "
@@ -177,9 +215,21 @@ def main():
                         help="Desactive le raffinement Sprint 4 par cam_2 "
                              "(stereo seule, moins precis ~30mm). Defaut : actif.")
     parser.add_argument("--display", action="store_true",
-                        help="Affiche les 3 cameras (cv2.imshow) avec detections "
-                             "aux moments cles (perception initiale). Snapshot sauve "
-                             "dans outputs/perception/.")
+                        help="FENETRE LIVE cv2.imshow : grab continu des 3 cams "
+                             "pendant le mouvement -> sature le bus USB, cam_2 "
+                             "DECROCHE souvent. N'est PLUS necessaire pour avoir les "
+                             "snapshots : ceux-ci sont sauves par defaut (voir "
+                             "--no-snapshots). N'active --display que si tu veux la "
+                             "fenetre temps reel ET que le hub tient.")
+    parser.add_argument("--no-snapshots", action="store_true",
+                        help="Desactive la SAUVEGARDE des snapshots .png dans "
+                             "outputs/perception/ (snapshot perception, vues cam_2 du "
+                             "raffinement, et snapshots PRISE verite-terrain). Par "
+                             "defaut ils sont TOUJOURS sauves -- y compris sans "
+                             "--display, car la sauvegarde ne fait qu'ecrire une frame "
+                             "deja capturee (aucun grab continu, donc cam_2 reste "
+                             "stable). C'est l'aide diagnostique principale avec les "
+                             "logs.")
     parser.add_argument("--calib-profile", type=str, default=None,
                         help="EXCEPTIONNEL : ressort une calibration de backup depuis "
                              "configs/calibration_backups/<nom>/ (s2, legacy_separate). "
@@ -202,14 +252,28 @@ def main():
         dry_run=args.dry_run,
         closed_loop=(not args.no_closed_loop),
         display=args.display,
+        save_snapshots=(not args.no_snapshots),
         grasp_mode=("top_down" if args.top_down else "adaptive"),
     )
     if args.grasp_threshold is not None:
         config.grasp_success_threshold_pct = args.grasp_threshold
+    if args.grab_offset is not None:
+        config.grasp_gripper_grab_offset_m = args.grab_offset / 1000.0
     if args.grasp_lateral_offset is not None:
-        # --grasp-lateral-offset pilote desormais l'offset base-Y (gauche+), pas
-        # l'ancien offset repere-pince (qui partait en X et etait gomme par cam_2).
-        config.grasp_y_offset_base_mm = args.grasp_lateral_offset
+        # --grasp-lateral-offset = OVERRIDE MANUEL : fige l'offset lateral a cette
+        # valeur (mm, repere IMAGE cam_2, le long des machoires) et DESACTIVE l'auto
+        # (½ largeur + marge). A utiliser pour les objets dont la stereo sur-lit la
+        # largeur (cylindre rond) ou pour inverser le cote (valeur negative).
+        config.grasp_lateral_tool_offset_mm = args.grasp_lateral_offset
+        config.grasp_lateral_offset_auto = False
+    if args.lateral_offset_margin is not None:
+        config.grasp_lateral_offset_margin_mm = args.lateral_offset_margin
+    if args.grasp_forward_offset is not None:
+        config.grasp_forward_offset_mm = args.grasp_forward_offset
+    if args.closed_loop_max_correction is not None:
+        config.closed_loop_max_correction_mm = args.closed_loop_max_correction
+    if args.cam2_observe_height is not None:
+        config.cam2_observe_extra_height_m = args.cam2_observe_height / 1000.0
     if args.grasp_load_threshold is not None:
         config.grasp_load_threshold = args.grasp_load_threshold
     config.grasp_close_servo = (args.grasp_close_mode == "servo")

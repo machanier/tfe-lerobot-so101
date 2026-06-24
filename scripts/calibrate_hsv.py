@@ -233,8 +233,26 @@ def main():
     if not cap.isOpened():
         print(f"Impossible d'ouvrir la camera {args.camera}.")
         return
+    # ALIGNEMENT RUNTIME : on ouvre la camera EXACTEMENT comme
+    # src/perception/camera_io.py (codec MJPG force AVANT la resolution, puis
+    # fps, puis warmup). But : que la calibration echantillonne les MEMES pixels
+    # que le pipeline live, pour ne pas introduire de decalage de couleur
+    # (chroma subsampling JPEG) entre calib et runtime. Comme le FOURCC n'est pas
+    # observable sur macOS/AVFoundation (get renvoie 0), on garantit la parite en
+    # faisant le meme appel des deux cotes, quel que soit l'effet reel du backend.
+    # ORDRE IMPORTANT : codec d'abord, puis resolution, puis fps.
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(args.width))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(args.height))
+    cap.set(cv2.CAP_PROP_FPS, float(CAMERAS["cam_0"]["fps"]))
+    # Diagnostic (le FOURCC peut revenir 0 = non rapporte sur macOS, sans gravite).
+    _f = int(cap.get(cv2.CAP_PROP_FOURCC))
+    _codec = "".join(chr((_f >> 8 * i) & 0xFF) for i in range(4)).strip() or "(non rapporte)"
+    print(f"[calib] codec demande=MJPG | rapporte={_codec!r} | "
+          f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
+    # Warmup : stabilise l'auto-exposition avant les premiers clics.
+    for _ in range(10):
+        cap.read()
 
     sampler = HSVSampler()
     win = "Calibration HSV"

@@ -164,6 +164,29 @@ class IKSolver:
                     half_safe = max(0.0, half - SAFETY_MARGIN_RAD)
                     self.joint_limits[j] = (-half_safe, +half_safe)
 
+            # === LIMITE ANTI-RETOURNEMENT wrist_roll (2026-06-17) ===
+            # La course calibree de wrist_roll est ~330deg (symetrique +/-163.8deg
+            # autour du centre raw=2047). Probleme : pour une cible donnee, les DEUX
+            # symetries 180deg de la pince tiennent dans cette course, donc l'IK peut
+            # atteindre la config A L'ENVERS (pince/camera retournee vers la table ;
+            # observe + photos). On rogne donc la course a une FENETRE ASYMETRIQUE de
+            # WRIST_ROLL_USEFUL_SPAN_DEG ancree sur la butee range_min.
+            # SENS (tranche d'apres les logs robot) : les prises A L'ENDROIT ont
+            # wrist_roll NEGATIF (vers range_min, raw=150) ; les retournements ont
+            # wrist_roll POSITIF (~+92deg, vers range_max, raw=3944). On garde donc
+            # la butee NEGATIVE (range_min) et on coupe le cote POSITIF.
+            # >>> SI au 1er essai le robot REFUSE des prises top-down NORMALES, c'est
+            #     que le cote a couper est l'autre : remplacer 'range_min' par
+            #     'range_max' et inverser le signe du span ci-dessous. <<<
+            WRIST_ROLL_USEFUL_SPAN_DEG = 200.0
+            if "wrist_roll" in calib:
+                c = calib["wrist_roll"]
+                center = (c["range_min"] + c["range_max"]) / 2.0
+                lo_phys = (c["range_min"] - center) * 2.0 * np.pi / 4095.0  # ~ -166.8deg
+                lo_safe = lo_phys + SAFETY_MARGIN_RAD                       # butee range_min (marge)
+                hi_useful = lo_safe + np.radians(WRIST_ROLL_USEFUL_SPAN_DEG)
+                self.joint_limits["wrist_roll"] = (lo_safe, hi_useful)
+
         # Defaut si pas de calibration : +/- pi
         for j in self.joints:
             self.joint_limits.setdefault(j, (-np.pi, +np.pi))
@@ -406,6 +429,8 @@ class IKSolver:
         # aux re-solves (q_init = pose courante), la continuite fait RESTER sur
         # l'orientation deja prise.
         q0vec = self._to_vector(q_init) if q_init is not None else None
+        wr0 = (float(q_init.get("wrist_roll", 0.0))
+               if q_init is not None else None)
 
         wr_hi = self.joint_limits.get("wrist_roll", (-np.pi, np.pi))[1]
 
@@ -413,7 +438,8 @@ class IKSolver:
             rg = trio[1]
             if not rg.joint_angles_rad:
                 return 1e9
-            wr = abs(rg.joint_angles_rad.get("wrist_roll", 0.0))
+            wr_signed = float(rg.joint_angles_rad.get("wrist_roll", 0.0))
+            wr = abs(wr_signed)
             pen = sum(0.0 if r.converged else 5.0 for r in trio)
             cont = (float(np.linalg.norm(
                 self._to_vector(rg.joint_angles_rad) - q0vec))
@@ -421,12 +447,17 @@ class IKSolver:
             # Penalite forte si le poignet frole sa butee (une orientation collee
             # a +/-164deg risque de clipper a un re-solve apres correction).
             near_limit = 3.0 if wr > wr_hi - np.radians(12) else 0.0
-            # CONTINUITE DOMINANTE : les 2 orientations (symetrie 180deg de la
-            # pince) saisissent l'objet de facon IDENTIQUE, donc on prend celle
-            # qui BOUGE LE MOINS le poignet depuis la pose courante (anti rotation
-            # ~90deg inutile sur les objets couches, signale par Maxence). |wrist|
-            # ne reste qu'un faible tiebreaker.
-            return pen + near_limit + 1.5 * cont + 0.25 * wr
+            # ANTI-RETOURNEMENT (2026-06-17) : les 2 symetries 180deg de la pince
+            # saisissent l'objet a l'IDENTIQUE, mais l'une met la pince A L'ENDROIT
+            # (wrist_roll proche de la pose courante) et l'autre A L'ENVERS (demi-
+            # tour ~180deg -> bras contorsionne qui plonge vers la table sur les
+            # objets debout/empiles, photos). La continuite GLOBALE (sur tous les
+            # axes) favorisait parfois la config retournee. On penalise DIRECTEMENT
+            # l'ecart de wrist_roll a la pose courante, poids 2.0 : domine la
+            # continuite globale (1.5*cont) mais reste SOUS la non-convergence
+            # (5/pose) -> jamais une config retournee-mais-inatteignable.
+            wrist_flip = (2.0 * abs(wr_signed - wr0)) if wr0 is not None else 0.0
+            return pen + near_limit + wrist_flip + 1.5 * cont + 0.25 * wr
 
         flipped = _cost(trio_b) < _cost(trio_a)
         chosen = trio_b if flipped else trio_a

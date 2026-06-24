@@ -31,7 +31,7 @@
     "_doc": "Limites du workspace utile (plage atteignable par le SO-101 + zone proche table). Detection 3D hors de ces bornes => rejetee. Table a Z=0 (base_link au niveau de la table). Cube de 30mm pose : centre a Z=+0.015. Plus haut acceptable jusqu'a 20cm (gobelet).",
     "x_min":  0.10, "x_max":  0.45,
     "y_min": -0.25, "y_max":  0.25,
-    "z_min":  0.00, "z_max":  0.25,
-    "_note": "z_min=0 car objets poses sur table. z_max=0.25 pour autoriser objets hauts jusqu'a 25cm (limite raisonnable workspace SO-101)."
+    "z_min": -0.02, "z_max":  0.25,
+    "_note": "z_min abaisse de 0 a -0.02 le 2026-05-20 : la table est en fait a Z~-15mm DANS LE REPERE CALIBRE (l'origine cinematique est au-dessus de la table). Un cube pose triangule donc parfois un Z legerement negatif (-5mm observe). z_min=0 le rejetait a tort. -0.02 accepte les cubes poses tout en rejetant le sous-table aberrant. z_max=0.25 = objets hauts jusqu'a 25cm."
   }
 }

@@ -1,0 +1,12 @@
+{
+  "_doc": "Biais systematique de cam_2 (eye-in-hand), SOUSTRAIT de la position 3D detectee par cam_2 dans le closed_loop (cf src/control/closed_loop.py, _load_cam2_bias_m + obj_pos_base). CHEMIN SEPARE de la stereo : cam_2 a sa propre calibration hand-eye (!= cam_0/cam_1), donc son propre biais. NE PAS copier le biais stereo (bias_correction.json) ici.",
+  "dx_mm": 0,
+  "dy_mm": -7,
+  "dz_mm": 0,
+  "_reglage_dy": "Regle dy_mm en testant si la prise rince le bord en Y quand cam_2 detecte. Convention : corrige = detecte - dy. Donc dy_mm POSITIF decale la prise vers la DROITE (Y negatif), dy_mm NEGATIF vers la GAUCHE (Y positif, gauche vu de derriere le robot). Procede par pas de ~5mm, un seul essai donne le signe. [2026-06-20: regle a -7 = cam_2 lisait ~6-7mm trop a droite (objet Y=0, cam_2 lisait -5 a -8 vs stereo). -7 decale sa detection de +7 vers la gauche. Affine par +-3 en testant.]",
+  "_note_x": "dx_mm laisse a 0 : cam_2 est precis en X par projection rayon-plan QUAND le Z (target_z) est correct. Si X sur-corrige, c'est le Z (hauteur) qui est faux, pas un biais X de cam_2 -> corriger la hauteur, pas ici.",
+  "_note_z": "dz_mm sans effet sur la correction (closed_loop force delta_z=0, cam_2 ne corrige pas Z). Le Z de prise vient de la stereo (table_z + hauteur/2).",
+  "_historique": {
+    "2026_06_20": "Cree. Infrastructure de biais cam_2 (avant : cam_2 ne recevait AUCUN biais, incoherent avec la stereo de-biaisee). Valeurs a 0 en attendant de tester apres le fix hauteur (objet debout)."
+  }
+}

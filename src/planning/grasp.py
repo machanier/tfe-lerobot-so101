@@ -32,7 +32,8 @@ Conventions de repere (deploiement, cf PipelineConfig) :
   - z=0 = la PLAQUE ou reposent les objets (table_z_m=0) ; l'offset de serrage
     des machoires est gere a part (gripper_grab_offset_m).
   - convention pince : roll/yaw decale de grasp_yaw_offset_deg (=90, mesure terrain).
-  - decalage de prise : offset base-Y (gauche+) applique APRES le raffinement cam_2,
+  - decalage de prise : offset lateral en repere PINCE (le long des machoires),
+    applique APRES le raffinement cam_2 et aligne sur l'orientation finale du grasp,
     cf pipeline (pince asymetrique SO-101).
   - reorientation cam_2 : reorient_grasp_pose (top-down) / AdaptiveGrasp.replan_oriented
     (incline) realignent les machoires sur le grand axe vu par cam_2.
@@ -284,6 +285,19 @@ def reorient_grasp_pose(grasp_pose, new_yaw_rad: float,
     old_off = np.array([float(old_off[0]) / 1000.0, float(old_off[1]) / 1000.0, 0.0])
     # Applique la meme correction de convention que la pose initiale (diagnostic 90deg)
     new_yaw_rad = float(new_yaw_rad) + float(meta.get("yaw_offset_rad", 0.0))
+    # === Symetrie 180deg de la pince a machoires paralleles (FIX 2026-06-21) ===
+    # cam_2 fournit un AXE (defini mod 180deg) : yaw et yaw+-180 sont la MEME prise
+    # physique. On choisit le representant le PLUS PROCHE du yaw COURANT pour que le
+    # poignet fasse le PLUS PETIT mouvement. Sinon : cam_2 mesure -85deg alors que la
+    # prise etait a +75deg -> reorientation de ~160deg = demi-tour du poignet (le
+    # "<<< SAUT (tour)" observe a CHAQUE run), alors que +95deg (= -85 mod 180) est la
+    # MEME prise a seulement +20deg. L'offset lateral est recalcule depuis R ci-dessous,
+    # donc le doigt fixe reste du bon cote apres le pli.
+    old_yaw_rad = float(meta.get("yaw_rad", new_yaw_rad))
+    while new_yaw_rad - old_yaw_rad > np.pi / 2.0:
+        new_yaw_rad -= np.pi
+    while new_yaw_rad - old_yaw_rad < -np.pi / 2.0:
+        new_yaw_rad += np.pi
     R = _rotation_top_down(float(new_yaw_rad))
     opp = -np.asarray(fixed_finger_dir_gripper, dtype=np.float64)
     new_off = R @ opp * (offset_mm / 1000.0)
@@ -378,12 +392,17 @@ class TopDownGrasp(GraspStrategy):
                  # --- D-Z : ancrage de la profondeur de prise sur la table ---
                  table_z_m: float = 0.0,               # z=0 = PLAQUE (la ou les objets reposent) -- repere demande par Maxence 2026-06-20. L'offset de pince est gere a part (gripper_grab_offset_m).
                  min_grasp_clearance_m: float = 0.0,   # plancher AU NIVEAU de la plaque (z=0). Le +5mm a ete RETIRE (Maxence 2026-06-20) : top-down prend a la hauteur reelle de l'objet ; le degagement plaque ne concerne QUE la prise 90 (tilted_grasp_center_min_m).
-                 # OFFSET PINCE : hauteur (au-dessus du point commande) ou les
-                 # machoires serrent reellement (~14mm sur la pince de Maxence).
-                 # Ajoute au Z de prise commande. Avec z=0=plaque, Z prise =
-                 # plaque(0) + H/2 + cet offset = l'ancrage empirique qui marche
-                 # (= l'ancien table_z=14, mais maintenant proprement separe du repere).
-                 gripper_grab_offset_m: float = 0.014,
+                 # OFFSET PINCE (Z, le long de l'axe d'approche). DEFAUT 0 (Maxence
+                 # 2026-06-21). Les cameras sont calibrees sur la PLAQUE (z=0), donc
+                 # un objet pose dessus a son CENTRE a table + H/2 : on vise CA,
+                 # directement, sans rien ajouter. L'ancien +14mm etait une RUSTINE
+                 # qui compensait la SOUS-LECTURE de hauteur d'UN grand cylindre
+                 # debout (H lu 43 au lieu de 60) -> faux en general, et sur un objet
+                 # court/couche il visait AU-DESSUS du sommet -> "trop haut" -> rate.
+                 # Reglable via --grab-offset (mettre une petite valeur si la pince
+                 # butte la table sur les objets tres bas). Le vrai correctif des
+                 # erreurs de hauteur = fiabiliser H, pas un offset constant.
+                 gripper_grab_offset_m: float = 0.0,
                  # Seuil de detection d'EMPILEMENT : si la base estimee de l'objet
                  # (centroide - hauteur/2) depasse table + ce seuil, l'objet repose
                  # sur AUTRE CHOSE -> on vise le centroide detecte plutot que
@@ -540,6 +559,13 @@ class TopDownGrasp(GraspStrategy):
                 "lateral_offset_mm": self.grasp_lateral_offset_mm,
                 "offset_base_xy_mm": (float(offset_base[0]*1000), float(offset_base[1]*1000)),
                 "gripper_open_pct_computed": gripper_open,
+                # Largeur SERREE par les machoires (petit cote de l'empreinte, mm).
+                # Sert a l'offset lateral ADAPTATIF (Maxence 2026-06-23) : decaler
+                # le doigt fixe de ~(largeur/2 + marge) pour qu'il tombe a fleur de
+                # l'arete, quelle que soit la TAILLE de l'objet (plus de constante
+                # codee en dur). None si pas de bbox 3D.
+                "jaw_width_mm": (float(min(obj.bbox_3d_m[0], obj.bbox_3d_m[1]) * 1000.0)
+                                 if obj.bbox_3d_m is not None else None),
             },
         )
 
@@ -605,9 +631,10 @@ class AdaptiveGrasp(GraspStrategy):
                  gripper_max_opening_mm: float = 150.0,
                  table_z_m: float = 0.0,  # z=0 = PLAQUE (la ou les objets reposent) -- repere demande par Maxence 2026-06-20. L'offset de pince est gere a part (gripper_grab_offset_m).
                  min_grasp_clearance_m: float = 0.0,   # plancher AU NIVEAU plaque (z=0) ; +5mm RETIRE (Maxence 2026-06-20). Seul le 90 garde un plancher (tilted_grasp_center_min_m = 7mm).
-                 # OFFSET PINCE (cf TopDownGrasp) : hauteur de serrage des machoires
-                 # au-dessus du point commande (~14mm). Ajoute au Z de prise.
-                 gripper_grab_offset_m: float = 0.014,
+                 # OFFSET PINCE (cf TopDownGrasp) : DEFAUT 0 (Maxence 2026-06-21).
+                 # On vise table + H/2 directement (cameras calibrees sur la plaque).
+                 # L'ancien +14mm = rustine de sous-lecture de hauteur, faux en general.
+                 gripper_grab_offset_m: float = 0.0,
                  # Seuil de detection d'EMPILEMENT (cf TopDownGrasp.stack_detect_m).
                  stack_detect_m: float = 0.015,
                  # DEGAGEMENT TABLE pour une prise INCLINEE : a l'horizontale
@@ -677,6 +704,7 @@ class AdaptiveGrasp(GraspStrategy):
             gripper_max_opening_mm=gripper_max_opening_mm,
             table_z_m=table_z_m,
             min_grasp_clearance_m=min_grasp_clearance_m,
+            gripper_grab_offset_m=gripper_grab_offset_m,
         )
 
     @property
@@ -890,71 +918,74 @@ class AdaptiveGrasp(GraspStrategy):
 
 
 # Zones d'utilisation des angles d'attaque, en METRES. REGLABLES.
-# Tableau de decision (revise 2026-06-21 apres essais cube), d = sqrt(x^2+y^2),
-# h = sommet objet :
-#                 proche (d<=33)   mi (33-42)   loin (d>=42)
-#   bas  (h<=12cm)  top-down 0       45            45  (PAS 90 : objet plat)
-#   haut (h>12cm)   face 90          face 90       face 90
-# REVISION 2026-06-21 (essais cube orange) : un objet BAS/PLAT n'est JAMAIS pris
-# a 90deg (face avant). Une prise frontale horizontale n'a pas de flanc vertical
-# a serrer sur un objet plat -> les machoires passent au-dessus / l'objet glisse,
-# ET le bras s'etale en travers de la scene (aucun evitement d'obstacle). Avant,
-# "bas + loin" donnait 90 -> echec systematique du cube a 44cm. Desormais un objet
-# plat trop loin pour le top-down se prend en diagonale 45 (au pire) ; si meme la
-# 45 est hors d'atteinte IK, l'objet est HORS DE PORTEE (echec honnete), pas une
-# 90 vouee a l'echec. Le 90 reste reserve aux objets HAUTS/DEBOUT (vrai flanc).
-GRASP_ZONE_NEAR_M = 0.33   # borne proche / mi
-GRASP_ZONE_FAR_M = 0.42    # borne mi / loin
-GRASP_ZONE_TALL_M = 0.12   # sommet > : objet HAUT
+# POLITIQUE 2026-06-21 (Maxence, apres essais cube + cylindres debout empiles) :
+# le choix d'angle est pilote par la HAUTEUR DU SOMMET h_top (= z + H/2), PLUS par
+# la classe debout/couche. d = sqrt(x^2+y^2) :
+#                          proche (d<=33)        mi / loin (d>33)
+#   h_top < 12cm           top-down 0            45        (JAMAIS 90)
+#   12cm <= h_top < 18cm   45                    45        (objet "moyennement haut")
+#   h_top >= 18cm          90 (face)             90 (face) (SEUIL face_m A REVOIR)
+# Pourquoi :
+#  - Objet BAS/PLAT (ou debout COURT) : JAMAIS 90 (face avant n'a pas de flanc a
+#    serrer sur un objet bas -> machoires au-dessus / objet glisse + bras etale en
+#    travers de la scene ; echec cube 44cm). Le 45 reprend le role "longue portee"
+#    qu'avait le 90. Un debout COURT se prend par le DESSUS quand c'est atteignable
+#    -> evite la prise "sur le bord haut" observee quand on forcait 45 (essais
+#    2026-06-21 cylindres debout empiles).
+#  - Objet HAUT : 45 pour les objets MOYENNEMENT hauts et proches (le 45 prend
+#    moins haut), la face 90 seulement a partir de face_m (= hauteur a partir de
+#    laquelle une vraie face avant bat la diagonale ; A REVOIR par essais).
+GRASP_ZONE_NEAR_M = 0.33   # borne proche / mi (objets BAS : top-down jusqu'ici)
+GRASP_ZONE_FAR_M = 0.45    # (conserve pour compat ; n'influe plus le choix d'angle)
+GRASP_ZONE_TALL_M = 0.12   # sommet > : objet "HAUT" (au-dela, plus de top-down)
+GRASP_ZONE_FACE_M = 0.18   # sommet >= : prefere la FACE 90 ; entre TALL et FACE -> 45.
+                           # SEUIL PROVISOIRE -- A REVOIR (Maxence 2026-06-21) : a
+                           # regler par essais (a partir de quelle hauteur une vraie
+                           # face avant 90 bat la diagonale 45). Reglable sans recompiler.
 
 
 def preferred_pitch_deg(obj: ObjectInstance,
                         near_m: float = GRASP_ZONE_NEAR_M,
                         far_m: float = GRASP_ZONE_FAR_M,
-                        tall_m: float = GRASP_ZONE_TALL_M) -> float:
-    """Angle d'attaque PREFERE selon la ZONE d'usage (distance + hauteur).
+                        tall_m: float = GRASP_ZONE_TALL_M,
+                        face_m: float = GRASP_ZONE_FACE_M) -> float:
+    """Angle d'attaque PREFERE, pilote par la HAUTEUR DU SOMMET (h_top = z + H/2).
 
-    Chaque angle a son domaine (cf preferences terrain de Maxence) :
-      - top-down (0deg)   : objet PROCHE et BAS.
-      - diagonale (45deg) : mi-distance / mi-hauteur — la plus POLYVALENTE (repli).
-      - face (90deg)      : objet LOIN et/ou HAUT.
+    POLITIQUE 2026-06-21 (Maxence, cf bloc GRASP_ZONE_* ci-dessus) :
+      - h_top < tall_m (12cm)        : objet BAS/PLAT ou debout COURT. SEULEMENT
+        top-down (proche) ou diagonale 45 (sinon). JAMAIS 90. Le 45 reprend le
+        role longue portee du 90. Un debout court -> top-down par le dessus si
+        atteignable (evite la prise "sur le bord haut").
+      - tall_m <= h_top < face_m     : objet MOYENNEMENT haut -> diagonale 45.
+      - h_top >= face_m (20cm, A REVOIR) : objet HAUT -> face 90 (vrai flanc).
 
     Ce n'est PAS un verrou : le pipeline filtre ensuite par atteignabilite IK et
     retient l'angle atteignable LE PLUS PROCHE de ce prefere (si le prefere n'est
-    pas atteignable, on bascule sur le voisin -> jamais d'echec "top-down force
-    alors qu'une autre prise marchait"). Bornes reglables ci-dessus.
+    pas atteignable, on bascule sur le voisin). Bornes reglables ci-dessus.
     """
     x, y, z = (float(obj.position_base_m[0]), float(obj.position_base_m[1]),
                float(obj.position_base_m[2]))
     d = float(np.hypot(x, y))
     bbox = obj.bbox_3d_m
     h_top = z + 0.5 * (float(bbox[2]) if bbox is not None else 0.0)
-    # Objet "HAUT" = haut en ABSOLU (sommet > tall_m) OU classe DEBOUT par la
-    # perception. Un cylindre de 5cm pose debout est haut PAR SA FORME meme si
-    # son sommet est bas : on le saisit par le FLANC (prise de cote), jamais en
-    # diagonale (une 45deg place les doigts en biais -> "devant et bas" -> ferme
-    # a vide, essais cylindre 2026-06-20). On NE recalcule PAS de ratio ici : on
-    # REUTILISE 'pose_class' deja decide par la perception (ratio bbox image >=1.4
-    # dans les 2 cams, OU hauteur 3D > 1.6x empreinte ; cf pose_estimator).
-    debout = (obj.meta or {}).get("pose_class") == "debout"
-    # Objet HAUT ou DEBOUT -> prise par le FLANC = FACE (90deg), JAMAIS 45deg.
-    # (Maxence 2026-06-20 : limite de hauteur sur le 45. Au-dela de tall_m -- ou
-    # pour un objet DEBOUT -- une 45deg place les doigts en biais "devant et bas"
-    # -> ferme a vide, cf essais cylindre. Le 45 est donc reserve aux objets BAS
-    # a mi-distance.) Ce n'est PAS un verrou : si le 90 n'est pas atteignable a
-    # courte distance, le pipeline retombe sur le voisin atteignable (45 puis 0).
-    if h_top > tall_m or debout:
+    # --- objet BAS/PLAT (ou debout COURT) : JAMAIS 90deg ---
+    # Une face avant horizontale n'a pas de flanc a serrer sur un objet bas ->
+    # machoires au-dessus / objet glisse + bras etale en travers de la scene
+    # (echec cube 44cm). Top-down de pres (le plus stable), diagonale 45 sinon
+    # (reprend le role "longue portee" du 90). Choix de hauteur, plus de classe
+    # debout/couche : un cylindre debout COURT se prend par le DESSUS quand c'est
+    # atteignable -> evite la prise "sur le bord haut" qu'on voyait en forcant 45.
+    if h_top < tall_m:
+        if d <= near_m:
+            return 0.0   # bas + proche -> top-down
+        return 45.0      # bas + mi/loin -> diagonale (best available, jamais 90)
+    # --- objet HAUT : 45 (moyennement haut) puis 90 au-dela du seuil face_m ---
+    # top-down exclu (collision pince par le haut). Le 45 prend les objets
+    # "moyennement hauts et proches" ; la face 90 ne devient preferable qu'a
+    # partir de face_m (SEUIL A REVOIR par essais).
+    if h_top >= face_m:
         return 90.0
-    # Objet BAS/PLAT : la DISTANCE decide la zone, mais JAMAIS 90deg (face avant).
-    # Une prise frontale n'a pas de flanc vertical a serrer sur un objet plat ->
-    # les machoires passent au-dessus / l'objet glisse (essai cube 44cm : 90deg
-    # choisi car "loin", echec systematique + bras etale en travers de la scene).
-    # On reste en top-down (proche) ou diagonale 45 (mi/loin). Si meme la 45 est
-    # hors d'atteinte IK, le pipeline declarera l'objet hors de portee (echec
-    # honnete) plutot que de tenter une 90 vouee a l'echec sur un objet plat.
-    if d <= near_m:
-        return 0.0       # proche -> top-down
-    return 45.0          # mi-distance OU loin -> diagonale (best available, objet plat)
+    return 45.0
 
 
 # ============================================================

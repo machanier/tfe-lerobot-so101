@@ -46,6 +46,7 @@ from src.perception.detector import (  # noqa: E402
     HSVDetector,
     default_hf_labels,
     default_hsv_specs,
+    flatten_specs,
     load_hf_specs,
     load_hsv_specs,
 )
@@ -122,12 +123,14 @@ def make_detector(detector_kind: str, specs_path: str, hf_specs_path: str):
     if detector_kind == "hsv":
         if specs_path and Path(specs_path).exists():
             specs = load_hsv_specs(Path(specs_path))
-            print(f"Specs HSV chargees : {specs_path}  ({len(specs)} labels)")
+            mode = "par camera" if isinstance(specs, dict) else "global"
+            print(f"Specs HSV chargees : {specs_path}  "
+                  f"({len(flatten_specs(specs))} labels, {mode})")
         else:
             specs = default_hsv_specs()
             print("Specs HSV : valeurs par defaut "
                   "(genere configs/perception/hsv_specs.json via scripts/calibrate_hsv.py)")
-        return HSVDetector(specs), {s.label: s.meta for s in specs}
+        return HSVDetector(specs), {s.label: s.meta for s in flatten_specs(specs)}
 
     if detector_kind == "hf":
         if hf_specs_path and Path(hf_specs_path).exists():

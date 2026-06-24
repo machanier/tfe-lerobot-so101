@@ -232,6 +232,47 @@ def _save_cam2_debug(out_dir, frame, matches, chosen) -> None:
         print(f"   [display] (vue cam_2 non sauvee : {e})")
 
 
+def capture_cam2_snapshot(
+    target_label: str,
+    detector: ObjectDetector,
+    multi_camera: MultiCamera,
+    robot_state: RobotState,
+    out_dir: object,
+    label_mapping: Optional[dict] = None,
+    flush_frames: int = 3,
+    tag: str = "",
+) -> None:
+    """Capture cam_2 et SAUVE une image annotee SANS calculer de correction.
+
+    DIAGNOSTIC pur : garantit une vue cam_2 a CHAQUE tentative, y compris au
+    RETRY ou la re-perception stereo (cam_0/cam_1) court-circuite le raffinement
+    cam_2 -> sans cet appel, aucune image ne serait ecrite pour la 2e descente,
+    impossible de COMPARER l'essai #1 et #2 (demande Maxence 2026-06-22).
+    Reutilise le meme rendu que le raffinement (croix jaune = axe optique,
+    rouge = blob retenu). Non bloquant : toute erreur est avalee.
+    """
+    try:
+        frames = multi_camera.grab(robot_state=robot_state, flush=flush_frames)
+        frame_c2 = frames.get("cam_2")
+        if frame_c2 is None:
+            print(f"   [display] (snapshot cam_2{(' ' + tag) if tag else ''} : "
+                  "pas de frame)")
+            return
+        dets = detector.detect(frame_c2)
+        if label_mapping:
+            for d in dets:
+                if d.label in label_mapping:
+                    d.label = label_mapping[d.label]
+        matches = [d for d in dets if d.label == target_label]
+        chosen = max(matches, key=lambda d: d.score) if matches else None
+        if tag:
+            print(f"   [snapshot cam_2 {tag}] {len(matches)} detection(s) "
+                  f"'{target_label}'")
+        _save_cam2_debug(out_dir, frame_c2, matches, chosen)
+    except Exception as e:  # pragma: no cover - debug seulement
+        print(f"   [display] (snapshot cam_2 non sauve : {e})")
+
+
 def _load_cam2_bias_m():
     """Biais systematique de cam_2 (eye-in-hand), SOUSTRAIT de la position 3D
     detectee par cam_2 dans la boucle fermee, avant de calculer la correction.
@@ -268,6 +309,7 @@ def refine_grasp_with_cam2(
     verbose: bool = True,
     debug_save_dir: Optional[object] = None,
     grasp_xy_base_m: Optional[object] = None,
+    flush_frames: int = 3,
 ) -> RefinementResult:
     """Raffine la pose de saisie via cam_2 (eye-in-hand).
 
@@ -298,8 +340,11 @@ def refine_grasp_with_cam2(
         RefinementResult avec correction delta_base_m a appliquer a la
         pose grasp.
     """
-    # Capture cam_2 uniquement
-    frames = multi_camera.grab(robot_state=robot_state)
+    # Capture cam_2 uniquement. flush_frames > 0 : on VIDE le buffer pilote des
+    # frames PERIMEES (prises pendant le mouvement du bras vers approach) avant de
+    # lire l'image -> evite la detection "derriere l'objet" sur une vieille frame
+    # (Maxence 2026-06-21). La perception initiale, elle, draine via le warmup open().
+    frames = multi_camera.grab(robot_state=robot_state, flush=flush_frames)
     frame_c2 = frames.get("cam_2")
     if frame_c2 is None:
         return RefinementResult(
@@ -322,6 +367,13 @@ def refine_grasp_with_cam2(
     # Filtre par label
     matches = [d for d in dets if d.label == target_label]
     if not matches:
+        # SNAPSHOT meme sans detection cible (Maxence 2026-06-22/23) : on SAUVE
+        # quand meme la vue cam_2 (avec TOUTES les detections, peu importe le
+        # label) pour VOIR ce que cam_2 percoit quand elle rate la cible -> avant,
+        # ces cas faisaient un return AVANT _save_cam2_debug = aucune image, d'ou
+        # "il manque la snapshot". La croix jaune = axe optique.
+        if debug_save_dir is not None:
+            _save_cam2_debug(debug_save_dir, frame_c2, dets, None)
         return RefinementResult(
             delta_base_m=np.zeros(3),
             delta_pixels=(0.0, 0.0),
@@ -340,6 +392,13 @@ def refine_grasp_with_cam2(
     inside = [d for d in matches
               if not _bbox_touches_border(d.bbox, w, h, ignore_top=True)]
     if not inside:
+        # SNAPSHOT du blob REJETE au bord (Maxence 2026-06-22/23) : on sauve la vue
+        # avec la detection tronquee mise en evidence -> c'est PRECISEMENT le cas
+        # ou Maxence veut voir l'image (ex run orange : faux blob pleine hauteur au
+        # bord droit). Avant : return AVANT _save_cam2_debug -> pas d'image.
+        if debug_save_dir is not None:
+            _save_cam2_debug(debug_save_dir, frame_c2, matches,
+                             max(matches, key=lambda d: d.score))
         return RefinementResult(
             delta_base_m=np.zeros(3),
             delta_pixels=(0.0, 0.0),
@@ -476,6 +535,19 @@ def refine_grasp_with_cam2(
         print(f"   [closed_loop] objet detecte par cam_2 a : "
               f"({obj_pos_base[0]*1000:+.1f}, {obj_pos_base[1]*1000:+.1f}, "
               f"{obj_pos_base[2]*1000:+.1f}) mm")
+        # DIAGNOSTIC PARALLAXE Z (Maxence 2026-06-23) : cam_2 voit le DESSUS de
+        # l'objet mais on projette le rayon sur target_z (= table + H/2). Si le
+        # vrai plan vu est plus haut (dessus a ~table + H), la position projetee
+        # se decale dans la direction de visee. On CHIFFRE de combien (X,Y) la
+        # position bougerait pour un plan +15mm plus haut -> sensibilite/erreur de
+        # parallaxe REELLE, mesuree sur le robot (au lieu d'une sim approximative).
+        # Si ce chiffre est grand (> qq mm), c'est une cause directe du "prend a
+        # cote / dans le vide" malgre une bonne detection.
+        _shift15 = (d_base[:2] / d_base[2]) * 0.015 * 1000.0
+        print(f"   [diag parallaxe Z] plan actuel=table+H/2={target_z*1000:.0f}mm ; "
+              f"si on projetait +15mm plus haut (dessus objet) la position bougerait "
+              f"de ({_shift15[0]:+.1f},{_shift15[1]:+.1f}) mm "
+              f"(cam_2 voit le DESSUS, pas le milieu)")
 
     return RefinementResult(
         delta_base_m=delta_base,
