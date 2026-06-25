@@ -664,109 +664,91 @@ class PoseEstimator:
         """Construit une Scene a partir de detections + frames synchronisees.
 
         Si plusieurs detections du meme label sont presentes dans une meme
-        camera (cas typique de OWL-ViTv2 qui donne plusieurs bboxes overlapping),
-        on garde la PLUS CONFIANTE (score max).
+        camera (cas typique : OWL-ViTv2, ou un fond bruite -> plusieurs bboxes),
+        on essaie d'abord la paire la PLUS CONFIANTE (score max = comportement
+        historique) ; si elle ne donne pas de position DANS la scene, on essaie
+        les candidats suivants et on retient le premier in-scene (reproj valide).
         """
-        # Groupe par label, en gardant la meilleure detection par (label, cam)
-        by_label: dict[str, dict[str, Detection2D]] = {}
+        # Groupe par label : on conserve TOUS les candidats par (label, cam),
+        # tries par score decroissant. _estimate_one essaie la MEILLEURE paire
+        # d'abord (= historique) puis, si elle echoue (hors-scene / reproj), les
+        # candidats suivants -> garde celui qui tombe DANS la scene (Maxence
+        # 2026-06-25 : prisme noir avec k=3, le fond cree de faux blobs plus
+        # confiants que l'objet -> la paire au score max trianglait hors-scene et
+        # on echouait alors que le bon blob etait #2 ou #3).
+        cands_by_label: dict[str, dict[str, list[Detection2D]]] = {}
         for cam_key, dets in detections_by_cam.items():
             for d in dets:
-                existing = by_label.setdefault(d.label, {}).get(cam_key)
-                if existing is None or d.score > existing.score:
-                    by_label[d.label][cam_key] = d
+                cands_by_label.setdefault(d.label, {}).setdefault(cam_key, []).append(d)
+        for per_cam in cands_by_label.values():
+            for cam_key in per_cam:
+                per_cam[cam_key].sort(key=lambda d: d.score, reverse=True)
 
         objects: list[ObjectInstance] = []
         timestamps = [f.timestamp for f in frames.values() if f is not None]
         ts_scene = float(np.mean(timestamps)) if timestamps else 0.0
 
-        for label, per_cam in by_label.items():
+        for label, per_cam in cands_by_label.items():
             inst = self._estimate_one(label, per_cam, frames)
             if inst is not None:
                 objects.append(inst)
 
         return Scene(objects=objects, timestamp=ts_scene,
-                     meta={"detector_labels": list(by_label.keys())})
+                     meta={"detector_labels": list(cands_by_label.keys())})
 
     # ----- interne --------------------------------------------------------
 
-    def _estimate_one(self, label: str, per_cam: dict[str, Detection2D],
+    def _estimate_one(self, label: str,
+                      cands_per_cam: dict[str, list[Detection2D]],
                       frames: dict[str, Optional[Frame]]) -> Optional[ObjectInstance]:
         kL, kR = self.config.stereo_keys
-        det_L = per_cam.get(kL)
-        det_R = per_cam.get(kR)
+        # Borne defensive du nombre de candidats par camera (limite la combinatoire
+        # des paires ; le detecteur en fournit deja peu, ex k=3).
+        dets_L = (cands_per_cam.get(kL) or [])[:4]
+        dets_R = (cands_per_cam.get(kR) or [])[:4]
         f_L = frames.get(kL)
         f_R = frames.get(kR)
 
         # Diagnostic : stocke la raison du rejet (utile pour _last_rejections)
         reject_reason = None
 
-        # 1) STEREO si dispo
-        if det_L is not None and det_R is not None and f_L is not None and f_R is not None:
-            try:
-                X = triangulate_stereo(det_L, det_R, f_L, f_R)
-            except Exception as e:
-                X = None
-                reject_reason = f"triangulation exception: {e}"
-            if X is not None:
-                # IMPORTANT : reproj_error est calcule sur X NON COMPENSE,
-                # pour valider que la triangulation initiale est coherente
-                # avec les pixels detectes (sinon la compensation creerait
-                # artificiellement un grand reproj_err). La compensation
-                # est appliquee APRES validation, sur la position finale.
-                err_L = reproject_error(X, det_L, f_L)
-                err_R = reproject_error(X, det_R, f_R)
-                err = 0.5 * (err_L + err_R)
-                # COMPENSATION SYSTEMATIQUE : applique le biais empirique
-                # mesure (e.g. -30mm en Y sur le poste de Maxence).
-                # Calibrable via configs/perception/bias_correction.json.
-                if self._bias_m is not None:
-                    X = X - self._bias_m
-                ws_reason = self._workspace_reject(X)
-                in_ws = ws_reason is None
-                pos_mm = X * 1000
-                if not in_ws:
-                    reject_reason = (
-                        f"stereo OK (reproj {err:.1f}px) MAIS rejet : {ws_reason} "
-                        f"-- position ({pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f}) mm"
-                    )
-                elif err > self.config.max_reproj_error_px:
-                    reject_reason = (
-                        f"stereo OK (pos {pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f} mm) "
-                        f"MAIS reproj_err={err:.1f}px > seuil {self.config.max_reproj_error_px}px"
-                    )
-                else:
-                    score = float(min(det_L.score, det_R.score) *
-                                  np.exp(-err / 8.0))
-                    # Geometrie enrichie : hauteur par sommet triangule,
-                    # classe debout/couche, yaw du grand axe en repere base.
-                    bbox3d, geo_meta = self._estimate_geometry(
-                        det_L, det_R, f_L, f_R, X)
-                    return ObjectInstance(
-                        label=label,
-                        position_base_m=X,
-                        source_detections=[det_L, det_R],
-                        score=score,
-                        bbox_3d_m=bbox3d,
-                        meta={
-                            "method": "stereo_triangulation",
-                            "reproj_error_px": err,
-                            "reproj_error_per_cam_px": {kL: err_L, kR: err_R},
-                            **geo_meta,
-                        },
-                    )
-        elif det_L is None or det_R is None:
-            present = [k for k in (kL, kR) if per_cam.get(k) is not None]
-            reject_reason = f"detection presente seulement dans {present}, pas de stereo possible"
+        # 1) STEREO. Paires (gauche, droite) du MEME label essayees par SCORE
+        # decroissant. La 1ere = (meilleur gauche, meilleur droite) = historique :
+        # si elle est VALIDE (in-scene + reproj OK) on la retourne -> IDENTIQUE a
+        # avant. Sinon on essaie les paires suivantes et on garde la 1ere qui tombe
+        # DANS la scene (fix prisme noir / fond bruite, Maxence 2026-06-25). La
+        # contrainte reproj rejette au passage les MAUVAIS appariements (blob
+        # gauche d'un objet + blob droit d'un autre -> grande erreur de reproj).
+        if dets_L and dets_R and f_L is not None and f_R is not None:
+            pairs = sorted(
+                ((i, j) for i in range(len(dets_L)) for j in range(len(dets_R))),
+                key=lambda ij: -(dets_L[ij[0]].score + dets_R[ij[1]].score))
+            for rank, (i, j) in enumerate(pairs):
+                inst, reason = self._try_stereo_pair(
+                    label, dets_L[i], dets_R[j], f_L, f_R)
+                if inst is not None:
+                    if rank > 0:
+                        # trace : ce n'est PAS la paire la plus confiante (un blob
+                        # plus confiant trianglait hors-scene) -> utile au debug.
+                        inst.meta["stereo_pair_rank"] = rank
+                    return inst
+                if rank == 0:
+                    reject_reason = reason  # verdict de la paire la plus confiante
+        elif not dets_L or not dets_R:
+            present = [k for k in (kL, kR) if cands_per_cam.get(k)]
+            reject_reason = (f"detection presente seulement dans {present}, "
+                             f"pas de stereo possible")
 
         # Memorise pour diagnostic externe
         self._last_rejections = getattr(self, "_last_rejections", {})
         if reject_reason:
             self._last_rejections[label] = reject_reason
 
-        # 2) Fallback PnP monoculaire (priorite eye-in-hand cam_2)
+        # 2) Fallback PnP monoculaire (priorite eye-in-hand cam_2), meilleur score
         if self.config.enable_mono_pnp_fallback:
             for cam_key in ("cam_2", kL, kR):
-                det = per_cam.get(cam_key)
+                cands = cands_per_cam.get(cam_key) or []
+                det = cands[0] if cands else None
                 frm = frames.get(cam_key)
                 if det is None or frm is None:
                     continue
@@ -781,6 +763,57 @@ class PoseEstimator:
                         meta={"method": f"pnp_mono({cam_key})"},
                     )
         return None
+
+    def _try_stereo_pair(self, label: str, det_L: Detection2D, det_R: Detection2D,
+                         f_L: Frame, f_R: Frame
+                         ) -> tuple[Optional[ObjectInstance], Optional[str]]:
+        """Triangule UNE paire (gauche, droite). Renvoie (ObjectInstance, None) si
+        la position est valide (dans la scene + reproj sous le seuil), sinon
+        (None, raison_du_rejet). Logique IDENTIQUE a l'ancien bloc stereo unique :
+        triangulation -> reproj -> compensation biais -> bornes scene -> geometrie.
+        """
+        kL, kR = self.config.stereo_keys
+        try:
+            X = triangulate_stereo(det_L, det_R, f_L, f_R)
+        except Exception as e:
+            return None, f"triangulation exception: {e}"
+        if X is None:
+            return None, "triangulation impossible (None)"
+        # IMPORTANT : reproj_error est calcule sur X NON COMPENSE (coherence
+        # triangulation/pixels) ; la compensation biais est appliquee APRES
+        # validation, sur la position finale.
+        err_L = reproject_error(X, det_L, f_L)
+        err_R = reproject_error(X, det_R, f_R)
+        err = 0.5 * (err_L + err_R)
+        if self._bias_m is not None:
+            X = X - self._bias_m
+        ws_reason = self._workspace_reject(X)
+        pos_mm = X * 1000
+        if ws_reason is not None:
+            return None, (
+                f"stereo OK (reproj {err:.1f}px) MAIS rejet : {ws_reason} "
+                f"-- position ({pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f}) mm")
+        if err > self.config.max_reproj_error_px:
+            return None, (
+                f"stereo OK (pos {pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f} mm) "
+                f"MAIS reproj_err={err:.1f}px > seuil {self.config.max_reproj_error_px}px")
+        score = float(min(det_L.score, det_R.score) * np.exp(-err / 8.0))
+        # Geometrie enrichie : hauteur par sommet triangule, classe debout/couche,
+        # yaw du grand axe en repere base.
+        bbox3d, geo_meta = self._estimate_geometry(det_L, det_R, f_L, f_R, X)
+        return ObjectInstance(
+            label=label,
+            position_base_m=X,
+            source_detections=[det_L, det_R],
+            score=score,
+            bbox_3d_m=bbox3d,
+            meta={
+                "method": "stereo_triangulation",
+                "reproj_error_px": err,
+                "reproj_error_per_cam_px": {kL: err_L, kR: err_R},
+                **geo_meta,
+            },
+        ), None
 
     def _in_workspace(self, X: np.ndarray) -> bool:
         return self._workspace_reject(X) is None
