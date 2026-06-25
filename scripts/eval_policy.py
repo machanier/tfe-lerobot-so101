@@ -21,6 +21,9 @@ par config.il_cameras_flag().
 """
 
 import argparse
+import os
+import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -52,6 +55,19 @@ def main():
     parser.add_argument("--display", action="store_true",
                         help="Afficher les cameras via rerun (utile pour debug, mais ralentit la boucle de controle)")
     args = parser.parse_args()
+
+    # L'eval se ré-enregistre à chaque fois : on nettoie un eventuel dataset
+    # d'eval existant, sinon LeRobot refuse d'ecrire par-dessus (FileExistsError).
+    # Garde-fou : on ne supprime QUE si le nom commence par "eval" (jamais les demos).
+    hf_base = os.environ.get("HF_LEROBOT_HOME")
+    if hf_base:
+        ds_root = pathlib.Path(hf_base) / args.repo_id
+    else:
+        hf_home = os.environ.get("HF_HOME") or (pathlib.Path.home() / ".cache" / "huggingface")
+        ds_root = pathlib.Path(hf_home) / "lerobot" / args.repo_id
+    if ds_root.exists() and ds_root.name.startswith("eval"):
+        print(f"Nettoyage du dataset d'eval existant : {ds_root}")
+        shutil.rmtree(ds_root)
 
     follower_port, _ = pick_ports()
     if not follower_port:
