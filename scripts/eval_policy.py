@@ -54,6 +54,8 @@ def main():
                         help="Envoyer le dataset d'eval sur le Hub (defaut: local)")
     parser.add_argument("--display", action="store_true",
                         help="Afficher les cameras via rerun (utile pour debug, mais ralentit la boucle de controle)")
+    parser.add_argument("--episode-time", type=int, default=60,
+                        help="Duree max d'un essai en secondes (defaut: 60 ; augmente si la boucle MPS est lente)")
     args = parser.parse_args()
 
     # L'eval se ré-enregistre à chaque fois : on nettoie un eventuel dataset
@@ -84,6 +86,7 @@ def main():
         f"--dataset.repo_id={args.repo_id}",
         f"--dataset.single_task={args.task}",
         f"--dataset.num_episodes={args.episodes}",
+        f"--dataset.episode_time_s={args.episode_time}",
         f"--dataset.push_to_hub={'true' if args.push_to_hub else 'false'}",
         f"--display_data={'true' if args.display else 'false'}",
         f"--policy.path={args.policy_path}",
