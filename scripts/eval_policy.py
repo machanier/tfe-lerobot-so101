@@ -49,6 +49,8 @@ def main():
                         help="Repo id du dataset d'eval (prefixe 'eval_')")
     parser.add_argument("--push-to-hub", action="store_true",
                         help="Envoyer le dataset d'eval sur le Hub (defaut: local)")
+    parser.add_argument("--display", action="store_true",
+                        help="Afficher les cameras via rerun (utile pour debug, mais ralentit la boucle de controle)")
     args = parser.parse_args()
 
     follower_port, _ = pick_ports()
@@ -67,6 +69,7 @@ def main():
         f"--dataset.single_task={args.task}",
         f"--dataset.num_episodes={args.episodes}",
         f"--dataset.push_to_hub={'true' if args.push_to_hub else 'false'}",
+        f"--display_data={'true' if args.display else 'false'}",
         f"--policy.path={args.policy_path}",
     ]
 
