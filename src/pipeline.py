@@ -337,20 +337,17 @@ class PipelineConfig:
     # A la pose approach standard (8cm), l'objet apparait juste AU-DESSUS des
     # doigts (v/H~0.57) : son bord PROCHE est mordu par les doigts -> le centroide
     # detecte est tire vers le bord ARRIERE (cote cams fixes) -> la prise tombe
-    # sur ce bord. HAUTEUR D'OBSERVATION cam_2 = REFERENCE DE DETECTION top-down
-    # (Maxence 2026-06-24) : la capture cam_2 se fait a ~CETTE hauteur AU-DESSUS DE
-    # L'OBJET (12cm) en top-down. On RECULE (monte) la pince AVANT la capture pour
-    # que l'objet remonte vers le centre optique et S'ELOIGNE des doigts (qui
-    # occupent le bas du cadre) -> objet entier visible, centroide non biaise
-    # (verifie sim : a 12cm le blob fait encore ~1.3% du cadre > seuil 0.3%). Le
-    # recul applique = 12cm - hauteur d'approche NOMINALE (8cm) = +4cm, AJOUTE a la
-    # pose d'approche -> COMPORTEMENT STRICTEMENT IDENTIQUE a l'historique (recul
-    # CONSTANT ; en prise inclinee l'observation reste un peu sous 12cm car
-    # l'approche y est plus basse en Z, exactement comme avant). La DESCENTE reste
-    # monotone (observation -> approach corrige -> grasp), PAS de
-    # "descend/remonte/redescend". Reglable via --cam2-observe-height (mm, defaut
-    # 120 = 12cm top-down). Si le blob devient trop petit (objet loin/petit) le
-    # gating area_frac retombe proprement sur la stereo.
+    # sur ce bord. HAUTEUR D'OBSERVATION cam_2 = REFERENCE DE DETECTION (Maxence
+    # 2026-06-25) : la capture cam_2 se fait a CETTE hauteur AU-DESSUS DE LA
+    # POSITION STEREO de l'objet (12cm). On vise Z = Z_objet + 12cm DIRECTEMENT
+    # (plus aucun "8cm + 4cm") : l'objet remonte vers le centre optique et S'ELOIGNE
+    # des doigts (qui occupent le bas du cadre) -> objet entier visible, centroide
+    # non biaise (verifie sim : a 12cm le blob fait encore ~1.3% du cadre > seuil
+    # 0.3%). Puis raffinement, puis descente DIRECTE sur l'objet (qui passe par la
+    # pose d'approche : simple point de passage, PAS un arret de detection). La
+    # descente reste monotone, PAS de "descend/remonte/redescend". Reglable via
+    # --cam2-observe-height (mm, defaut 120 = 12cm). Si le blob devient trop petit
+    # (objet loin/petit) le gating area_frac retombe proprement sur la stereo.
     cam2_observe_height_m: float = 0.12
 
     # ---------- AFFICHAGE : throttle des captures pendant les trajectoires ----
@@ -1262,47 +1259,40 @@ class PickAndPlacePipeline:
             live_callback = make_live_callback(initial_dets=dets_by_cam)
 
             if self.config.closed_loop and not self.config.dry_run:
-                # --- RECUL d'observation cam_2 (Maxence 2026-06-22, ref 12cm 2026-06-24) ---
-                # On MONTE la pince AVANT la capture cam_2 pour degager l'objet des
-                # doigts (cf cam2_observe_height_m). Recul = 12cm (reference top-down)
-                # - hauteur d'approche NOMINALE (scalaire de la strategie, 8cm) = +4cm
-                # par defaut, AJOUTE a la pose d'approche -> STRICTEMENT identique a
-                # l'historique (recul constant). On N'utilise PAS la difference Z de la
-                # pose (= 8cm*cos(theta) en incline) qui changerait le recul. La
-                # capture se fait a cette hauteur ; la descente reste MONOTONE
-                # (observation -> approach corrige -> grasp), aucune remontee.
+                # --- OBSERVATION cam_2 = REFERENCE 12cm AU-DESSUS DE L'OBJET (Maxence) ---
+                # cam2_observe_height_m (12cm, reglable via --cam2-observe-height) = la
+                # hauteur d'observation/detection AU-DESSUS DE LA POSITION STEREO de
+                # l'objet. On monte la pince a cette hauteur AVANT la capture cam_2 : a
+                # 12cm l'objet est dans le champ et DEGAGE des doigts (qui occupent le
+                # bas du cadre) -> blob propre, centroide non biaise. Puis raffinement,
+                # puis descente DIRECTE sur l'objet (qui passe par la pose d'approche,
+                # simple point de passage, PAS un arret de detection). On vise donc
+                # Z = Z_objet + 12cm, DIRECTEMENT (aucun "8cm + 4cm").
                 r_phase1_target = r_app
-                nominal_approach_m = float(getattr(self._grasp_strategy,
-                                                   "approach_height_m", 0.08))
                 observe_height_m = float(self.config.cam2_observe_height_m)
-                observe_extra_m = max(0.0, observe_height_m - nominal_approach_m)
-                if observe_extra_m > 1e-4:
-                    T_observe = grasp_pose.T_base_gripper_approach.copy()
-                    T_observe[2, 3] += observe_extra_m
+                object_z_m = float(grasp_pose.meta.get(
+                    "object_center_z_m", grasp_pose.T_base_gripper_grasp[2, 3]))
+                if observe_height_m > 1e-4:
+                    T_observe = grasp_pose.T_base_gripper_approach.copy()  # XY + orient. approche
+                    T_observe[2, 3] = object_z_m + observe_height_m        # 12cm au-dessus objet
                     r_obs = self._ik.solve(T_observe, q_init=r_app.joint_angles_rad)
-                    # Gate = erreur de TRANSLATION sous le seuil approche (15mm),
-                    # PAS r_obs.converged. converged exige tol_residual=1mm (combine
-                    # translation + rotation) : sur ce bras 5-DDL une pose top-down a
-                    # ~5mm de residu d'ORIENTATION -> jamais "converged" -> le recul
-                    # etait TOUJOURS rejete (run orange 2026-06-23 "+40mm hors IK"
-                    # alors que app trans=5.5mm). Meme critere que l'approche
-                    # (ik_tol_approach_mm). Le residu d'orientation est sans
-                    # consequence ici : la geometrie ray-plan de cam_2 utilise la pose
-                    # REELLE des moteurs (FK), pas la cible IK -> auto-coherente.
+                    # Gate = erreur de TRANSLATION sous le seuil approche (15mm), PAS
+                    # r_obs.converged (qui exige ~1mm combine trans+rot -> jamais
+                    # atteint en 5-DDL -> recul toujours rejete a tort). La geometrie
+                    # ray-plan de cam_2 utilise la pose REELLE (FK), pas la cible IK.
                     if r_obs.translation_err_mm <= self.config.ik_tol_approach_mm:
                         r_phase1_target = r_obs
-                        print(f"   [recul cam_2] observation : recul "
-                              f"+{observe_extra_m*1000:.0f}mm sur l'approche "
-                              f"(ref {observe_height_m*1000:.0f}mm/objet en top-down ; "
-                              f"Z pince={T_observe[2,3]*1000:.0f}mm, "
+                        print(f"   [cam_2] observation/detection a "
+                              f"{observe_height_m*1000:.0f}mm au-dessus de l'objet "
+                              f"(Z pince={T_observe[2,3]*1000:.0f}mm, "
                               f"IK trans={r_obs.translation_err_mm:.1f}mm) "
                               f"pour eloigner l'objet des doigts dans l'image")
                     else:
-                        print(f"   [recul cam_2] pose d'observation (recul "
-                              f"+{observe_extra_m*1000:.0f}mm) hors portee "
-                              f"(IK trans={r_obs.translation_err_mm:.1f}mm > "
+                        print(f"   [cam_2] observation a "
+                              f"{observe_height_m*1000:.0f}mm au-dessus de l'objet "
+                              f"hors portee (IK trans={r_obs.translation_err_mm:.1f}mm > "
                               f"{self.config.ik_tol_approach_mm:.0f}mm) "
-                              f"-> capture a l'approche standard")
+                              f"-> capture a la pose d'approche")
                 # --- Phase 1 : trajectoire courant -> approach (ou observation) ---
                 print(">> Phase 1 : courant -> approach (boucle fermee Sprint 4)")
                 traj_phase1 = self._build_phase1_trajectory(
@@ -1795,10 +1785,9 @@ class PickAndPlacePipeline:
                     # hauteur de RECUL (vue degagee des doigts) -> on peut alors faire
                     # plus confiance a une grosse correction (plafond elargi).
                     retry_observe = False
-                    _nom_appr = float(getattr(self._grasp_strategy,
-                                              "approach_height_m", 0.08))
-                    observe_extra_m = max(0.0,
-                                          float(self.config.cam2_observe_height_m) - _nom_appr)
+                    observe_height_m = float(self.config.cam2_observe_height_m)
+                    object_z_m = float(grasp_pose.meta.get(
+                        "object_center_z_m", grasp_pose.T_base_gripper_grasp[2, 3]))
 
                     if failed_stage == "lift":
                         # Deja a retract, pince fermee sur rien : OUVRIR en
@@ -1817,9 +1806,9 @@ class PickAndPlacePipeline:
                         # replacer"). Fallback approche standard si le recul est hors IK.
                         rs_at_grasp = self._provider.read_live()
                         r_lift_target = r_app
-                        if observe_extra_m > 1e-4:
+                        if observe_height_m > 1e-4:
                             T_obs_r = grasp_pose.T_base_gripper_approach.copy()
-                            T_obs_r[2, 3] += observe_extra_m
+                            T_obs_r[2, 3] = object_z_m + observe_height_m
                             r_obs_r = self._ik.solve(
                                 T_obs_r, q_init=r_app.joint_angles_rad)
                             if (r_obs_r.translation_err_mm
