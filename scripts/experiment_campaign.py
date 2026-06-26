@@ -229,6 +229,59 @@ def save_results(results: list[dict], args, out_dir: Path) -> tuple[Path, Path]:
     return json_path, csv_path
 
 
+def append_to_xlsx(results: list[dict], args, xlsx_path=None) -> None:
+    """Ajoute les essais DIRECTEMENT dans l'onglet 'Donnees' du classeur de suivi.
+
+    Plus besoin de copier-coller le CSV : a la fin de chaque commande, les lignes
+    sont ecrites dans docs/campagne_suivi.xlsx et la Synthese se recalcule a
+    l'ouverture. Les colonnes manuelles (orientation, depose_boite, mode_echec,
+    notes) restent VIDES -> a remplir a la main.
+
+    Tolerant : si le classeur est absent / OUVERT dans Excel / openpyxl manquant,
+    on n'ecrit pas (le CSV reste la reference) et on l'explique. Ne plante jamais.
+    """
+    xlsx_path = Path(xlsx_path) if xlsx_path else (REPO / "docs" / "campagne_suivi.xlsx")
+    if not xlsx_path.exists():
+        print(f"   [xlsx] {xlsx_path.name} introuvable -> rien ajoute (le CSV suffit).")
+        return
+
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(xlsx_path)
+        if "Donnees" not in wb.sheetnames:
+            print("   [xlsx] onglet 'Donnees' absent -> rien ajoute (le CSV suffit).")
+            return
+        ws = wb["Donnees"]
+        target = getattr(args, "target", "")
+        detector = getattr(args, "detector", "")
+        for r in results:
+            last = r["attempts_log"][-1] if r.get("attempts_log") else {}
+            ws.append([
+                target, detector,
+                r.get("timestamp"), r.get("position"), r.get("trial"),
+                int(bool(r.get("success"))), r.get("n_attempts"),
+                _num(r.get("duration_s")),
+                _num(r.get("grasp_pose_error_mm")), _num(r.get("cam2_correction_mm")),
+                _num(last.get("gripper_pct")), _num(last.get("marge_pct")),
+                r.get("error") or "",
+                "", "", "", "",   # orientation, depose_boite, mode_echec, notes (manuel)
+            ])
+        wb.save(xlsx_path)
+        print(f"   [xlsx] {len(results)} essai(s) ajoute(s) dans {xlsx_path.name} "
+              f"(onglet Donnees) -> remplis les colonnes JAUNES a la main.")
+    except PermissionError:
+        print(f"   [xlsx] {xlsx_path.name} est OUVERT dans Excel -> ferme-le et "
+              f"relance, ou colle le CSV a la main. (Le CSV est deja sauve.)")
+    except Exception as e:
+        print(f"   [xlsx] non ecrit ({type(e).__name__}: {e}) -> utilise le CSV.")
+
+
 def main():
     p = argparse.ArgumentParser(
         description="Campagne experimentale pick-and-place (TFE chapitre 6).",
@@ -313,6 +366,7 @@ def main():
             print(f">> {len(results)} essais enregistres :")
             print(f"   {json_path}")
             print(f"   {csv_path}")
+            append_to_xlsx(results, args)
             print_aggregate_stats(results)
         else:
             print("Aucun resultat a sauvegarder.")
