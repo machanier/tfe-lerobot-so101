@@ -82,11 +82,13 @@ HF_USER = "maxence"
 IL_SCENE_CAM = "cam_1"     # vue globale  -> cle LeRobot "front"  (choix Maxence)
 IL_WRIST_CAM = "cam_2"     # vue poignet  -> cle LeRobot "wrist"
 
-# Resolution/fps dedies a l'IL : 640x480 (plus leger que le 1080p de la stereo).
-# ACT redimensionne les images de toute facon ; 640x480 = entrainement plus
-# rapide sur MPS, dataset plus petit, et 2 cameras tiennent sur le bus USB.
-IL_CAM_WIDTH = 640
-IL_CAM_HEIGHT = 480
+# Resolution/fps dedies a l'IL : 320x240 (basse-res).
+# Baisse de 640x480 -> 320x240 pour accelerer l'inference ACT a l'eval sur MPS
+# (~13 Hz en 640x480 etait trop lent vs 30 Hz d'entrainement -> grasp instable).
+# IMPORTANT : la resolution cameras a l'eval DOIT matcher celle du modele entraine.
+# Modele basse-res = dataset so101_orange_cube_lowres (320x240).
+IL_CAM_WIDTH = 320
+IL_CAM_HEIGHT = 240
 IL_CAM_FPS = 30
 
 # --- Dataset / tache ---
