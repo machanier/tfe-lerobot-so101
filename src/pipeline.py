@@ -350,6 +350,11 @@ class PipelineConfig:
     # (objet loin/petit) le gating area_frac retombe proprement sur la stereo.
     cam2_observe_height_m: float = 0.12
 
+    # Distance (m) jusqu'a laquelle un objet BAS est pris en TOP-DOWN ; au-dela ->
+    # diagonale 45 (cf preferred_pitch_deg / GRASP_ZONE_NEAR_M). Reglable via
+    # --zone-topdown (mm) pour mesurer la frontiere top-down/45 en campagne.
+    grasp_zone_topdown_m: float = 0.32
+
     # ---------- AFFICHAGE : throttle des captures pendant les trajectoires ----
     # Avec --display, on_step capturait les 3 cameras 1080p a CHAQUE pas de
     # trajectoire (~32/s sur 7s) -> SATURATION USB -> cam_2 (eye-in-hand, connecteur
@@ -752,7 +757,8 @@ class PickAndPlacePipeline:
             # Bornes de zone reglables dans grasp.py (GRASP_ZONE_*). Egalite ->
             # pitch le plus petit (poignet moins reoriente = plus sur).
             from src.planning.grasp import preferred_pitch_deg
-            pref = preferred_pitch_deg(target)
+            pref = preferred_pitch_deg(
+                target, near_m=self.config.grasp_zone_topdown_m)
             best = min(reachable_list,
                        key=lambda r: (abs(abs(r[0].meta["pitch_deg"]) - pref),
                                       abs(r[0].meta["pitch_deg"])))

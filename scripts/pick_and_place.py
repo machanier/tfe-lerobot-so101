@@ -171,6 +171,11 @@ def main():
                              "Defaut PipelineConfig=120. La descente reste monotone "
                              "(observation 12cm -> approche corrigee 8cm -> grasp). "
                              "Trop haut -> blob trop petit (gating -> stereo).")
+    parser.add_argument("--zone-topdown", type=float, default=None,
+                        help="Distance (mm) jusqu'a laquelle un objet BAS est pris en "
+                             "TOP-DOWN ; au-dela -> diagonale 45. Defaut 320 (=32cm). "
+                             "Regle la frontiere top-down/45 sans recompiler (utile pour "
+                             "mesurer le domaine en campagne).")
     parser.add_argument("--top-down", action="store_true",
                         help="Revient a la saisie VERTICALE PAR LE HAUT uniquement "
                              "(comportement de reference eprouve). Par defaut (sans "
@@ -298,6 +303,8 @@ def main():
         config.ik_tol_rot_deg = args.ik_tol_rot
     if args.max_top_down_height is not None:
         config.grasp_max_top_down_height_m = args.max_top_down_height
+    if args.zone_topdown is not None:
+        config.grasp_zone_topdown_m = args.zone_topdown / 1000.0
 
     pipeline = PickAndPlacePipeline(config)
     pipeline.run()

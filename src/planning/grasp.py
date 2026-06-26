@@ -918,52 +918,44 @@ class AdaptiveGrasp(GraspStrategy):
 
 
 # Zones d'utilisation des angles d'attaque, en METRES. REGLABLES.
-# POLITIQUE 2026-06-21, MAJ 2026-06-25 (Maxence) : le choix d'angle est pilote par
+# POLITIQUE 2026-06-21, MAJ 2026-06-26 (Maxence) : le choix d'angle est pilote par
 # la HAUTEUR DU SOMMET h_top (= z + H/2) ET la DISTANCE d = sqrt(x^2+y^2) :
-#                          proche (d<=33)   mi (33<d<38)   loin (d>=38)
-#   h_top < 12cm           top-down 0       45             45 ; FACE 90 si flanc (debout/H>=2cm)
-#   12cm <= h_top < 18cm   45               45             45
-#   h_top >= 18cm          90 (face)        90 (face)      90 (face)
-# Pourquoi :
-#  - Objet BAS proche -> top-down (le plus stable). Mi -> 45. LOIN (d>=lowfar_m) :
-#    le 45 attaque "devant/bas" et ferme a vide (essais cylindre debout loin
-#    2026-06-25) -> on prefere la FACE 90 SI l'objet a un FLANC vertical a serrer
-#    (debout, ou H>=flank_min_m). Un objet VRAIMENT plat (pas de flanc) reste en 45
-#    (un 90 glisserait : echec cube 44cm). cf re-introduction de la prise de face.
-#  - Objet HAUT : 45 pour les objets MOYENNEMENT hauts, la face 90 a partir de
-#    face_m (= hauteur ou une vraie face avant bat la diagonale ; A REVOIR par essais).
-GRASP_ZONE_NEAR_M = 0.33   # borne proche / mi (objets BAS : top-down jusqu'ici)
+#                          proche (d<=32)        au-dela (d>32)
+#   h_top < 12cm  (BAS)    top-down 0            45  (best-effort jusqu'au bord)
+#   12cm <= h_top < 18cm   45                    45
+#   h_top >= 18cm (HAUT)   90 (face)             90 (face)
+# Pourquoi (essais 2026-06-26) :
+#  - Objet BAS : top-down de pres (le plus stable), diagonale 45 au-dela. PLUS DE
+#    FACE 90 : elle n'etait jamais choisie que LOIN (bord d'atteinte), or c'est
+#    exactement la que le poignet/tete eye-in-hand BUTE contre la table (couple=1004
+#    mesure le 2026-06-26) -> l'objet est trop bas pour positionner la pince de face
+#    sans forcer/abimer les moteurs. Le 45 garde la tete plus haute et reste le
+#    meilleur pari longue portee. Au-dela de l'atteinte du 45 = LIMITE DE DOMAINE
+#    assumee (cf memoire), pas un cas a forcer.
+#  - Objet HAUT (h_top >= face_m) : la FACE 90 redevient legitime (le sommet donne
+#    la garde, la tete ne bute plus). Aucun objet de Maxence n'est aussi haut -> en
+#    pratique le 90 dort, c'est VOLONTAIRE.
+GRASP_ZONE_NEAR_M = 0.32   # objet BAS pris en TOP-DOWN jusqu'ici ; au-dela -> 45. REGLABLE (--zone-topdown).
 GRASP_ZONE_FAR_M = 0.45    # (conserve pour compat ; n'influe plus le choix d'angle)
-GRASP_ZONE_TALL_M = 0.12   # sommet > : objet "HAUT" (au-dela, plus de top-down)
-GRASP_ZONE_FACE_M = 0.18   # sommet >= : prefere la FACE 90 ; entre TALL et FACE -> 45.
-                           # SEUIL PROVISOIRE -- A REVOIR (Maxence 2026-06-21).
-GRASP_ZONE_LOWFAR_M = 0.38   # objet BAS au-dela de cette distance : le 45 attaque trop
-                             # "devant/bas" et ferme a vide -> FACE 90 si l'objet a un
-                             # flanc vertical (debout, ou H >= flank_min). Re-introduit la
-                             # prise de face pour objets bas+loin (Maxence 2026-06-25).
-                             # SEUIL A REVOIR par essais.
-GRASP_ZONE_FLANK_MIN_M = 0.020  # hauteur min d'un flanc verticalement serrable ; sous ce
-                                # seuil l'objet est "plat" (un 90 glisserait) -> 45.
+GRASP_ZONE_TALL_M = 0.12   # sommet < : objet "BAS" (top-down/45) ; >= : "moyen/haut"
+GRASP_ZONE_FACE_M = 0.18   # sommet >= : objet HAUT -> FACE 90 (garde suffisante) ; entre TALL et FACE -> 45.
 
 
 def preferred_pitch_deg(obj: ObjectInstance,
                         near_m: float = GRASP_ZONE_NEAR_M,
                         far_m: float = GRASP_ZONE_FAR_M,
                         tall_m: float = GRASP_ZONE_TALL_M,
-                        face_m: float = GRASP_ZONE_FACE_M,
-                        lowfar_m: float = GRASP_ZONE_LOWFAR_M,
-                        flank_min_m: float = GRASP_ZONE_FLANK_MIN_M) -> float:
+                        face_m: float = GRASP_ZONE_FACE_M) -> float:
     """Angle d'attaque PREFERE, pilote par la HAUTEUR DU SOMMET (h_top = z + H/2)
-    et la DISTANCE.
+    et la DISTANCE d = sqrt(x^2+y^2).
 
-    POLITIQUE 2026-06-21, MAJ 2026-06-25 (Maxence, cf bloc GRASP_ZONE_* ci-dessus) :
-      - h_top < tall_m (12cm) : objet BAS. top-down (proche) ; 45 (mi) ; et LOIN
-        (d>=lowfar_m) -> FACE 90 si l'objet a un flanc a serrer (debout, ou
-        H>=flank_min_m), sinon 45 (un objet plat n'a pas de flanc -> 90 glisse).
-        La face 90 LOIN est re-introduite (cylindre debout loin : le 45 y attaque
-        "devant/bas" et ferme a vide).
+    POLITIQUE 2026-06-21, MAJ 2026-06-26 (Maxence, cf bloc GRASP_ZONE_* ci-dessus) :
+      - h_top < tall_m (12cm) : objet BAS -> top-down si d<=near_m, sinon 45.
+        JAMAIS 90 : la face 90 ne se declenchait que LOIN (bord d'atteinte), or la
+        tete eye-in-hand y bute contre la table et force les moteurs (essais
+        2026-06-26). Au-dela de l'atteinte du 45 = limite de domaine assumee.
       - tall_m <= h_top < face_m : objet MOYENNEMENT haut -> diagonale 45.
-      - h_top >= face_m (18cm, A REVOIR) : objet HAUT -> face 90 (vrai flanc).
+      - h_top >= face_m (18cm) : objet HAUT -> face 90 (le sommet donne la garde).
 
     Ce n'est PAS un verrou : le pipeline filtre ensuite par atteignabilite IK et
     retient l'angle atteignable LE PLUS PROCHE de ce prefere (si le prefere n'est
@@ -975,24 +967,17 @@ def preferred_pitch_deg(obj: ObjectInstance,
     bbox = obj.bbox_3d_m
     H = float(bbox[2]) if bbox is not None else 0.0
     h_top = z + 0.5 * H
-    debout = (obj.meta or {}).get("pose_class") == "debout"
-    # --- objet BAS (sommet < 12cm) ---
-    # Top-down de pres (le plus stable). Mi -> 45. LOIN (d>=lowfar_m) : le 45
-    # attaque "devant/bas" et ferme a vide -> FACE 90 si l'objet a un FLANC
-    # vertical a serrer (debout, ou H>=flank_min_m) -> la 90 saisit le flanc
-    # (re-introduction prise de face, Maxence 2026-06-25). Objet VRAIMENT plat
-    # (pas de flanc) -> 45 (un 90 glisserait, echec cube 44cm). Pas un verrou : si
-    # la 90 n'est pas atteignable, le pipeline retombe sur le voisin (45 puis 0).
+    # --- objet BAS (sommet < 12cm) : top-down de pres, 45 au-dela ---
+    # Pas de 90 : elle n'arriverait que LOIN (bord d'atteinte) ou la tete
+    # eye-in-hand bute contre la table et force les moteurs (couple=1004 mesure le
+    # 2026-06-26). Le 45 garde la tete plus haute ; au-dela de son atteinte =
+    # limite de domaine assumee (cf memoire). far_m conserve pour compat.
     if h_top < tall_m:
         if d <= near_m:
-            return 0.0                                   # bas + proche -> top-down
-        if d >= lowfar_m and (debout or H >= flank_min_m):
-            return 90.0                                  # bas + loin + flanc -> FACE
-        return 45.0                                      # bas + mi (ou plat loin) -> 45
-    # --- objet HAUT : 45 (moyennement haut) puis 90 au-dela du seuil face_m ---
-    # top-down exclu (collision pince par le haut). Le 45 prend les objets
-    # "moyennement hauts et proches" ; la face 90 ne devient preferable qu'a
-    # partir de face_m (SEUIL A REVOIR par essais).
+            return 0.0    # bas + proche -> top-down (le plus stable)
+        return 45.0       # bas + au-dela -> diagonale 45 (best-effort longue portee)
+    # --- objet MOYEN/HAUT : 45 puis FACE 90 au-dela de face_m (sommet haut = garde
+    # suffisante, la tete ne bute plus). top-down exclu (collision pince par le haut).
     if h_top >= face_m:
         return 90.0
     return 45.0
@@ -1131,15 +1116,24 @@ if __name__ == "__main__":
     assert abs(td.gripper_open_pct - ad.gripper_open_pct) < 1e-6
     print(f"  [OK] non-regression : AdaptiveGrasp(theta=0) identique a TopDownGrasp")
 
-    # 9. Objet BAS et plat -> seul le top-down passe (degagement table rejette
-    #    diagonale et frontal)
+    # 9. Objet TRES PLAT (centre de prise sous le degagement plaque 7mm) -> le
+    #    filtre table REJETTE la prise near-horizontale 90 (elle skimmerait la
+    #    plaque), le top-down reste. Le 45 n'est PAS filtre (il descend en
+    #    diagonale, pas de skim plaque -- politique 2026-06-20).
+    #    MAJ 2026-06-26 : l'ancien attendu [0.0] datait d'avant ce choix (le 45
+    #    n'est plus jamais filtre) ET d'un seuil de degagement plus haut ; un objet
+    #    de 3cm (centre 15mm) passe desormais le seuil 7mm -> les 3 angles sortent.
+    #    On teste donc le VRAI garde-fou : un objet sous 7mm de centre rejette le 90.
     obj_flat = ObjectInstance(label="flat",
-                              position_base_m=np.array([0.20, 0.0, 0.015]),
-                              bbox_3d_m=(0.05, 0.05, 0.03))
+                              position_base_m=np.array([0.20, 0.0, 0.005]),
+                              bbox_3d_m=(0.05, 0.05, 0.01))   # centre de prise = 5mm < 7mm
     cands_flat = AdaptiveGrasp().plan_candidates(obj_flat)
     pitches_flat = [c.meta["pitch_deg"] for c in cands_flat]
-    assert pitches_flat == [0.0], f"objet plat : attendu [0], recu {pitches_flat}"
-    print(f"  [OK] objet plat -> seul top-down faisable (degagement table)")
+    assert 90.0 not in pitches_flat, \
+        f"objet tres plat : la prise 90 (skim plaque) aurait du etre rejetee, recu {pitches_flat}"
+    assert 0.0 in pitches_flat, \
+        f"objet tres plat : le top-down doit rester faisable, recu {pitches_flat}"
+    print(f"  [OK] objet tres plat -> 90 rejete (degagement plaque), candidats {pitches_flat}")
 
     # 10. Objet HAUT (18 cm) -> top-down REFUSE (trop haut), inclines proposes
     obj_tall = ObjectInstance(label="tall",
