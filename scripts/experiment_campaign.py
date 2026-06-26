@@ -77,6 +77,41 @@ def make_pipeline(args) -> PickAndPlacePipeline:
     return PickAndPlacePipeline(cfg)
 
 
+def _ask_manual_observations(record: dict, args) -> None:
+    """Demande les observations MANUELLES juste apres l'essai (a chaud).
+
+    Evite le papier ET la ressaisie : les reponses partent direct dans le CSV +
+    l'Excel. ENTREE = valeur par defaut (rapide pour le cas courant). L'orientation
+    se reporte d'un essai a l'autre (on ne tape que quand elle change). Le mode
+    d'echec n'est demande que si l'essai a echoue. Ctrl+C ici = saute les questions
+    (pour STOPPER la campagne, fais Ctrl+C a la demande de placement suivante).
+    """
+    success = bool(record.get("success"))
+    try:
+        last_or = getattr(args, "_last_orientation", "") or ""
+        prompt = (f"   orientation ? [ENTREE={last_or}] : " if last_or
+                  else "   orientation ? [ex: debout/couche/a plat, ENTREE=rien] : ")
+        o = input(prompt).strip()
+        orientation = o if o else last_or
+        args._last_orientation = orientation
+        record["orientation"] = orientation
+
+        auto = "oui" if success else "non"
+        d = input(f"   depose dans la boite ? [ENTREE={auto}, ou o/n] : ").strip().lower()
+        record["depose_boite"] = ("oui" if d in ("o", "oui", "y")
+                                  else "non" if d in ("n", "non") else auto)
+
+        if not success or record["depose_boite"] == "non":
+            m = input("   mode d'echec ? [E1 E2 E3 E4 E5 E6, ENTREE=rien] : ").strip().upper()
+            record["mode_echec"] = m if m in {"E1", "E2", "E3", "E4", "E5", "E6"} else ""
+        else:
+            record["mode_echec"] = ""
+
+        record["notes"] = input("   note ? [ENTREE=rien] : ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("   (questions sautees)")
+
+
 def run_trial(args, position_name: str, trial_idx: int) -> dict:
     """Execute UN essai et renvoie un dict avec les metriques."""
     print()
@@ -101,6 +136,10 @@ def run_trial(args, position_name: str, trial_idx: int) -> dict:
         "duration_s": None,
         "grasp_pose_error_mm": None,   # residu IK prise retenue (erreur de pose atteinte)
         "cam2_correction_mm": None,    # amplitude correction cam_2 (precision perception)
+        "orientation": None,           # MANUEL (demande a chaud)
+        "depose_boite": None,          # MANUEL
+        "mode_echec": None,            # MANUEL
+        "notes": None,                 # MANUEL
         "error": None,
     }
     try:
@@ -129,6 +168,8 @@ def run_trial(args, position_name: str, trial_idx: int) -> dict:
     n = record["n_attempts"] or 0
     print(f"    >>> {position_name} essai {trial_idx} : {tag} "
           f"en {n} tentative(s), {record['duration_s']:.1f}s")
+    if not args.no_prompt:
+        _ask_manual_observations(record, args)
     return record
 
 
@@ -224,7 +265,8 @@ def save_results(results: list[dict], args, out_dir: Path) -> tuple[Path, Path]:
                 f"{last.get('gripper_pct', ''):.1f}" if last.get("gripper_pct") is not None else "",
                 f"{last.get('marge_pct', ''):+.1f}" if last.get("marge_pct") is not None else "",
                 r.get("error") or "",
-                "", "", "", "",   # orientation, depose_boite, mode_echec, notes (manuel)
+                r.get("orientation") or "", r.get("depose_boite") or "",
+                r.get("mode_echec") or "", r.get("notes") or "",
             ])
     return json_path, csv_path
 
@@ -270,7 +312,8 @@ def append_to_xlsx(results: list[dict], args, xlsx_path=None) -> None:
                 _num(r.get("grasp_pose_error_mm")), _num(r.get("cam2_correction_mm")),
                 _num(last.get("gripper_pct")), _num(last.get("marge_pct")),
                 r.get("error") or "",
-                "", "", "", "",   # orientation, depose_boite, mode_echec, notes (manuel)
+                r.get("orientation") or "", r.get("depose_boite") or "",
+                r.get("mode_echec") or "", r.get("notes") or "",
             ])
         wb.save(xlsx_path)
         print(f"   [xlsx] {len(results)} essai(s) ajoute(s) dans {xlsx_path.name} "
