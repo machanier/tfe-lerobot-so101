@@ -99,6 +99,8 @@ def run_trial(args, position_name: str, trial_idx: int) -> dict:
         "n_attempts": None,
         "attempts_log": [],
         "duration_s": None,
+        "grasp_pose_error_mm": None,   # residu IK prise retenue (erreur de pose atteinte)
+        "cam2_correction_mm": None,    # amplitude correction cam_2 (precision perception)
         "error": None,
     }
     try:
@@ -107,6 +109,10 @@ def run_trial(args, position_name: str, trial_idx: int) -> dict:
         record["success"] = bool(getattr(pipeline, "_grasp_final_success", False))
         record["n_attempts"] = int(getattr(pipeline, "_grasp_total_attempts", 0))
         record["attempts_log"] = list(getattr(pipeline, "_grasp_attempts_log", []))
+        # Metriques de precision (Y-free, internes) : None si jamais atteintes
+        # (ex. echec perception avant planif / pas de correction cam_2).
+        record["grasp_pose_error_mm"] = getattr(pipeline, "_grasp_pose_error_mm", None)
+        record["cam2_correction_mm"] = getattr(pipeline, "_cam2_correction_mm", None)
     except KeyboardInterrupt:
         record["error"] = "interrupted"
         record["success"] = False
@@ -192,10 +198,15 @@ def save_results(results: list[dict], args, out_dir: Path) -> tuple[Path, Path]:
         writer = csv.writer(f)
         writer.writerow(["timestamp", "position", "trial", "success",
                          "n_attempts", "duration_s",
+                         "grasp_pose_error_mm", "cam2_correction_mm",
                          "last_gripper_pct", "last_margin_pct",
-                         "error"])
+                         "error",
+                         # colonnes MANUELLES (a remplir a la main dans Excel) :
+                         "depose_boite", "mode_echec", "notes"])
         for r in results:
             last = r["attempts_log"][-1] if r.get("attempts_log") else {}
+            gpe = r.get("grasp_pose_error_mm")
+            c2c = r.get("cam2_correction_mm")
             writer.writerow([
                 r.get("timestamp"),
                 r.get("position"),
@@ -203,9 +214,12 @@ def save_results(results: list[dict], args, out_dir: Path) -> tuple[Path, Path]:
                 int(bool(r.get("success"))),
                 r.get("n_attempts"),
                 f"{r.get('duration_s') or 0:.2f}",
+                f"{gpe:.2f}" if gpe is not None else "",
+                f"{c2c:.2f}" if c2c is not None else "",
                 f"{last.get('gripper_pct', ''):.1f}" if last.get("gripper_pct") is not None else "",
                 f"{last.get('marge_pct', ''):+.1f}" if last.get("marge_pct") is not None else "",
                 r.get("error") or "",
+                "", "", "",   # depose_boite, mode_echec, notes (manuel)
             ])
     return json_path, csv_path
 

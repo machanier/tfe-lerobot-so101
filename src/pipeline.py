@@ -1108,6 +1108,12 @@ class PickAndPlacePipeline:
                 print("!! Aucune prise faisable (objet trop haut / hors d'atteinte ?). "
                       "Annule.")
                 return
+            # Instrumentation campagne : residu IK de la prise RETENUE = "erreur de
+            # pose atteinte" (planifiee) = ecart entre la pose de prise demandee et
+            # ce que le bras 5-DDL peut realiser. INTERNE (pas de regle, pas de Y).
+            # Lue par experiment_campaign pour le CSV ; None si jamais atteint.
+            self._grasp_pose_error_mm = float(r_grp.translation_err_mm)
+            self._grasp_pose_error_rot_deg = float(r_grp.rotation_err_deg)
             self._log_wrist("IK initiale", q_current, r_grp)
             # IK pour la pose drop_above et drop_release : on utilise l'IK
             # specialise self._ik_drop qui a un poids rotation reduit (0.01).
@@ -1375,6 +1381,11 @@ class PickAndPlacePipeline:
                           "Suspect, on NE corrige PAS (peut etre fausse detection).")
                 else:
                     apply_correction_to_grasp_pose(grasp_pose, refinement.delta_base_m)
+                    # Instrumentation campagne : amplitude de la correction cam_2
+                    # appliquee = ecart entre l'estimation stereo et la position
+                    # raffinee par cam_2 (precision PERCEPTION, Y-free). None si pas
+                    # de correction (cam_2 absente / blob trop petit / hors seuil).
+                    self._cam2_correction_mm = float(refinement.delta_norm_mm)
                     print(f"   Correction position appliquee "
                           f"(norme {refinement.delta_norm_mm:.1f} mm, "
                           f"blob {100*refinement.area_frac:.1f}% cadre)")
