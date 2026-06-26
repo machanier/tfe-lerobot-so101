@@ -196,18 +196,23 @@ def save_results(results: list[dict], args, out_dir: Path) -> tuple[Path, Path]:
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp", "position", "trial", "success",
+        target = getattr(args, "target", "")
+        detector = getattr(args, "detector", "")
+        writer.writerow(["objet", "detecteur",
+                         "timestamp", "position", "trial", "success",
                          "n_attempts", "duration_s",
                          "grasp_pose_error_mm", "cam2_correction_mm",
                          "last_gripper_pct", "last_margin_pct",
                          "error",
                          # colonnes MANUELLES (a remplir a la main dans Excel) :
-                         "depose_boite", "mode_echec", "notes"])
+                         "orientation", "depose_boite", "mode_echec", "notes"])
         for r in results:
             last = r["attempts_log"][-1] if r.get("attempts_log") else {}
             gpe = r.get("grasp_pose_error_mm")
             c2c = r.get("cam2_correction_mm")
             writer.writerow([
+                target,
+                detector,
                 r.get("timestamp"),
                 r.get("position"),
                 r.get("trial"),
@@ -219,7 +224,7 @@ def save_results(results: list[dict], args, out_dir: Path) -> tuple[Path, Path]:
                 f"{last.get('gripper_pct', ''):.1f}" if last.get("gripper_pct") is not None else "",
                 f"{last.get('marge_pct', ''):+.1f}" if last.get("marge_pct") is not None else "",
                 r.get("error") or "",
-                "", "", "",   # depose_boite, mode_echec, notes (manuel)
+                "", "", "", "",   # orientation, depose_boite, mode_echec, notes (manuel)
             ])
     return json_path, csv_path
 
