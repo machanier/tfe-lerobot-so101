@@ -435,11 +435,12 @@ class PipelineConfig:
     # ~3mm de marge au sol). A remonter si le bas des doigts TPU touche la table.
     grasp_side_min_height_m: Optional[float] = 0.003
     # Roll (deg) applique aux prises INCLINEES autour de l'axe d'approche, pour la
-    # convention pince. None = reutilise grasp_yaw_offset_deg (90, mesure en
-    # TOP-DOWN). ⚠️ Le SIGNE n'a PAS ete valide en incline -> si au 1er essai les
-    # machoires ferment de travers, passer une autre valeur via --tilt-roll-offset
-    # (ex: -90, 0) sans recompiler.
-    grasp_tilt_roll_deg: Optional[float] = None
+    # convention pince. VALIDE sur robot le 2026-06-27 (Maxence) : 45 aligne les
+    # machoires en travers du petit cote ; le defaut 90 fermait de TRAVERS/diagonale
+    # (0 et -90 testes aussi). N'affecte QUE les prises inclinees (theta!=0) : le
+    # top-down delegue a TopDownGrasp AVANT ce roll, donc proche/mi inchanges.
+    # Toujours surchargeable via --tilt-roll-offset.
+    grasp_tilt_roll_deg: Optional[float] = 45.0
     # Hauteur d'objet (m) au-dela de laquelle le candidat TOP-DOWN est refuse
     # (collision pince/objet par le haut). None = defaut strategie (0.12 = 12cm).
     # En adaptatif, au-dela l'incline (45/90) prend le relais. Reglable via
