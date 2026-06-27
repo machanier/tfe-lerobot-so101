@@ -745,6 +745,29 @@ class PickAndPlacePipeline:
                   f"[{verdict}]")
             results.append((gp, r_app, r_grp, r_ret, reachable))
 
+        # COHERENCE POLITIQUE (2026-06-26) : pour un objet BAS (sommet < tall_m, 12cm)
+        # la prise de FACE 90 est EXCLUE meme si c'est le SEUL angle atteignable -> la
+        # tete eye-in-hand bute contre la table (couple=1004 mesure). Deja retiree de
+        # la PREFERENCE (preferred_pitch_deg) ; on la retire aussi ici de la SELECTION
+        # ET du repli. Si plus rien n'est faisable -> on decline proprement (objet bas
+        # + loin = hors domaine fiable). Le 90 reste autorise pour les objets HAUTS.
+        from src.planning.grasp import GRASP_ZONE_TALL_M
+        _bb = target.bbox_3d_m
+        _Hm = float(_bb[2]) if _bb is not None else 0.0
+        _h_top = float(target.position_base_m[2]) + 0.5 * _Hm
+        if _h_top < GRASP_ZONE_TALL_M:
+            _n_before = len(results)
+            results = [r for r in results
+                       if abs(r[0].meta.get("pitch_deg", 0.0)) < 67.5]
+            if len(results) < _n_before:
+                print(f"   [politique] objet BAS (sommet {_h_top*100:.0f}cm < "
+                      f"{GRASP_ZONE_TALL_M*100:.0f}cm) -> prise de face 90 exclue "
+                      f"(la tete buterait au sol).")
+            if not results:
+                print("!! Objet BAS : seule la prise de face 90 etait faisable, exclue "
+                      "(tete au sol) -> hors domaine fiable, on N'EXECUTE PAS.")
+                return None, None, None, None
+
         reachable_list = [r for r in results if r[4]]
         if reachable_list:
             # CHOIX = parmi les angles ATTEIGNABLES (IK), celui le plus proche de
