@@ -223,12 +223,45 @@ class MultiCamera:
             ok = cap.grab() and cap.retrieve()[0]
             if not ok:
                 warned.append(k)
+        # RE-OUVERTURE des cameras encore KO apres warmup. L'init de la 3e camera
+        # echoue par moments sur macOS (frequent quand la campagne re-ouvre les
+        # cameras a CHAQUE essai). Un cap MORT ne revient pas en re-grabbant -> on le
+        # FERME et le RE-OUVRE (jusqu'a 3x). Defensif : n'agit QUE sur les cameras
+        # deja en echec -> ne change rien au chemin normal (warned vide = no-op).
+        for k in list(warned):
+            for retry in range(3):
+                try:
+                    self._caps[k].release()
+                except Exception:
+                    pass
+                time.sleep(0.4)
+                cap = cv2.VideoCapture(CAMERAS[k]["index"])
+                cap.set(cv2.CAP_PROP_FOURCC, MJPG)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAMERAS[k]["width"]))
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAMERAS[k]["height"]))
+                cap.set(cv2.CAP_PROP_FPS, float(CAMERAS[k]["fps"]))
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
+                self._caps[k] = cap
+                ok = False
+                for _ in range(15):
+                    if cap.grab() and cap.retrieve()[0]:
+                        ok = True
+                        break
+                    time.sleep(0.05)
+                if ok:
+                    warned.remove(k)
+                    print(f"[camera_io] {k} RECUPEREE apres re-ouverture "
+                          f"(essai {retry + 1}/3).", file=sys.stderr)
+                    break
         if warned:
-            print(f"[camera_io] AVERTISSEMENT : apres warmup, {warned} n'a pas pu fournir "
-                  "de frame valide. Causes possibles :", file=sys.stderr)
-            print("  - bande passante USB saturee (debranche les peripheriques USB inutiles)",
-                  file=sys.stderr)
-            print("  - autre process utilise la camera (Photo Booth, Zoom, etc.)",
+            print(f"[camera_io] AVERTISSEMENT : {warned} KO meme apres re-ouverture. "
+                  "Causes probables :", file=sys.stderr)
+            print("  - hub USB de cette camera douteux -> essaie la camera EN DIRECT "
+                  "sur le Mac (sans hub)", file=sys.stderr)
+            print("  - autre process utilise la camera (Photo Booth, Zoom, FaceTime)",
                   file=sys.stderr)
             print("  - autorisations macOS (Reglages > Confidentialite > Camera)",
                   file=sys.stderr)

@@ -39,21 +39,21 @@ CAMERAS = {
         "role": "stereo_left",
         "width": 1920,
         "height": 1080,
-        "fps": 30,
+        "fps": 15,           # baisse 30->15 : moins de bande passante USB (anti-decrochage cam_2)
     },
     "cam_1": {
         "index": 1,           # A VERIFIER apres branchement
         "role": "stereo_right",
         "width": 1920,
         "height": 1080,
-        "fps": 30,
+        "fps": 15,           # baisse 30->15 : moins de bande passante USB (anti-decrochage cam_2)
     },
     "cam_2": {
         "index": 2,           # A VERIFIER apres branchement
         "role": "eye_in_hand",
         "width": 1920,
         "height": 1080,
-        "fps": 30,
+        "fps": 10,           # cam_2 = la plus exposee au decrochage : 30->10 (eye-in-hand, snapshots a la demande, 30fps inutile)
     },
 }
 
