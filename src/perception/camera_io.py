@@ -176,11 +176,18 @@ class MultiCamera:
         """
         if self._opened:
             return
+        import time
         # MJPG fourcc = compression motion-JPEG dans la camera.
         # Voir https://docs.opencv.org/4.x/dd/d43/tutorial_py_video_display.html
         MJPG = cv2.VideoWriter_fourcc(*'MJPG')
-        for k in self.cam_keys:
+        for i, k in enumerate(self.cam_keys):
             cfg = CAMERAS[k]
+            # ESPACE les ouvertures : sur macOS, ouvrir 3 cameras coup sur coup fait
+            # rater l'init de la 3e (cam_2). Une pause de 0.4s entre chaque open laisse
+            # AVFoundation allouer -> init bien plus fiable. (On NE fait PAS de
+            # release+reouverture, qui peut BLOQUER le process sur macOS.)
+            if i > 0:
+                time.sleep(0.4)
             cap = cv2.VideoCapture(cfg["index"])
             if not cap.isOpened():
                 # Cleanup partiel pour ne pas fuir les peripheriques
@@ -204,11 +211,10 @@ class MultiCamera:
             self._intrinsics[k] = load_intrinsics(k, self.configs_dir)
             self._handeye[k] = load_handeye(k, self.configs_dir)
 
-        # WARMUP : tente de stabiliser USB + autoexposure.
-        # Sur macOS avec 3 cameras 1080p, cam_2 (la derniere ouverte) echoue
-        # frequemment. On itere jusqu'a 20 fois en mesurant le taux de reussite.
-        import time
-        for attempt in range(20):
+        # WARMUP : tente de stabiliser USB + autoexposure. Les opens ESPACES
+        # ci-dessus ont deja fiabilise l'init de la 3e camera ; ici on grab juste
+        # quelques frames. AUCUNE release/reouverture (qui peut BLOQUER sur macOS).
+        for attempt in range(30):
             all_ok = True
             for k, cap in self._caps.items():
                 if not cap.grab():
@@ -216,49 +222,15 @@ class MultiCamera:
             if all_ok and attempt >= 4:
                 break  # 5 grabs reussis d'affilee : OK
             time.sleep(0.05)
-        # Diagnostic final : tente un grab/retrieve par camera pour ouvrir les
-        # boucles correctement et detecter celles encore en erreur.
+        # Diagnostic final : un grab/retrieve par camera pour detecter celles KO.
         warned = []
         for k, cap in self._caps.items():
             ok = cap.grab() and cap.retrieve()[0]
             if not ok:
                 warned.append(k)
-        # RE-OUVERTURE des cameras encore KO apres warmup. L'init de la 3e camera
-        # echoue par moments sur macOS (frequent quand la campagne re-ouvre les
-        # cameras a CHAQUE essai). Un cap MORT ne revient pas en re-grabbant -> on le
-        # FERME et le RE-OUVRE (jusqu'a 3x). Defensif : n'agit QUE sur les cameras
-        # deja en echec -> ne change rien au chemin normal (warned vide = no-op).
-        for k in list(warned):
-            for retry in range(3):
-                try:
-                    self._caps[k].release()
-                except Exception:
-                    pass
-                time.sleep(0.4)
-                cap = cv2.VideoCapture(CAMERAS[k]["index"])
-                cap.set(cv2.CAP_PROP_FOURCC, MJPG)
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAMERAS[k]["width"]))
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAMERAS[k]["height"]))
-                cap.set(cv2.CAP_PROP_FPS, float(CAMERAS[k]["fps"]))
-                try:
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                except Exception:
-                    pass
-                self._caps[k] = cap
-                ok = False
-                for _ in range(15):
-                    if cap.grab() and cap.retrieve()[0]:
-                        ok = True
-                        break
-                    time.sleep(0.05)
-                if ok:
-                    warned.remove(k)
-                    print(f"[camera_io] {k} RECUPEREE apres re-ouverture "
-                          f"(essai {retry + 1}/3).", file=sys.stderr)
-                    break
         if warned:
-            print(f"[camera_io] AVERTISSEMENT : {warned} KO meme apres re-ouverture. "
-                  "Causes probables :", file=sys.stderr)
+            print(f"[camera_io] AVERTISSEMENT : apres warmup, {warned} n'a pas pu "
+                  "fournir de frame valide. Causes probables :", file=sys.stderr)
             print("  - hub USB de cette camera douteux -> essaie la camera EN DIRECT "
                   "sur le Mac (sans hub)", file=sys.stderr)
             print("  - autre process utilise la camera (Photo Booth, Zoom, FaceTime)",
