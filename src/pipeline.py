@@ -841,8 +841,16 @@ class PickAndPlacePipeline:
                 load_handeye("cam_2")["transform"], dtype=float)
         return self._t_gripper_cam2_cache
 
-    def _cam2_image_left_base(self, robot_state):
+    def _cam2_image_left_base(self, T_base_gripper):
         """Direction "GAUCHE DANS L'IMAGE cam_2" en repere base, horizontale.
+
+        ⚠️ Calcule depuis l'orientation du GRASP FINAL (T_base_gripper = pose de
+        prise APRES toute reorientation cam_2), PAS la pose d'observation : cam_2 est
+        rigide a la pince -> "gauche image" est une direction FIXE dans le repere
+        pince ; l'offset doit donc utiliser l'orientation du poignet A LA PRISE pour
+        caler le doigt FIXE au bon cote au moment OU les machoires ferment. Sinon, si
+        le wrist tourne entre l'observation et la prise (objets allonges -> cam_2
+        reoriente), l'offset pousse l'objet en BORD de pince (bug 2026-06-28, Maxence).
 
         Maxence (2026-06-23) : le decalage de degagement du doigt fixe se definit
         PAR RAPPORT AU SNAPSHOT cam_2 (l'avis propre de cam_2 sur l'objet), PAS en
@@ -857,7 +865,7 @@ class PickAndPlacePipeline:
         decalage reste CONSTANT du point de vue de la camera. Signe : +lat_mm =
         vers la gauche image ; passer une valeur NEGATIVE inverse le cote.
         """
-        R_base_cam2 = (np.asarray(robot_state.T_base_gripper, float)[:3, :3]
+        R_base_cam2 = (np.asarray(T_base_gripper, float)[:3, :3]
                        @ self._T_gripper_cam2[:3, :3])
         img_left = R_base_cam2 @ np.array([-1.0, 0.0, 0.0])  # -X cam = gauche image
         img_left[2] = 0.0                                    # projette sur la table
@@ -866,8 +874,12 @@ class PickAndPlacePipeline:
             return np.zeros(3)
         return img_left / n
 
-    def _cam2_image_down_base(self, robot_state):
+    def _cam2_image_down_base(self, T_base_gripper):
         """Direction "VERS LE BAS DE L'IMAGE cam_2" en repere base, horizontale.
+
+        ⚠️ Comme _cam2_image_left_base : calcule depuis l'orientation du GRASP FINAL
+        (T_base_gripper), pas la pose d'observation -> coherent avec le wrist a la
+        prise (apres reorientation cam_2).
 
         Jumeau de _cam2_image_left_base sur l'AUTRE axe image (+Y camera = v
         croissant = bas de l'image). Sert au DECALAGE DE PROFONDEUR : sur les
@@ -880,7 +892,7 @@ class PickAndPlacePipeline:
         une CALIBRATION GEOMETRIQUE du montage (decalage machoires<->axe optique
         cam_2), CONSTANTE et identique pour tout objet -- pas un reglage par objet.
         """
-        R_base_cam2 = (np.asarray(robot_state.T_base_gripper, float)[:3, :3]
+        R_base_cam2 = (np.asarray(T_base_gripper, float)[:3, :3]
                        @ self._T_gripper_cam2[:3, :3])
         img_down = R_base_cam2 @ np.array([0.0, 1.0, 0.0])   # +Y cam = bas image
         img_down[2] = 0.0                                    # projette sur la table
@@ -1590,15 +1602,17 @@ class PickAndPlacePipeline:
                 # Maxence -- et la raison pour laquelle un offset en repere
                 # pince/base donnait des comportements incoherents selon l'objet.
                 # _cam2_image_left_base = -X camera projete sur l'horizontale, calcule
-                # depuis la pose REELLE de cam_2 a l'observation. +lat_mm = gauche
+                # depuis l'orientation du GRASP FINAL (apres reorientation cam_2) pour
+                # que le doigt fixe se cale au bon cote QUAND les machoires ferment --
+                # PAS depuis la pose d'observation (sinon decale en bord). +lat_mm = gauche
                 # image ; valeur NEGATIVE = inverse le cote (si mauvais cote au robot).
                 # APPLIQUE APRES cam_2 (sinon le recentrage l'annule) ; retry idem.
                 lat_mm = self._effective_lateral_offset_mm(grasp_pose)
                 fwd_mm = float(self.config.grasp_forward_offset_mm)
                 if lat_mm != 0.0 or fwd_mm != 0.0:
-                    offset_vec = (self._cam2_image_left_base(rs_at_intermediate)
+                    offset_vec = (self._cam2_image_left_base(grasp_pose.T_base_gripper_grasp)
                                   * (lat_mm / 1000.0)
-                                  + self._cam2_image_down_base(rs_at_intermediate)
+                                  + self._cam2_image_down_base(grasp_pose.T_base_gripper_grasp)
                                   * (fwd_mm / 1000.0))
                     for _attr in ("T_base_gripper_approach", "T_base_gripper_grasp",
                                   "T_base_gripper_retract"):
@@ -1907,9 +1921,9 @@ class PickAndPlacePipeline:
                                     fwd_mm = float(self.config.grasp_forward_offset_mm)
                                     if lat_mm != 0.0 or fwd_mm != 0.0:
                                         offset_vec = (
-                                            self._cam2_image_left_base(rs_after_lift)
+                                            self._cam2_image_left_base(grasp_pose.T_base_gripper_grasp)
                                             * (lat_mm / 1000.0)
-                                            + self._cam2_image_down_base(rs_after_lift)
+                                            + self._cam2_image_down_base(grasp_pose.T_base_gripper_grasp)
                                             * (fwd_mm / 1000.0))
                                         for _attr in ("T_base_gripper_approach",
                                                       "T_base_gripper_grasp",
@@ -2012,9 +2026,9 @@ class PickAndPlacePipeline:
                         lat_mm = self._effective_lateral_offset_mm(grasp_pose)
                         fwd_mm = float(self.config.grasp_forward_offset_mm)
                         if lat_mm != 0.0 or fwd_mm != 0.0:
-                            offset_vec = (self._cam2_image_left_base(rs_after_lift)
+                            offset_vec = (self._cam2_image_left_base(grasp_pose.T_base_gripper_grasp)
                                           * (lat_mm / 1000.0)
-                                          + self._cam2_image_down_base(rs_after_lift)
+                                          + self._cam2_image_down_base(grasp_pose.T_base_gripper_grasp)
                                           * (fwd_mm / 1000.0))
                             for _attr in ("T_base_gripper_approach", "T_base_gripper_grasp",
                                           "T_base_gripper_retract"):
