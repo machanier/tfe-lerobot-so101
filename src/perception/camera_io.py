@@ -13,14 +13,14 @@ Encapsule :
 Deux modes :
 
   MultiCamera (live)
-      -> ouvre les peripheriques /dev/videoN, lit en temps reel.
+      Ouvre les peripheriques /dev/videoN et lit en temps reel.
       grab() retourne {cam_key: Frame} avec un timestamp commun proche.
 
   ReplayCamera (offline)
-      -> lit depuis un dossier d'images preenregistrees + un manifest.json
+      Lit depuis un dossier d'images preenregistrees et un manifest.json
       qui indique pour chaque snapshot les angles moteur (necessaires pour
-      cam_2). Permet de developper et tester le pipeline sans avoir
-      le robot branche.
+      cam_2). Permet de developper et tester le pipeline sans le robot
+      branche.
 
 Format de l'image : BGR uint8 (convention OpenCV), shape (H, W, 3).
 Toutes les poses sont en METRES dans le repere base du robot.
@@ -44,7 +44,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-# config.py est dans scripts/ ; on l'importe via un chemin absolu
+# config.py est dans scripts/ ; import via un chemin absolu
 sys.path.insert(0, str(REPO / "scripts"))
 from config import CAMERAS  # noqa: E402
 
@@ -160,17 +160,17 @@ class MultiCamera:
     def open(self):
         """Ouvre les peripheriques et charge intrinseques/hand-eye.
 
-        Strategie pour pouvoir ouvrir 3 cameras USB 1080p sur macOS simultanement :
+        Strategie pour ouvrir 3 cameras USB 1080p sur macOS simultanement :
 
-        1. Force le codec **MJPG** (Motion-JPEG). Sans ca, OpenCV demande YUYV
-           non-compresse a la camera (~125 Mo/s par cam en 1080p30) qui sature
-           la bande passante USB. Avec MJPG, l'image est compressee dans la
-           camera avant l'envoi USB (~12 Mo/s) -> 3 cameras tiennent.
-        2. Warmup : on lit quelques frames apres chaque open pour stabiliser
-           l'autoexposure et l'allocation USB. Sans warmup, cam_2 (la derniere
-           ouverte) echoue souvent au premier grab() sur macOS.
+        1. Force le codec MJPG (Motion-JPEG). Sans cela, OpenCV demande YUYV
+           non-compresse a la camera (~125 Mo/s par camera en 1080p30), ce qui
+           sature la bande passante USB. Avec MJPG, l'image est compressee dans
+           la camera avant l'envoi USB (~12 Mo/s), et les 3 cameras tiennent.
+        2. Warmup : lecture de quelques frames apres chaque ouverture pour
+           stabiliser l'autoexposition et l'allocation USB. Sans warmup, cam_2
+           (la derniere ouverte) echoue souvent au premier grab() sur macOS.
 
-        Cela ne change pas la calibration intrinseque : MJPG et YUYV ont le
+        La calibration intrinseque est inchangee : MJPG et YUYV partagent le
         meme modele pinhole (le seul effet est une legere compression JPEG,
         invisible pour la geometrie a 1080p).
         """
@@ -182,10 +182,11 @@ class MultiCamera:
         MJPG = cv2.VideoWriter_fourcc(*'MJPG')
         for i, k in enumerate(self.cam_keys):
             cfg = CAMERAS[k]
-            # ESPACE les ouvertures : sur macOS, ouvrir 3 cameras coup sur coup fait
-            # rater l'init de la 3e (cam_2). Une pause de 0.4s entre chaque open laisse
-            # AVFoundation allouer -> init bien plus fiable. (On NE fait PAS de
-            # release+reouverture, qui peut BLOQUER le process sur macOS.)
+            # Espace les ouvertures : sur macOS, ouvrir 3 cameras coup sur coup
+            # fait rater l'initialisation de la 3e (cam_2). Une pause de 0.4 s
+            # entre chaque ouverture laisse AVFoundation allouer les ressources,
+            # ce qui fiabilise l'initialisation. On evite le release + reouverture,
+            # qui peut bloquer le processus sur macOS.
             if i > 0:
                 time.sleep(0.4)
             cap = cv2.VideoCapture(cfg["index"])
@@ -197,7 +198,7 @@ class MultiCamera:
                     "Verifie l'autorisation camera macOS et que la camera "
                     "n'est pas utilisee par un autre processus."
                 )
-            # ORDRE IMPORTANT : codec d'abord, puis resolution, puis FPS
+            # Ordre a respecter : codec d'abord, puis resolution, puis FPS.
             cap.set(cv2.CAP_PROP_FOURCC, MJPG)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(cfg["width"]))
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(cfg["height"]))
@@ -211,33 +212,34 @@ class MultiCamera:
             self._intrinsics[k] = load_intrinsics(k, self.configs_dir)
             self._handeye[k] = load_handeye(k, self.configs_dir)
 
-        # WARMUP : tente de stabiliser USB + autoexposure. Les opens ESPACES
-        # ci-dessus ont deja fiabilise l'init de la 3e camera ; ici on grab juste
-        # quelques frames. AUCUNE release/reouverture (qui peut BLOQUER sur macOS).
+        # Warmup : stabilise l'USB et l'autoexposition. Les ouvertures espacees
+        # ci-dessus ont deja fiabilise l'initialisation de la 3e camera ; on se
+        # limite ici a quelques grab(), sans release ni reouverture (qui peut
+        # bloquer sur macOS).
         for attempt in range(30):
             all_ok = True
             for k, cap in self._caps.items():
                 if not cap.grab():
                     all_ok = False
             if all_ok and attempt >= 4:
-                break  # 5 grabs reussis d'affilee : OK
+                break  # 5 grabs reussis d'affilee
             time.sleep(0.05)
-        # Diagnostic final : un grab/retrieve par camera pour detecter celles KO.
+        # Diagnostic final : un grab/retrieve par camera pour detecter les defaillantes.
         warned = []
         for k, cap in self._caps.items():
             ok = cap.grab() and cap.retrieve()[0]
             if not ok:
                 warned.append(k)
         if warned:
-            print(f"[camera_io] AVERTISSEMENT : apres warmup, {warned} n'a pas pu "
+            print(f"[camera_io] Avertissement : apres warmup, {warned} n'a pas pu "
                   "fournir de frame valide. Causes probables :", file=sys.stderr)
-            print("  - hub USB de cette camera douteux -> essaie la camera EN DIRECT "
+            print("  - hub USB de cette camera douteux : brancher la camera directement "
                   "sur le Mac (sans hub)", file=sys.stderr)
-            print("  - autre process utilise la camera (Photo Booth, Zoom, FaceTime)",
+            print("  - un autre processus utilise la camera (Photo Booth, Zoom, FaceTime)",
                   file=sys.stderr)
             print("  - autorisations macOS (Reglages > Confidentialite > Camera)",
                   file=sys.stderr)
-            print("  Le pipeline continuera SANS cette camera (stereo en mode degrade).",
+            print("  Le pipeline continuera sans cette camera (stereo en mode degrade).",
                   file=sys.stderr)
 
         self._opened = True
@@ -266,26 +268,26 @@ class MultiCamera:
         """Capture synchronisee des cameras ouvertes.
 
         Args:
-            robot_state : etat courant du robot, OBLIGATOIRE si au moins une
+            robot_state : etat courant du robot, obligatoire si au moins une
                 camera est eye-in-hand. Peut etre None si toutes sont eye-to-hand.
-            flush : nombre de frames a VIDER du buffer pilote avant la capture.
-                cv2.VideoCapture.grab() rend la frame la PLUS ANCIENNE non lue
-                (FIFO) : apres un mouvement du bras, cam_2 (eye-in-hand) a un buffer
-                rempli de frames PERIMEES (prises pendant le deplacement) -> sans
-                flush on lit une vieille image (detection "derriere l'objet",
-                observe par Maxence 2026-06-21). flush=3 purge ~3 frames (~100ms a
-                30fps) pour lire du FRAIS. Defaut 0 : la perception INITIALE draine
-                deja via le warmup d'open() -> on ne change RIEN pour elle.
+            flush : nombre de frames a vider du buffer pilote avant la capture.
+                cv2.VideoCapture.grab() rend la frame la plus ancienne non lue
+                (FIFO) : apres un mouvement du bras, cam_2 (eye-in-hand) a un
+                buffer rempli de frames perimees (prises pendant le deplacement) ;
+                sans flush, on lit une image obsolete. flush=3 purge environ
+                3 frames (~100 ms a 30 fps) pour lire une image fraiche. Le
+                defaut 0 convient a la perception initiale, qui draine deja le
+                buffer via le warmup d'open().
 
         Returns:
             dict {cam_key: Frame or None}. Les cameras qui ont echoue
             renvoient None (logge sur stderr).
         """
         if not self._opened:
-            raise RuntimeError("MultiCamera n'est pas ouvert. Appelle open() d'abord.")
+            raise RuntimeError("MultiCamera n'est pas ouvert : appeler open() d'abord.")
 
-        # 0. DRAIN : vide les frames PERIMEES du buffer (cf docstring `flush`).
-        #    grab() seul (sans retrieve) decode pas -> purge rapide.
+        # 0. Drain : vide les frames perimees du buffer (cf docstring `flush`).
+        #    grab() seul (sans retrieve) ne decode pas, la purge est donc rapide.
         for _ in range(max(0, int(flush))):
             for k in self.cam_keys:
                 try:
@@ -293,34 +295,35 @@ class MultiCamera:
                 except Exception:
                     pass
 
-        # 1. emet grab() pour les N cameras de facon rapprochee.
-        # Petit retry en cas d'echec ponctuel (rejet USB intermittent sur macOS).
+        # 1. Emet grab() pour les N cameras de facon rapprochee.
+        # Une nouvelle tentative en cas d'echec ponctuel (rejet USB
+        # intermittent sur macOS).
         grab_ok = {}
         for k in self.cam_keys:
             ok = self._caps[k].grab()
             if not ok:
-                # Mini delai puis retry une seule fois
+                # Court delai, puis une seule nouvelle tentative.
                 time.sleep(0.01)
                 ok = self._caps[k].grab()
             grab_ok[k] = ok
         ts = time.time()
 
-        # 2. decode les frames qui ont reussi
+        # 2. Decode les frames qui ont reussi.
         frames: dict[str, Optional[Frame]] = {}
         for k in self.cam_keys:
             if not grab_ok[k]:
-                # Log limite pour ne pas flooder (les premieres fois suffisent
-                # pour diagnostiquer ; ensuite on tait)
+                # Journalisation limitee pour ne pas saturer stderr : la premiere
+                # occurrence suffit au diagnostic, les suivantes sont tues.
                 if not getattr(self, "_grab_warned", False):
-                    print(f"[camera_io] grab() KO pour {k} - "
-                          "verifier bande passante USB (essaie de debrancher les autres "
+                    print(f"[camera_io] grab() en echec pour {k} : "
+                          "verifier la bande passante USB (debrancher les autres "
                           "peripheriques USB) ou diminuer la resolution", file=sys.stderr)
                     self._grab_warned = True
                 frames[k] = None
                 continue
             ok, img = self._caps[k].retrieve()
             if not ok:
-                print(f"[camera_io] retrieve() KO pour {k}", file=sys.stderr)
+                print(f"[camera_io] retrieve() en echec pour {k}", file=sys.stderr)
                 frames[k] = None
                 continue
 
@@ -369,9 +372,8 @@ class ReplayCamera:
             snap_001/cam_1.png ...
             snap_001/cam_2.png ...
 
-    L'avantage du replay : on peut iterer sur le detecteur sans avoir le
-    robot branche, ET on obtient des resultats EXACTEMENT reproductibles
-    pour le memoire.
+    Interet du replay : iterer sur le detecteur sans le robot branche, tout en
+    obtenant des resultats exactement reproductibles.
     """
 
     def __init__(self, root: Path, configs_dir: Optional[Path] = None):
@@ -478,8 +480,8 @@ if __name__ == "__main__":
     assert np.allclose(T2, expected)
     print("  [OK] compose_T_base_cam (eye-in-hand, compose avec FK)")
 
-    # 6. MultiCamera : on n'OUVRE pas les peripheriques en self-test (la cam
-    #    physique peut etre absente). On se contente de l'introspection.
+    # 6. MultiCamera : on n'ouvre pas les peripheriques en self-test (la camera
+    #    physique peut etre absente). On se limite a l'introspection.
     mc = MultiCamera()
     assert mc.cam_keys == ["cam_0", "cam_1", "cam_2"]
     print("  [OK] MultiCamera: instanciation")

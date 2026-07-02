@@ -1,30 +1,28 @@
 """
-motor_controller.py - Interface haut-niveau vers le bus moteur du SO-101.
+Interface haut-niveau vers le bus moteur du SO-101.
 
 Encapsule le bus Feetech pour exposer :
   - connect/disconnect propre
   - enable_torque / disable_torque
   - send_angles : envoie une commande d'angles + ouverture pince
   - execute_trajectory : suit une JointTrajectory en respectant les timestamps
-  - read_state : lit la pose courante (delegue a RobotStateProvider)
+  - read_raw_positions / read_gripper_pct : lecture de l'etat courant
 
 Conversion angles_rad -> raw_encoder :
-  LeRobot motors_bus.py:858 :
     raw = mid + angle_deg / 360 * 4095
   (avec mid = (range_min + range_max)/2 pour les joints non wraparound)
 
-  Pour les joints "deroules" (wrist_roll), il faut utiliser le unwrap_center
-  lu depuis encoder_unwrap.json. Si ce fichier n'existe pas (cas actuel),
-  on utilise mid de la calibration.
+  Pour les joints deroules (wrist_roll), on utilise le unwrap_center lu depuis
+  encoder_unwrap.json. En l'absence de ce fichier, on retombe sur le mid de la
+  calibration.
 
-SECURITE :
+Securite :
   - Avant toute commande : verifier que les angles sont dans les plages
-    articulaires (sinon le servo refusera ou se mettra en erreur).
-  - Avant deconnexion : ramener le bras a une pose "rest" sure
-    (configuration zero ou pose memorisee).
+    articulaires (sinon le servo refuse ou se met en erreur).
+  - Avant deconnexion : couper le couple pour ne pas laisser le bras sous tension.
   - Sur Ctrl+C : disable_torque pour eviter de laisser le bras sous tension.
 
-Reference : LeRobot motors_bus.py (Feetech protocol implementation).
+Reference : implementation du protocole Feetech dans LeRobot (motors_bus.py).
 """
 
 from __future__ import annotations
@@ -65,19 +63,20 @@ class MotorController:
     # ----- connexion / deconnexion ----------------------------------------
 
     def connect(self, port: str, max_retries: int = 5):
-        """Ouvre le bus Feetech (avec retry en cas de paquet corrompu au demarrage).
+        """Ouvre le bus Feetech, avec reessai en cas de paquet corrompu au demarrage.
 
         Cas typique : "Failed to write 'Lock' on id_=1 [Incorrect status packet]"
-        au tout debut. Cause : lancements consecutifs trop rapproches qui
-        n'ont pas laisse le temps au bus serie de se liberer. Solution :
-        retry avec un petit delai.
+        au tout debut. Cause probable : lancements consecutifs trop rapproches,
+        le bus serie n'ayant pas eu le temps de se liberer. La connexion est alors
+        retentee apres un court delai.
         """
         try:
             from lerobot.motors import Motor, MotorNormMode
             from lerobot.motors.feetech import FeetechMotorsBus
         except ImportError as e:
             raise ImportError(
-                "LeRobot indisponible. Active le venv ou installe-le selon setup_env.sh."
+                "LeRobot indisponible. Activer l'environnement virtuel ou "
+                "l'installer selon setup_env.sh."
             ) from e
 
         motors = {
@@ -98,7 +97,7 @@ class MotorController:
                 self._bus = bus
                 self._torque_enabled = False
                 if attempt > 0:
-                    print(f"[motor_controller] Connexion reussie au {attempt + 1}eme essai.")
+                    print(f"[motor_controller] Connexion reussie a l'essai {attempt + 1}.")
                 return
             except (ConnectionError, RuntimeError) as e:
                 last_err = e
@@ -106,22 +105,22 @@ class MotorController:
                     # Delai progressif : 0.5s, 1s, 2s, 4s, ...
                     delay = 0.5 * (2 ** attempt)
                     print(f"[motor_controller] Connexion {attempt + 1}/{max_retries} "
-                          f"echouee ({type(e).__name__}), retry dans {delay:.1f}s...")
-                    # Pause + cleanup partiel
+                          f"echouee ({type(e).__name__}), nouvel essai dans {delay:.1f}s...")
+                    # Pause et nettoyage partiel avant le prochain essai
                     try:
                         bus.disconnect()
                     except Exception:
                         pass
                     time.sleep(delay)
-        # Tous les retries epuises
+        # Tous les essais epuises
         raise ConnectionError(
             f"Impossible de connecter le bus moteur apres {max_retries} essais. "
             f"Causes a verifier dans l'ordre :\n"
-            f"  1. ROBOT FOLLOWER ALIMENTE ? (verifier l'interrupteur et la LED).\n"
-            f"  2. CABLE USB du follower bien branche (peut-etre debrancher/rebrancher) ?\n"
-            f"  3. AUTRE PROCESS (python ou lerobot-teleoperate) tient le port ? Verifier avec :\n"
+            f"  1. Robot follower alimente ? (verifier l'interrupteur et la LED).\n"
+            f"  2. Cable USB du follower bien branche (au besoin, debrancher/rebrancher) ?\n"
+            f"  3. Un autre processus (python ou lerobot-teleoperate) tient le port ? Verifier avec :\n"
             f"     lsof | grep usbmodem\n"
-            f"  4. Tous les MOTEURS detectes ? Tester :\n"
+            f"  4. Tous les moteurs detectes ? Tester :\n"
             f"     python scripts/check_motor_calibration.py\n"
             f"Erreur originale : {last_err}"
         ) from last_err
@@ -173,7 +172,7 @@ class MotorController:
             if abs(angle_deg) > 360.0:
                 raise ValueError(
                     f"Angle {angle_deg:.1f}deg pour '{j}' est aberrant "
-                    f"(|.| > 360deg, hors plage physique). Verifie l'IK."
+                    f"(|.| > 360deg, hors plage physique). Verifier l'IK."
                 )
             c = self.calib[j]
             # Centre encodeur = unwrap_center si dispo, sinon milieu plage
@@ -188,11 +187,11 @@ class MotorController:
             r_min, r_max = c["range_min"], c["range_max"]
             TOL_COUNTS = 50  # ~4.4 deg
 
-            # CAS 1 : plage normale (r_min < r_max, ne traverse pas 0/4095)
+            # Cas 1 : plage normale (r_min < r_max, ne traverse pas 0/4095).
             # On verifie sur le delta wrappe pour rester correct.
-            # CAS 2 : plage qui traverse la couture (r_min > r_max, exemple
+            # Cas 2 : plage qui traverse la couture (r_min > r_max, exemple du
             # wrist_roll deroule). Dans ce cas, "dans la plage" = raw >= r_min
-            # OU raw <= r_max. C'est ce que LeRobot fait.
+            # ou raw <= r_max, conformement a la convention LeRobot.
             if r_min <= r_max:
                 # Plage normale
                 in_range = (r_min <= raw_wrapped <= r_max)
@@ -249,7 +248,7 @@ class MotorController:
         """Envoie une commande de pose articulaire (avec optionnel gripper)."""
         self._require_bus()
         if not self._torque_enabled:
-            raise RuntimeError("Couple desactive. Appelle enable_torque() d'abord.")
+            raise RuntimeError("Couple desactive. Appeler enable_torque() d'abord.")
         raw = self.angles_to_raw(joint_angles_rad, gripper_pct)
         # sync_write Goal_Position en valeurs raw
         self._bus.sync_write("Goal_Position", raw, normalize=False)
@@ -272,7 +271,7 @@ class MotorController:
         """
         self._require_bus()
         if not self._torque_enabled:
-            raise RuntimeError("Couple desactive. Appelle enable_torque() d'abord.")
+            raise RuntimeError("Couple desactive. Appeler enable_torque() d'abord.")
         if len(trajectory) == 0:
             return
 
@@ -314,14 +313,14 @@ class MotorController:
         return {k: int(v) for k, v in raw.items()}
 
     def read_gripper_pct(self) -> float:
-        """Lit la position ACTUELLE de la pince en pourcentage [0, 100].
+        """Lit la position actuelle de la pince en pourcentage [0, 100].
 
-        0%  = pince completement fermee (raw = range_min)
+        0%   = pince completement fermee (raw = range_min)
         100% = pince completement ouverte (raw = range_max)
 
-        Utilise pour P1 (feedback de saisie) : apres une commande de
-        fermeture (gripper_pct=5), si la valeur lue est >> 5 (ex: 30%),
-        c'est que la pince a bute sur un objet -> saisie reussie.
+        Sert au feedback de saisie : apres une commande de fermeture
+        (gripper_pct=5), une valeur lue nettement superieure (par exemple 30%)
+        indique que la pince a bute sur un objet, donc une saisie reussie.
         """
         raw_all = self.read_raw_positions()
         raw_g = raw_all["gripper"]
@@ -333,16 +332,17 @@ class MotorController:
         return float(np.clip(pct, 0.0, 100.0))
 
     def read_gripper_load(self) -> int:
-        """Lit la CHARGE/couple actuel(le) de la pince (registre Present_Load).
+        """Lit la charge/couple actuel(le) de la pince (registre Present_Load).
 
-        Signal de saisie bien plus fiable que la position : quand la pince
-        SERRE un objet, le couple monte (independamment de la taille de l'objet,
-        donc cylindre fin inclus) ; fermee a vide, il reste bas. Pas de probleme
-        d'occlusion (contrairement a une verif par vision).
+        Signal de saisie plus fiable que la position : quand la pince serre un
+        objet, le couple monte (independamment de la taille de l'objet, cylindre
+        fin inclus) ; fermee a vide, il reste bas. Pas de probleme d'occlusion,
+        contrairement a une verification par vision.
 
         Valeur brute Feetech (2 octets) : bits 0-9 = magnitude (0-1023), bit 10
-        = sens. On renvoie la MAGNITUDE. Renvoie -1 si lecture impossible (ne
-        casse jamais la saisie). A caler experimentalement (tenu vs vide).
+        = sens. On renvoie la magnitude. Renvoie -1 si la lecture est impossible,
+        pour ne jamais interrompre la saisie. Le seuil se cale experimentalement
+        (objet tenu vs pince a vide).
         """
         try:
             self._require_bus()
@@ -352,14 +352,14 @@ class MotorController:
             return -1
 
     def set_gripper_pct(self, pct: float):
-        """Commande UNIQUEMENT la pince (les 5 joints du bras ne recoivent rien).
+        """Commande uniquement la pince (les 5 joints du bras ne recoivent rien).
 
-        Utilise par la fermeture asservie et par l'ouverture en place apres
-        un faux positif attrape post-levee (le bras ne doit pas bouger).
+        Utilise par la fermeture asservie et par la reouverture sur place apres
+        un faux positif detecte apres la levee, cas ou le bras ne doit pas bouger.
         """
         self._require_bus()
         if not self._torque_enabled:
-            raise RuntimeError("Couple desactive. Appelle enable_torque() d'abord.")
+            raise RuntimeError("Couple desactive. Appeler enable_torque() d'abord.")
         cg = self.calib["gripper"]
         pct = float(np.clip(pct, 0.0, 100.0))
         raw_g = int(round(cg["range_min"]
@@ -382,34 +382,34 @@ class MotorController:
                                     floor_margin_pct: float = 3.0,
                                     min_travel_pct: float = 25.0,
                                     timeout_s: float = 6.0) -> dict:
-        """Fermeture ASSERVIE : la pince s'arrete AU CONTACT de l'objet.
+        """Fermeture asservie : la pince s'arrete au contact de l'objet.
 
-        Reponse a « comment la pince sait quand s'arreter » : avant, elle ne
-        le savait pas (consigne fixe floor_pct, le servo butait en aveugle).
-        Maintenant on descend la consigne PAR PAS et on detecte le CONTACT par
-        le COUPLE (Present_Load), signal PHYSIQUE independant du timing :
+        La consigne est abaissee par paliers et le contact est detecte via le
+        couple (Present_Load), signal physique independant du timing :
 
-          - CONTACT = Present_Load >= seuil ADAPTATIF = base_couple + contact_margin
+          - contact = Present_Load >= seuil adaptatif = base_couple + contact_margin
             (plafonne par load_stop). La base est mesuree sur les premieres
-            lectures EN MOUVEMENT LIBRE (couple a vide ~20-30) -> le seuil
-            s'adapte (~150-180) et separe nettement « machoires libres » de
-            « machoires sur l'objet ». Plus fiable qu'un 300 fixe.
+            lectures en mouvement libre (couple a vide ~20-30) ; le seuil s'adapte
+            alors (~150-180) et separe nettement machoires libres et machoires
+            sur l'objet. Plus fiable qu'un seuil fixe a 300.
 
-        STALL DE POSITION DESACTIVE PAR DEFAUT (use_position_stall=False) :
-        teste 2026-06-13, il FAISAIT UN FAUX CONTACT a ~93% (juste apres le
-        debut de la fermeture) parce que le servo ne suit pas la consigne
-        instantanement au demarrage (inertie) -> la pince ne se fermait jamais
-        sur l'objet. Le couple, lui, detecte le VRAI contact (largeur objet).
-        Le stall reste disponible (arme seulement apres min_travel_pct de course)
-        pour calage hardware futur, mais OFF par defaut.
+        Le stall de position est desactive par defaut (use_position_stall=False).
+        Il produit un faux contact vers 93 % (juste apres le debut de la
+        fermeture) : le servo ne suit pas la consigne instantanement au demarrage
+        (inertie), si bien que la pince ne se ferme jamais sur l'objet. Le couple,
+        lui, detecte le vrai contact (largeur de l'objet). Le stall reste
+        disponible, arme uniquement apres min_travel_pct de course, pour un calage
+        materiel ulterieur, mais reste desactive par defaut.
 
-        MAINTIEN SANS RELACHER : au contact on GELE la consigne courante (qui
-        poussait deja dans l'objet) et on serre ENCORE de squeeze_pct
-        (cmd - squeeze), jamais recalcule depuis contact_pct -> garde la pression
-        ET un ECART consigne<->objet pour detecter une chute a la levee (par
-        POSITION : objet tombe -> machoires se referment sous contact_pct).
+        Maintien sans relacher : au contact, on gele la consigne courante (qui
+        poussait deja dans l'objet) et on serre encore de squeeze_pct
+        (cmd - squeeze), jamais recalcule depuis contact_pct. On conserve ainsi la
+        pression et un ecart consigne<->objet permettant de detecter une chute a
+        la levee (par position : si l'objet tombe, les machoires se referment sous
+        contact_pct).
 
-        A vide : aucun contact, la consigne descend a floor_pct (check aval RATE).
+        A vide : aucun contact, la consigne descend a floor_pct (le controle aval
+        signale alors l'echec).
 
         Returns:
             dict : stopped_on_contact, stop_cmd_pct (consigne tenue),
@@ -418,7 +418,7 @@ class MotorController:
         """
         self._require_bus()
         if not self._torque_enabled:
-            raise RuntimeError("Couple desactive. Appelle enable_torque() d'abord.")
+            raise RuntimeError("Couple desactive. Appeler enable_torque() d'abord.")
         start_pct = float(max(start_pct, floor_pct))
         cmd = start_pct
         load_hits = 0
@@ -447,7 +447,7 @@ class MotorController:
             if load_baseline is None and step_count >= baseline_reads and load_samples:
                 load_baseline = sorted(load_samples)[len(load_samples) // 2]
 
-            # CONTACT PAR COUPLE (seuil adaptatif, plafonne par load_stop)
+            # Contact par couple (seuil adaptatif, plafonne par load_stop)
             base = load_baseline if load_baseline is not None else 30.0
             contact_load = base + float(contact_margin)
             if load_stop is not None:
@@ -457,8 +457,9 @@ class MotorController:
             else:
                 load_hits = 0
 
-            # STALL (OFF par defaut) : arme seulement apres une course minimale
-            # (skip le transitoire de demarrage du servo, cause des faux contacts).
+            # Stall (desactive par defaut) : arme seulement apres une course
+            # minimale, pour ignorer le transitoire de demarrage du servo
+            # (source des faux contacts).
             if use_position_stall and travelled >= min_travel_pct:
                 commanding_closed = cmd < pos - 4.0
                 barely_moved = (prev_pos - pos) < pos_stall_pct
@@ -485,7 +486,7 @@ class MotorController:
             prev_pos = pos
 
         if stopped_on_contact:
-            # GELE la consigne courante (deja sous l'objet) et serre ENCORE.
+            # Gele la consigne courante (deja sous l'objet) et serre davantage.
             cmd = max(float(floor_pct), float(cmd_at_contact) - float(squeeze_pct))
             self.set_gripper_pct(cmd)
         time.sleep(0.25)
@@ -503,7 +504,7 @@ class MotorController:
 
     def _require_bus(self):
         if self._bus is None:
-            raise RuntimeError("Bus non connecte. Appelle connect(port) d'abord.")
+            raise RuntimeError("Bus non connecte. Appeler connect(port) d'abord.")
 
     def __enter__(self):
         return self

@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """
-record_dataset.py – Enregistrer un dataset via teleoperation (LeRobot)
+Enregistrement d'un dataset de teleoperation via LeRobot.
 
-Usage (valeurs par defaut = config.py : objet orange, 50 episodes) :
+Usage (valeurs par defaut issues de config.py) :
     python scripts/record_dataset.py
 
     ou en personnalisant :
     python scripts/record_dataset.py --task "Grab the orange cube" --episodes 50
 
-Enregistre, par image (30 fps), les actions du leader, l'etat du follower et
-les 2 cameras (front + wrist) -> dataset LeRobot reutilisable pour entrainer ACT.
+Enregistre, image par image (30 fps), les actions du leader, l'etat du follower
+et les deux cameras (front + wrist) pour produire un dataset LeRobot reutilisable
+a l'entrainement d'ACT.
 
-Controles clavier PENDANT l'enregistrement :
-    Fleche droite  = episode termine -> passe au suivant
-    Fleche gauche  = annuler et re-enregistrer l'episode courant (a utiliser !)
-    Echap          = stop, encode les videos, (et upload si --push-to-hub)
+Controles clavier durant l'enregistrement :
+    Fleche droite  = episode termine, passe au suivant
+    Fleche gauche  = annule et re-enregistre l'episode courant
+    Echap          = stop, encode les videos (et upload si --push-to-hub)
 
-Par defaut le dataset reste LOCAL (~/.cache/huggingface/lerobot/<repo-id>).
-Ajoute --push-to-hub pour l'envoyer sur le Hub (necessite `hf auth login`).
+Par defaut le dataset reste local (~/.cache/huggingface/lerobot/<repo-id>).
+Ajouter --push-to-hub pour l'envoyer sur le Hub (necessite `hf auth login`).
 """
 
 import argparse
@@ -46,15 +47,15 @@ def main():
     parser.add_argument("--push-to-hub", action="store_true",
                         help="Envoyer le dataset sur le Hub (defaut: local seulement)")
     parser.add_argument("--no-display", action="store_true",
-                        help="Desactiver la visu rerun (reduit la charge ; utile si la camera time-out)")
+                        help="Desactiver la visualisation rerun (reduit la charge en cas de time-out camera)")
     parser.add_argument("--resume", action="store_true",
-                        help="Reprendre/ajouter des episodes a un dataset --repo-id existant (apres crash, ou phase 2)")
+                        help="Reprendre ou completer un dataset --repo-id existant (par exemple apres une interruption)")
     args = parser.parse_args()
 
     follower_port, leader_port = pick_ports()
     if not follower_port or not leader_port:
         print("Ports USB introuvables (follower et/ou leader).")
-        print("  Liste : ls /dev/tty.usbmodem*   ou   lerobot-find-port")
+        print("  Pour les lister : ls /dev/tty.usbmodem*   ou   lerobot-find-port")
         sys.exit(1)
 
     cmd = [
@@ -85,8 +86,8 @@ def main():
     except KeyboardInterrupt:
         print("\nEnregistrement arrete.")
     except FileNotFoundError:
-        print("Commande 'lerobot-record' non trouvee.")
-        print("  Verifie que le venv est active : source venv/bin/activate")
+        print("Commande 'lerobot-record' introuvable.")
+        print("  Verifier que l'environnement virtuel est active : source venv/bin/activate")
         sys.exit(1)
 
 

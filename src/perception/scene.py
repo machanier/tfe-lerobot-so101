@@ -5,18 +5,18 @@ Definit les `dataclasses` qui circulent dans le pipeline perception :
 
     Frame          : image RGB + intrinseques + pose camera-base + timestamp.
     Detection2D    : detection brute dans le plan image (classe, bbox, masque, score).
-    ObjectInstance : objet reconstruit en 3D dans le repere BASE du robot.
+    ObjectInstance : objet reconstruit en 3D dans le repere base du robot.
     Scene          : etat instantane = liste d'instances + timestamp.
 
-Tous les vecteurs 3D sont en METRES, dans le repere base du SO-101.
+Tous les vecteurs 3D sont en metres, dans le repere base du SO-101.
 Toutes les rotations sont des matrices 3x3 (orientees, det = +1).
 
-Convention de naming : T_A_B = pose du repere B exprimee dans le repere A
+Convention de nommage : T_A_B = pose du repere B exprimee dans le repere A
 (matrice 4x4 SE(3)), coherente avec les modules calibration/.
 
-Cette frontiere de types est ce que le Sprint 3 (planning) va consommer.
-Modifier la signature de `ObjectInstance` est un changement BREAKING pour la
-suite ; preferer ajouter des champs optionnels.
+Cette frontiere de types est consommee par le module de planification.
+Modifier la signature de `ObjectInstance` casse la compatibilite avec les
+modules aval ; preferer l'ajout de champs optionnels.
 
 Reference : Bohg et al. 2014 "Data-Driven Grasp Synthesis - A Survey",
 section 2 : taxonomie des representations d'objets pour le grasp planning.
@@ -32,7 +32,7 @@ import numpy as np
 
 
 # ============================================================
-# Inputs de la perception : images calibrees synchronisees
+# Entrees de la perception : images calibrees synchronisees
 # ============================================================
 
 
@@ -40,17 +40,17 @@ import numpy as np
 class Frame:
     """Image calibree d'une camera a un instant donne.
 
-    Le champ `T_base_cam` est CALCULE par le module camera_io (eye-to-hand =
-    constant depuis handeye_cam_*.json ; eye-in-hand = compose avec la FK
-    courante du robot). Le pipeline aval n'a donc jamais a se preoccuper de
-    la configuration optique de la camera.
+    Le champ `T_base_cam` est calcule par le module camera_io (eye-to-hand :
+    constant, lu depuis handeye_cam_*.json ; eye-in-hand : compose avec la FK
+    courante du robot). Le pipeline aval n'a donc pas a se preoccuper de la
+    configuration optique de la camera.
 
     Attributes:
         cam_key       : identifiant logique ("cam_0", "cam_1", "cam_2").
         image         : image BGR (cv2 standard), shape (H, W, 3), uint8.
         K             : matrice intrinseque 3x3.
         dist          : coefficients de distorsion (5,) ou (8,) au format OpenCV.
-        T_base_cam    : pose 4x4 de la camera dans le repere BASE du robot (m).
+        T_base_cam    : pose 4x4 de la camera dans le repere base du robot (m).
         timestamp     : temps de capture (epoch seconds, float).
     """
 
@@ -113,10 +113,10 @@ class Detection2D:
 
 @dataclass
 class ObjectInstance:
-    """Objet reconstruit en 3D, dans le repere BASE du robot.
+    """Objet reconstruit en 3D, dans le repere base du robot.
 
-    Sortie du pose_estimator. Tout ce qui suit (planning, grasp) consomme
-    cette structure et NE doit JAMAIS revenir aux pixels.
+    Sortie du pose_estimator. Les etapes suivantes (planification, saisie)
+    consomment cette structure et ne reviennent jamais au plan image.
 
     Attributes:
         label              : nom de l'objet (meme convention que Detection2D.label).
@@ -126,9 +126,9 @@ class ObjectInstance:
         bbox_3d_m          : (dx, dy, dz) extent estime ou None. En metres,
                              aligne sur les axes du repere base (AABB approx).
         orientation_R      : rotation 3x3 de l'objet (repere base -> repere objet),
-                             ou None si la perception V1 n'estime pas l'orientation.
+                             ou None si l'orientation n'est pas estimee.
         source_detections  : liste des Detection2D ayant permis l'estimation.
-                             Tracable pour le debug et pour le mode replay.
+                             Tracable pour le debogage et pour le mode replay.
         score              : confiance globale dans [0, 1].
         timestamp          : moment de la detection.
         meta               : metadonnees libres.
@@ -152,13 +152,13 @@ class ObjectInstance:
 class Scene:
     """Etat instantane de la scene = liste d'objets + obstacles + timestamp.
 
-    Bohg 2014 distingue grasp targets / obstacles ; on garde ici la meme
-    distinction pour preparer le sprint planning.
+    Bohg 2014 distingue cibles de saisie et obstacles ; on conserve ici la meme
+    distinction pour preparer l'etape de planification.
 
     Attributes:
-        objects    : liste des ObjectInstance dont au moins UNE estimation 3D est valide.
+        objects    : liste des ObjectInstance dont au moins une estimation 3D est valide.
         obstacles  : liste d'ObjectInstance consideres comme non-saisissables (table,
-                     boite de depose, distracteurs). Pour le Sprint 2, vide par defaut.
+                     boite de depose, distracteurs). Vide par defaut a ce stade.
         timestamp  : horodatage de la Scene (moyenne des timestamps des frames).
         meta       : metadonnees (configuration de capture, etc.).
     """
@@ -169,7 +169,7 @@ class Scene:
     meta: dict = field(default_factory=dict)
 
     def pretty(self) -> str:
-        """Representation textuelle compacte de la scene (utile pour le debug)."""
+        """Representation textuelle compacte de la scene (utile pour le debogage)."""
         lines = [f"Scene @ t={self.timestamp:.3f}"]
         for o in self.objects:
             p = o.position_base_m * 1000.0
@@ -183,7 +183,7 @@ class Scene:
 
 
 # ============================================================
-# Self-tests (lance avec : python -m src.perception.scene)
+# Tests unitaires (lancer avec : python -m src.perception.scene)
 # ============================================================
 if __name__ == "__main__":
     print("Tests scene.py")

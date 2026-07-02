@@ -1,16 +1,16 @@
-"""
-transforms.py - Helpers pour manipuler les transformations rigides SE(3).
+"""Utilitaires de manipulation des transformations rigides SE(3).
 
-Une transformation SE(3) decrit la position + orientation d'un repere
-par rapport a un autre. On la represente par une matrice 4x4 homogene :
+Une transformation SE(3) decrit la position et l'orientation d'un repere par
+rapport a un autre. Elle est representee par une matrice 4x4 homogene :
 
     T = [R | t]      avec R = rotation 3x3, t = translation 3x1
         [0 | 1]
 
-OpenCV travaille avec (rvec, tvec) ou rvec est un vecteur de Rodrigues
-(axe * angle). On a donc besoin de conversions dans les deux sens.
+OpenCV travaille avec (rvec, tvec), ou rvec est un vecteur de Rodrigues
+(axe multiplie par l'angle) ; des conversions dans les deux sens sont donc
+fournies.
 
-Utilise par : src/calibration/forward_kinematics.py, scripts/solve_handeye.py
+Utilise par la cinematique directe et les scripts de calibration main-oeil.
 """
 
 import numpy as np

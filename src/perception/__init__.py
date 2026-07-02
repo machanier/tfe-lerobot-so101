@@ -1,12 +1,12 @@
 """
 src.perception - Module de perception multi-cameras pour le SO-101.
 
-Pipeline du Sprint 2 : `objet visible -> position 3D dans le repere base du robot`.
+Pipeline `objet visible -> position 3D dans le repere base du robot`.
 
 Sous-modules :
     scene             : dataclasses (ObjectInstance, Scene, Detection2D, Frame).
     camera_io         : capture synchronisee des 3 cameras (live ou replay).
-    detector          : ObjectDetector abstrait + HSVDetector + stub HFDetector.
+    detector          : ObjectDetector abstrait + HSVDetector + HFDetector (open-vocabulary).
     pose_estimator    : triangulation stereo + PnP monoculaire (fallback).
     robot_state       : lecture des moteurs + cinematique directe (FK).
 

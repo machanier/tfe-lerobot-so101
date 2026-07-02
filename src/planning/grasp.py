@@ -9,31 +9,31 @@ Une `GraspPose` decrit la sequence geometrique d'une saisie :
               ▲
        T_base_gripper_retract     : pince au-dessus, fermee
 
-C'est le SEUL endroit ou la "strategie de saisie" est decidee. La
-trajectoire articulaire (IK + interpolation) viendra dans des modules
-ulterieurs (control/) ; la planification haut niveau (eviter les obstacles,
-choisir un point de vue) viendra au Sprint 4.
+C'est le seul endroit ou la strategie de saisie est decidee. La trajectoire
+articulaire (IK + interpolation) est produite par les modules de commande
+(control/) ; la planification haut niveau (evitement d'obstacles, choix d'un
+point de vue) reste hors du perimetre de ce module.
 
-Interface ABC `GraspStrategy` pour permettre l'ajout d'autres strategies
-sans toucher au reste du pipeline (cf design Sprint 2 : meme pattern que
-ObjectDetector).
+Interface ABC `GraspStrategy` pour permettre l'ajout d'autres strategies sans
+toucher au reste du pipeline (meme motif que ObjectDetector).
 
 Strategies disponibles :
   - TopDownGrasp : pince verticale (axe d'approche = -Z_base), wrist_roll aligne
     sur le grand axe de l'objet. Cas particulier de l'adaptatif (theta=0).
-  - AdaptiveGrasp (defaut deploiement) : balaie le plan sagittal et PROPOSE
+  - AdaptiveGrasp (defaut deploiement) : balaie le plan sagittal et propose
     plusieurs angles d'attaque -- top-down (0deg), diagonale (45deg), face avant
-    (90deg) -- dans l'ordre de preference selon la ZONE d'usage (distance + hauteur,
+    (90deg) -- dans l'ordre de preference selon la zone d'usage (distance + hauteur,
     cf preferred_pitch_deg / GRASP_ZONE_*). Le pipeline filtre ensuite par
-    atteignabilite IK et garde le 1er faisable. Pour un objet allonge, l'azimut
-    d'approche est aligne sur le grand axe -> machoires en travers du PETIT cote.
+    atteignabilite IK et garde le premier faisable. Pour un objet allonge, l'azimut
+    d'approche est aligne sur le grand axe, de sorte que les machoires serrent le
+    petit cote.
 
 Conventions de repere (deploiement, cf PipelineConfig) :
-  - z=0 = la PLAQUE ou reposent les objets (table_z_m=0) ; l'offset de serrage
+  - z=0 = la plaque ou reposent les objets (table_z_m=0) ; l'offset de serrage
     des machoires est gere a part (gripper_grab_offset_m).
   - convention pince : roll/yaw decale de grasp_yaw_offset_deg (=90, mesure terrain).
-  - decalage de prise : offset lateral en repere PINCE (le long des machoires),
-    applique APRES le raffinement cam_2 et aligne sur l'orientation finale du grasp,
+  - decalage de prise : offset lateral en repere pince (le long des machoires),
+    applique apres le raffinement cam_2 et aligne sur l'orientation finale du grasp,
     cf pipeline (pince asymetrique SO-101).
   - reorientation cam_2 : reorient_grasp_pose (top-down) / AdaptiveGrasp.replan_oriented
     (incline) realignent les machoires sur le grand axe vu par cam_2.
@@ -66,7 +66,7 @@ class GraspPose:
     Les 3 poses sont des matrices 4x4 SE(3) representant T_base_gripper
     (position + orientation de la pince dans le repere base du robot).
 
-    Le repere "gripper" suit la convention SO-101 : Z_pince = axe de
+    Le repere gripper suit la convention SO-101 : Z_pince = axe de
     fermeture des doigts ; X_pince = axe "vue de face" de la pince ;
     Y_pince complete (regle de la main droite). En top-down, Z_pince
     pointe vers -Z_base (la pince regarde vers le bas).
@@ -132,11 +132,11 @@ def _rotation_top_down(yaw_rad: float = 0.0) -> np.ndarray:
              [        0,         0, -1]]
 
     On verifie det(R) = +1 (rotation propre, pas reflexion). C'est
-    equivalent a une rotation de pi autour de X suivi d'une rotation de
+    equivalent a une rotation de pi autour de X suivie d'une rotation de
     yaw autour du nouveau Z.
 
-    Note : inverser un seul axe (e.g. Z) sans corriger un autre donne une
-    REFLEXION (det = -1), inutilisable comme rotation.
+    Note : inverser un seul axe (par exemple Z) sans corriger un autre donne une
+    reflexion (det = -1), inutilisable comme rotation.
     """
     c, s = np.cos(yaw_rad), np.sin(yaw_rad)
     R = np.array([
@@ -149,10 +149,10 @@ def _rotation_top_down(yaw_rad: float = 0.0) -> np.ndarray:
 
 def _rotation_grasp(azimuth_rad: float, pitch_rad: float,
                     roll_rad: float = 0.0) -> np.ndarray:
-    """Rotation R_base_gripper d'une saisie a angle d'attaque QUELCONQUE dans le
+    """Rotation R_base_gripper d'une saisie a angle d'attaque quelconque dans le
     plan sagittal (le plan vertical base->objet que pointe le shoulder_pan).
 
-    Generalise `_rotation_top_down` au "tangage" (pitch) : la pince balaie les
+    Generalise `_rotation_top_down` au tangage (pitch) : la pince balaie les
     180deg du plan sagittal, du sol cote face avant -> par-dessus -> sol cote
     face arriere. C'est l'axe naturel du SO-101 (pas de pan au poignet, donc pas
     de prise laterale gauche/droite).
@@ -171,7 +171,7 @@ def _rotation_grasp(azimuth_rad: float, pitch_rad: float,
       - X_pince = Y_pince x Z_pince (repere direct, det(R) = +1).
 
     A theta=0, en choisissant le roll qui aligne Y_pince sur (sin psi, -cos psi),
-    R est IDENTIQUE a `_rotation_top_down(psi)` (verifie en self-test) : le
+    R est identique a `_rotation_top_down(psi)` (verifie en self-test) : le
     top-down reste un cas particulier exact, donc pas de regression.
     """
     phi, th = float(azimuth_rad), float(pitch_rad)
@@ -192,7 +192,7 @@ def _extent_along(bbox_3d_m: tuple, direction: np.ndarray) -> float:
 
     Pour une boite alignee aux axes de dimensions (dx, dy, dz), l'extension le
     long d'un vecteur unitaire d est |dx*dx_comp| + |dy*dy_comp| + |dz*dz_comp|.
-    Sert a estimer la dimension de l'objet SERREE entre les machoires (le long
+    Sert a estimer la dimension de l'objet serree entre les machoires (le long
     de Y_pince) pour un angle d'attaque donne.
     """
     d = np.asarray(direction, dtype=np.float64)
@@ -202,14 +202,14 @@ def _extent_along(bbox_3d_m: tuple, direction: np.ndarray) -> float:
 
 def _grasp_depth_z(obj, z_detected: float, table_z: float, grasp_offset: float,
                    stack_detect_m: float, min_clearance: float) -> float:
-    """Profondeur (Z) du centre de prise : ancrage table CONSCIENT de l'empilement.
+    """Profondeur (Z) du centre de prise : ancrage table conscient de l'empilement.
 
-    - Pas de bbox 3D -> fallback = Z detecte + offset.
-    - Objet POSE SUR LA TABLE (base estimee ~ table) -> table + hauteur/2 : plus
-      robuste au bruit du Z stereo (cf memoire), car la base est connue (=table).
-    - Objet POSE SUR UN AUTRE OBJET (base nettement au-dessus de la table) ->
-      l'ancrage table viserait le SUPPORT (trop bas) ; on fait alors confiance au
-      CENTROIDE 3D detecte. base estimee = centroide_Z - hauteur/2.
+    - Pas de bbox 3D -> repli sur Z detecte + offset.
+    - Objet pose sur la table (base estimee ~ table) -> table + hauteur/2 : plus
+      robuste au bruit du Z stereo, car la base est connue (= table).
+    - Objet pose sur un autre objet (base nettement au-dessus de la table) ->
+      l'ancrage table viserait le support (trop bas) ; on fait alors confiance au
+      centroide 3D detecte. Base estimee = centroide_Z - hauteur/2.
     Garde-fou : jamais sous table + min_clearance.
     """
     if obj.bbox_3d_m is None:
@@ -217,9 +217,9 @@ def _grasp_depth_z(obj, z_detected: float, table_z: float, grasp_offset: float,
     else:
         h = float(obj.bbox_3d_m[2])
         base_detected = z_detected - h / 2.0          # bas estime de l'objet
-        if base_detected > table_z + stack_detect_m:  # objet SURELEVE (empile)
+        if base_detected > table_z + stack_detect_m:  # objet sureleve (empile)
             z_grasp = z_detected                      # -> centroide detecte
-        else:                                         # objet SUR LA TABLE
+        else:                                         # objet pose sur la table
             z_grasp = table_z + h / 2.0               # -> ancrage table (robuste)
     return max(z_grasp, table_z + min_clearance)
 
@@ -261,19 +261,18 @@ def yaw_from_contour(contour: Optional[np.ndarray]) -> float:
     if (abs(mu20 - mu02) / span < 0.05) and (abs(mu11) / span < 0.05):
         return 0.0
     # angle dans le repere image (Y vers le bas). On le retourne tel quel ;
-    # la conversion image -> base est responsabilite du caller s'il y a
-    # une ambiguite ; pour le top-down V1 on prend l'angle image comme
-    # estimation grossiere du wrist_roll. C'est une approximation : un yaw
-    # bien calcule demanderait de projeter le contour 3D du dessus de l'objet,
-    # ce qui est hors scope V1.
+    # la conversion image -> base est de la responsabilite du caller s'il y a
+    # une ambiguite ; en repli top-down on prend l'angle image comme estimation
+    # grossiere du wrist_roll. C'est une approximation : un yaw bien calcule
+    # demanderait de projeter le contour 3D du dessus de l'objet.
     theta = 0.5 * np.arctan2(2.0 * mu11, mu20 - mu02)
     return float(theta)
 
 
 def reorient_grasp_pose(grasp_pose, new_yaw_rad: float,
                         fixed_finger_dir_gripper: tuple = (0, -1, 0)):
-    """Reoriente une GraspPose top-down sur un NOUVEAU yaw (machoires en travers
-    du petit axe), en conservant la POSITION de l'objet et l'offset lateral A2.
+    """Reoriente une GraspPose top-down sur un nouveau yaw (machoires en travers
+    du petit axe), en conservant la position de l'objet et le decalage lateral.
 
     Utilise quand cam_2 (vue proche, au-dessus) mesure l'orientation de l'objet
     plus fiablement que la stereo oblique : on remplace l'orientation de prise
@@ -283,16 +282,16 @@ def reorient_grasp_pose(grasp_pose, new_yaw_rad: float,
     offset_mm = float(meta.get("lateral_offset_mm", 0.0))
     old_off = meta.get("offset_base_xy_mm", (0.0, 0.0))
     old_off = np.array([float(old_off[0]) / 1000.0, float(old_off[1]) / 1000.0, 0.0])
-    # Applique la meme correction de convention que la pose initiale (diagnostic 90deg)
+    # Applique la meme correction de convention que la pose initiale.
     new_yaw_rad = float(new_yaw_rad) + float(meta.get("yaw_offset_rad", 0.0))
-    # === Symetrie 180deg de la pince a machoires paralleles (FIX 2026-06-21) ===
-    # cam_2 fournit un AXE (defini mod 180deg) : yaw et yaw+-180 sont la MEME prise
-    # physique. On choisit le representant le PLUS PROCHE du yaw COURANT pour que le
-    # poignet fasse le PLUS PETIT mouvement. Sinon : cam_2 mesure -85deg alors que la
-    # prise etait a +75deg -> reorientation de ~160deg = demi-tour du poignet (le
-    # "<<< SAUT (tour)" observe a CHAQUE run), alors que +95deg (= -85 mod 180) est la
-    # MEME prise a seulement +20deg. L'offset lateral est recalcule depuis R ci-dessous,
-    # donc le doigt fixe reste du bon cote apres le pli.
+    # === Symetrie 180deg de la pince a machoires paralleles ===
+    # cam_2 fournit un axe (defini mod 180deg) : yaw et yaw+-180 sont la meme prise
+    # physique. On choisit le representant le plus proche du yaw courant pour que le
+    # poignet fasse le plus petit mouvement. Sinon, si cam_2 mesure -85deg alors que
+    # la prise etait a +75deg, la reorientation atteint ~160deg (demi-tour du
+    # poignet), alors que +95deg (= -85 mod 180) est la meme prise a seulement +20deg.
+    # Le decalage lateral est recalcule depuis R ci-dessous, donc le doigt fixe reste
+    # du bon cote apres le pli.
     old_yaw_rad = float(meta.get("yaw_rad", new_yaw_rad))
     while new_yaw_rad - old_yaw_rad > np.pi / 2.0:
         new_yaw_rad -= np.pi
@@ -323,7 +322,7 @@ class TopDownGrasp(GraspStrategy):
     Parametres :
         approach_height_m : hauteur de la pose d'approche au-dessus de l'objet (m).
         grasp_offset_m    : decalage Z entre le centroide de l'objet et la pose
-                            grasp. Souvent on grasp AU CENTROIDE (offset 0), mais
+                            grasp. Souvent on grasp au centroide (offset 0), mais
                             pour les objets hauts (gobelet), on grasp un peu plus
                             bas que le centroide, donc grasp_offset_m < 0 ramene
                             la pince plus bas.
@@ -343,69 +342,66 @@ class TopDownGrasp(GraspStrategy):
                  gripper_open_pct: float = 100.0,
                  gripper_close_pct: float = 0.0,
                  align_wrist_roll: bool = True,
-                 # CORRECTION DE CONVENTION (deg) ajoutee a l'angle de prise.
-                 # 0 ici = convention NOMINALE (tests). La valeur de DEPLOIEMENT
-                 # est dans PipelineConfig.grasp_yaw_offset_deg = 90 : MESURE
-                 # TERRAIN 2026-06-13, la pince SO-101 de Maxence ferme a 90deg de
-                 # la convention nominale (verifie : 90 -> saisies //X et //Y
-                 # reussies du 1er coup, couple 300+ ; 0 echouait systematiquement).
+                 # Correction de convention (deg) ajoutee a l'angle de prise.
+                 # 0 ici = convention nominale (tests). La valeur de deploiement
+                 # est dans PipelineConfig.grasp_yaw_offset_deg = 90 (mesure
+                 # terrain) : la pince SO-101 ferme a 90deg de la convention
+                 # nominale (verifie : 90 -> saisies //X et //Y reussies
+                 # d'emblee, couple 300+ ; 0 echouait systematiquement).
                  yaw_offset_deg: float = 0.0,
                  max_object_height_m: float = 0.12,
-                 # --- A2 : decalage smart vers la pince fixe ---
-                 # Le SO-101 a une pince ASYMETRIQUE : un doigt fixe, un
-                 # doigt mobile qui ferme contre le fixe. Si on centre le
-                 # grasp sur le centroide objet, le doigt fixe percute
-                 # l'objet AVANT la fermeture -> l'objet bouge, saisie rate.
-                 # Solution : decaler le grasp pour que l'objet finisse
-                 # contre le doigt fixe (= le doigt fixe touche un bord
-                 # de l'objet, le doigt mobile vient l'ecraser).
-                 # 8 ici = valeur nominale (tests). DEPLOIEMENT : PipelineConfig
-                 # met 0 par defaut (utile surtout pour objets a FACES PLATES type
-                 # cube ; pour un objet ROND ca ne sert pas et un decalage de 8mm
-                 # risque de faire RATER un objet fin). Passer --grasp-lateral-offset
+                 # --- Decalage lateral vers le doigt fixe ---
+                 # Le SO-101 a une pince asymetrique : un doigt fixe, un doigt
+                 # mobile qui ferme contre le fixe. Si on centre le grasp sur le
+                 # centroide objet, le doigt fixe percute l'objet avant la
+                 # fermeture, l'objet bouge et la saisie rate. On decale donc le
+                 # grasp pour que l'objet finisse contre le doigt fixe (le doigt
+                 # fixe touche un bord de l'objet, le doigt mobile vient l'ecraser).
+                 # 8 ici = valeur nominale (tests). En deploiement, PipelineConfig
+                 # met 0 par defaut (utile surtout pour les objets a faces plates
+                 # type cube ; pour un objet rond le decalage ne sert pas et 8mm
+                 # risque de faire rater un objet fin). Passer --grasp-lateral-offset
                  # 8 pour un cube si besoin.
                  grasp_lateral_offset_mm: float = 8.0,
-                 # Cote du doigt fixe dans le repere PINCE.
-                 # SO-101 de Maxence : doigt fixe cote Y_base+ (gauche du
-                 # robot, vu de derriere). Avec _rotation_top_down(yaw=0),
-                 # Y_pince = -Y_base, donc doigt fixe a Y_pince-.
-                 # Si on cherche un offset OPPOSE au doigt fixe : +Y_pince.
-                 # En vecteur unitaire dans le repere PINCE :
+                 # Cote du doigt fixe dans le repere pince.
+                 # SO-101 : doigt fixe cote Y_base+ (gauche du robot, vu de
+                 # derriere). Avec _rotation_top_down(yaw=0), Y_pince = -Y_base,
+                 # donc doigt fixe a Y_pince-. Un decalage oppose au doigt fixe
+                 # vaut donc +Y_pince. En vecteur unitaire dans le repere pince :
                  fixed_finger_dir_gripper: tuple = (0, -1, 0),
-                 # --- A3 : ouverture pince adaptative ---
-                 # Si True ET que bbox_3d_m est fourni dans l'ObjectInstance,
-                 # l'ouverture pince est calculee selon la largeur objet
-                 # (plutot que d'ouvrir grand pour rien). Formule :
+                 # --- Ouverture pince adaptative ---
+                 # Si True et que bbox_3d_m est fourni dans l'ObjectInstance,
+                 # l'ouverture pince est calculee selon la largeur objet (plutot
+                 # que d'ouvrir au maximum sans raison). Formule :
                  # pct = (largeur + 2*marge) / largeur_max_pince * 100.
                  adaptive_gripper_open: bool = True,
-                 # marge d'ouverture de CHAQUE cote. 12mm pour ABSORBER l'erreur
-                 # de position (~8mm d'IK + calibration) : sans ca, la pince
-                 # ouvre trop juste et le doigt FIXE percute l'objet a la
-                 # descente au lieu de le degager (#3 signale par Maxence).
+                 # Marge d'ouverture de chaque cote. Absorbe l'erreur de position
+                 # (~8mm d'IK + calibration) : sans elle, la pince ouvre trop juste
+                 # et le doigt fixe percute l'objet a la descente au lieu de le
+                 # degager.
                  gripper_open_margin_mm: float = 10.0,
-                 # OUVERTURE MAX REELLE de la pince SO-101 de Maxence = 150mm
-                 # (mesure terrain 2026-06-13). AVANT : 50mm (FAUX, 3x trop
-                 # petit) -> la formule d'ouverture saturait a 100% pour tout
-                 # objet >= ~26mm ("la pince ne sait que s'ouvrir au max").
-                 # Avec 150 : un objet de 30mm -> (30+2*10)/150 = 33% ~= 50mm.
+                 # Ouverture max reelle de la pince SO-101 = 150mm (mesure terrain).
+                 # Une valeur de 50mm (trop faible) faisait saturer la formule
+                 # d'ouverture a 100% pour tout objet >= ~26mm. Avec 150 : un objet
+                 # de 30mm -> (30+2*10)/150 = 33% ~= 50mm.
                  gripper_max_opening_mm: float = 150.0,
-                 # --- D-Z : ancrage de la profondeur de prise sur la table ---
-                 table_z_m: float = 0.0,               # z=0 = PLAQUE (la ou les objets reposent) -- repere demande par Maxence 2026-06-20. L'offset de pince est gere a part (gripper_grab_offset_m).
-                 min_grasp_clearance_m: float = 0.0,   # plancher AU NIVEAU de la plaque (z=0). Le +5mm a ete RETIRE (Maxence 2026-06-20) : top-down prend a la hauteur reelle de l'objet ; le degagement plaque ne concerne QUE la prise 90 (tilted_grasp_center_min_m).
-                 # OFFSET PINCE (Z, le long de l'axe d'approche). DEFAUT 0 (Maxence
-                 # 2026-06-21). Les cameras sont calibrees sur la PLAQUE (z=0), donc
-                 # un objet pose dessus a son CENTRE a table + H/2 : on vise CA,
-                 # directement, sans rien ajouter. L'ancien +14mm etait une RUSTINE
-                 # qui compensait la SOUS-LECTURE de hauteur d'UN grand cylindre
-                 # debout (H lu 43 au lieu de 60) -> faux en general, et sur un objet
-                 # court/couche il visait AU-DESSUS du sommet -> "trop haut" -> rate.
-                 # Reglable via --grab-offset (mettre une petite valeur si la pince
+                 # --- Ancrage de la profondeur de prise sur la table ---
+                 table_z_m: float = 0.0,               # z=0 = plaque (la ou les objets reposent). L'offset de pince est gere a part (gripper_grab_offset_m).
+                 min_grasp_clearance_m: float = 0.0,   # plancher au niveau de la plaque (z=0). Le top-down prend a la hauteur reelle de l'objet ; le degagement plaque ne concerne que la prise 90 (tilted_grasp_center_min_m).
+                 # Offset pince (Z, le long de l'axe d'approche). Defaut 0. Les
+                 # cameras sont calibrees sur la plaque (z=0), donc un objet pose
+                 # dessus a son centre a table + H/2 : on vise directement ce point,
+                 # sans rien ajouter. Un offset constant (par exemple +14mm) ne
+                 # compense qu'un cas particulier de sous-lecture de hauteur (grand
+                 # cylindre debout) et devient faux en general : sur un objet
+                 # court/couche il viserait au-dessus du sommet -> prise trop haute
+                 # -> ratee. Reglable via --grab-offset (petite valeur si la pince
                  # butte la table sur les objets tres bas). Le vrai correctif des
-                 # erreurs de hauteur = fiabiliser H, pas un offset constant.
+                 # erreurs de hauteur est de fiabiliser H, pas un offset constant.
                  gripper_grab_offset_m: float = 0.0,
-                 # Seuil de detection d'EMPILEMENT : si la base estimee de l'objet
+                 # Seuil de detection d'empilement : si la base estimee de l'objet
                  # (centroide - hauteur/2) depasse table + ce seuil, l'objet repose
-                 # sur AUTRE CHOSE -> on vise le centroide detecte plutot que
+                 # sur autre chose -> on vise le centroide detecte plutot que
                  # table+H/2 (qui viserait le support). 15mm = tolerance au bruit
                  # du Z stereo sur un objet pose a plat sur la table.
                  stack_detect_m: float = 0.015,
@@ -442,31 +438,31 @@ class TopDownGrasp(GraspStrategy):
             return None
 
         # Yaw : aligne la pince sur le grand axe de l'objet.
-        # SOURCE PREFEREE : le yaw REPERE BASE calcule par la perception
+        # Source preferee : le yaw en repere base calcule par la perception
         # (pose_estimator._estimate_geometry, projection rayon-plan du contour
         # sur le plan de l'objet). Correct quelle que soit l'orientation des
-        # cameras -> les objets poses EN BIAIS sont geres. La perception
+        # cameras, donc les objets poses en biais sont geres. La perception
         # signale aussi la classe de pose :
         #   "debout"  -> empreinte au sol quasi circulaire, yaw libre (0).
-        #      (Avant : le contour vu DE COTE d'un cylindre debout etait
-        #      allonge verticalement dans l'image -> yaw fantome ~±90deg
-        #      et rotation de poignet inutile. Diagnostic 2026-06-12.)
+        #      (Sans cette classe, le contour vu de cote d'un cylindre debout est
+        #      allonge verticalement dans l'image, ce qui produit un yaw fantome
+        #      ~±90deg et une rotation de poignet inutile.)
         #   "couche"  -> yaw_base_rad = grand axe de l'empreinte.
         #   "compact" -> pas de grand axe fiable, yaw 0.
-        # FALLBACK (perception sans info de pose) : angle image brut du
-        # contour cam_0/cam_1, comme en V1 (approximation documentee).
-        # === ORIENTATION DE LA PINCE (wrist_roll), continue et geometrique ===
-        # Regle UNIQUE (pas de cas par objet) : on aligne les machoires EN TRAVERS
-        # du PETIT axe de l'empreinte detectee (= perpendiculaire au grand axe).
+        # Repli (perception sans info de pose) : angle image brut du contour
+        # cam_0/cam_1 (approximation documentee).
+        # === Orientation de la pince (wrist_roll), continue et geometrique ===
+        # Regle unique (pas de cas par objet) : on aligne les machoires en travers
+        # du petit axe de l'empreinte detectee (= perpendiculaire au grand axe).
         # La perception fournit yaw_base_rad = angle du grand axe quand l'empreinte
-        # a une orientation FIABLE (allongee) ; sinon None.
+        # a une orientation fiable (allongee) ; sinon None.
         #   - yaw_base connu  -> yaw = grand axe (machoires en travers du petit cote).
-        #   - empreinte RONDE / indeterminee (yaw_base None) -> yaw LIBRE : l'IK
-        #     choisit l'angle qui fait le MOINS tourner le poignet depuis la pose
+        #   - empreinte ronde / indeterminee (yaw_base None) -> yaw libre : l'IK
+        #     choisit l'angle qui fait le moins tourner le poignet depuis la pose
         #     courante (pas de rotation imposee inutile). C'est correct pour un objet
         #     rond (tout angle saisit pareil) et sans risque pour un objet dont on
         #     ne connait pas l'orientation (on ne force pas un mauvais angle).
-        #   - pas de geometrie 3D (fallback) -> angle du contour image (V1).
+        #   - pas de geometrie 3D (repli) -> angle du contour image.
         yaw = 0.0
         yaw_free = False
         meta_obj = obj.meta or {}
@@ -483,17 +479,17 @@ class TopDownGrasp(GraspStrategy):
                         if det.cam_key in ("cam_0", "cam_1"):
                             yaw = yaw_from_contour(det.contour)
                             break
-        # Correction de convention (diagnostic 90deg) : appliquee a un angle
-        # ALIGNE seulement (pas en yaw libre, ou l'angle n'a pas de sens).
+        # Correction de convention : appliquee a un angle aligne seulement
+        # (pas en yaw libre, ou l'angle n'a pas de sens).
         yaw_offset_rad = np.radians(self.yaw_offset_deg)
         if not yaw_free:
             yaw = yaw + yaw_offset_rad
         R = _rotation_top_down(yaw)
 
-        # === A2 : decalage smart vers la pince fixe ===
+        # === Decalage lateral vers le doigt fixe ===
         # On veut que l'objet finisse contre le doigt fixe (l'autre ferme
-        # vers lui). Donc on decale le centre du grasp DANS LA DIRECTION
-        # OPPOSEE au doigt fixe (en repere pince), puis on transforme dans
+        # vers lui). On decale donc le centre du grasp dans la direction
+        # opposee au doigt fixe (en repere pince), puis on le transforme dans
         # le repere base via R.
         opposite_dir_gripper = -self.fixed_finger_dir_gripper
         offset_base = R @ opposite_dir_gripper * (self.grasp_lateral_offset_mm / 1000.0)
@@ -501,19 +497,19 @@ class TopDownGrasp(GraspStrategy):
         grasp_xy = np.array([x, y, 0.0]) + np.array([offset_base[0], offset_base[1], 0.0])
         gx, gy = float(grasp_xy[0]), float(grasp_xy[1])
 
-        # === D-Z : profondeur de prise (ancrage table, conscient de l'EMPILEMENT) ===
-        # Pour un objet POSE SUR LA TABLE, le Z stereo est bruite (cf memoire) ->
-        # on derive la profondeur de table + hauteur/2 (milieu de l'objet), plus
-        # robuste au bruit. MAIS si l'objet repose SUR UN AUTRE OBJET (base au-
-        # dessus de la table), cet ancrage table viserait trop BAS (au niveau du
-        # support) -> on detecte ce cas (base = centroide - hauteur/2 nettement
-        # au-dessus de la table) et on fait alors confiance au CENTROIDE detecte.
+        # === Profondeur de prise (ancrage table, conscient de l'empilement) ===
+        # Pour un objet pose sur la table, le Z stereo est bruite : on derive la
+        # profondeur de table + hauteur/2 (milieu de l'objet), plus robuste au
+        # bruit. Si l'objet repose sur un autre objet (base au-dessus de la table),
+        # cet ancrage table viserait trop bas (au niveau du support) ; on detecte
+        # ce cas (base = centroide - hauteur/2 nettement au-dessus de la table) et
+        # on fait alors confiance au centroide detecte.
         z_object_center = _grasp_depth_z(obj, z, self.table_z_m, self.grasp_offset_m,
                                          self.stack_detect_m, self.min_grasp_clearance_m)
-        # Remonte au point de SERRAGE des machoires (z=0=plaque -> Z prise =
-        # plaque + H/2 + offset pince). Reproduit l'ancrage empirique qui marchait.
-        # z_object_center (SANS offset) = Z du CENTRE de l'objet -> sert de plan de
-        # projection a cam_2 (meme reference que la stereo, PAS le Z de prise).
+        # Remonte au point de serrage des machoires (z=0=plaque -> Z prise =
+        # plaque + H/2 + offset pince). z_object_center (sans offset) = Z du centre
+        # de l'objet ; il sert de plan de projection a cam_2 (meme reference que la
+        # stereo, pas le Z de prise).
         z_grasp = z_object_center + self.gripper_grab_offset_m
 
         # 3 poses : approach, grasp, retract (meme (gx, gy), Z relatif au grasp)
@@ -521,18 +517,18 @@ class TopDownGrasp(GraspStrategy):
         T_grasp    = _se3(R, [gx, gy, z_grasp])
         T_retract  = _se3(R, [gx, gy, z_grasp + self.retract_height_m])
 
-        # === A3 : ouverture pince adaptative selon bbox 3D ===
+        # === Ouverture pince adaptative selon bbox 3D ===
         # Si on a bbox_3d_m, on calcule l'ouverture optimale (plutot que
-        # d'ouvrir grand). Formule : pct = (largeur + 2 * marge) / max_pince
+        # d'ouvrir grand). Formule : pct = (largeur + 2 * marge) / max_pince.
         # On prend min(X, Y) car la pince ferme dans le plan XY.
         gripper_open = self.gripper_open_pct
         if self.adaptive_gripper_open and obj.bbox_3d_m is not None:
             obj_width_m = min(obj.bbox_3d_m[0], obj.bbox_3d_m[1])
             target_open_mm = obj_width_m * 1000 + 2 * self.gripper_open_margin_mm
             pct = (target_open_mm / self.gripper_max_opening_mm) * 100.0
-            # Clip a [20, 100] : assez d'ouverture pour degager l'objet + l'erreur
+            # Borne a [20, 100] : assez d'ouverture pour degager l'objet et l'erreur
             # de visee (~8mm IK + cam), sans ouvrir a fond inutilement. Avec la
-            # max reelle (150mm) l'ouverture DIFFERENCIE enfin les objets.
+            # max reelle (150mm) l'ouverture differencie les objets.
             gripper_open = float(np.clip(pct, 20.0, 100.0))
 
         return GraspPose(
@@ -559,11 +555,11 @@ class TopDownGrasp(GraspStrategy):
                 "lateral_offset_mm": self.grasp_lateral_offset_mm,
                 "offset_base_xy_mm": (float(offset_base[0]*1000), float(offset_base[1]*1000)),
                 "gripper_open_pct_computed": gripper_open,
-                # Largeur SERREE par les machoires (petit cote de l'empreinte, mm).
-                # Sert a l'offset lateral ADAPTATIF (Maxence 2026-06-23) : decaler
-                # le doigt fixe de ~(largeur/2 + marge) pour qu'il tombe a fleur de
-                # l'arete, quelle que soit la TAILLE de l'objet (plus de constante
-                # codee en dur). None si pas de bbox 3D.
+                # Largeur serree par les machoires (petit cote de l'empreinte, mm).
+                # Sert a l'offset lateral adaptatif : decaler le doigt fixe de
+                # ~(largeur/2 + marge) pour qu'il tombe a fleur de l'arete, quelle
+                # que soit la taille de l'objet (pas de constante codee en dur).
+                # None si pas de bbox 3D.
                 "jaw_width_mm": (float(min(obj.bbox_3d_m[0], obj.bbox_3d_m[1]) * 1000.0)
                                  if obj.bbox_3d_m is not None else None),
             },
@@ -578,39 +574,39 @@ class TopDownGrasp(GraspStrategy):
 class AdaptiveGrasp(GraspStrategy):
     """Saisie adaptative : choisit l'angle d'attaque dans le plan sagittal.
 
-    Au lieu d'attaquer TOUJOURS par le dessus (top-down), la pince peut attaquer
-    selon n'importe quel TANGAGE sur les 180deg du plan vertical base->objet :
+    Au lieu d'attaquer toujours par le dessus (top-down), la pince peut attaquer
+    selon n'importe quel tangage sur les 180deg du plan vertical base->objet :
     du sol cote face avant -> par-dessus -> sol cote face arriere. La regle de
     serrage est conservee (machoires en travers du petit cote).
 
     Methode (motif standard *generate -> filter -> rank*, cf Bohg 2014 ;
     Miller/GraspIt! 2003 pour le jeu fini de prises canoniques par primitive) :
-      1. GENERER un petit jeu d'angles canoniques (orbites de symetrie des
+      1. Generer un petit jeu d'angles canoniques (orbites de symetrie des
          primitives, Pokorny et al. RSS 2013) : theta in {0, +45, +90} puis repli
          {-45, -90} (face arriere, seulement si proche).
-      2. FILTRER (ici, geometrie) : ouverture pince suffisante ; degagement table.
-         Le filtre d'ATTEIGNABILITE IK (le plus important pour un bras 5 DDL : le
-         top-down ne passe plus au-dela d'une distance, idem -45/90) est fait par
-         le pipeline qui dispose du solveur IK (reachability-aware grasping :
-         Zacharias 2010, Vahrenkamp 2013, Lou 2020).
-      3. CHOISIR le 1er candidat faisable dans l'ordre de preference (top-down
+      2. Filtrer (ici, geometrie) : ouverture pince suffisante ; degagement table.
+         Le filtre d'atteignabilite IK (le plus important pour un bras 5 DDL : le
+         top-down ne passe plus au-dela d'une certaine distance, idem -45/90) est
+         fait par le pipeline qui dispose du solveur IK (reachability-aware
+         grasping : Zacharias 2010, Vahrenkamp 2013, Lou 2020).
+      3. Choisir le premier candidat faisable dans l'ordre de preference (top-down
          d'abord : plus stable et le plus sur cote collision ; frontal/diagonale
          quand le top-down est mauvais ou impossible). Fait par le pipeline.
 
-    Le candidat theta=0 reproduit EXACTEMENT TopDownGrasp (meme orientation, memes
-    poses) -> aucune regression sur les objets deja bien saisis par le haut.
+    Le candidat theta=0 reproduit exactement TopDownGrasp (meme orientation, memes
+    poses), donc aucune regression sur les objets deja bien saisis par le haut.
     """
 
     def __init__(self,
-                 # jeu d'angles canoniques (deg), DANS L'ORDRE DE PREFERENCE.
-                 # {0, +45, +90} UNIQUEMENT. Les angles ARRIERE (-45, -90)
-                 # demanderaient d'attaquer la FACE ARRIERE de l'objet (depuis
+                 # Jeu d'angles canoniques (deg), dans l'ordre de preference.
+                 # {0, +45, +90} uniquement. Les angles arriere (-45, -90)
+                 # demanderaient d'attaquer la face arriere de l'objet (depuis
                  # l'autre cote, pince orientee vers la base) : structurellement
                  # hors d'atteinte sur le SO-101 (epaule-lift/coude/poignet-flex
-                 # plient dans le MEME plan -> le poignet ne peut pas se replier
-                 # derriere l'objet). Verifie sur tous les essais terrain
-                 # (residus IK 40-110mm, JAMAIS retenus), et un objet assez proche
-                 # pour eux est de toute facon pris en top-down (0, prefere).
+                 # plient dans le meme plan, donc le poignet ne peut pas se replier
+                 # derriere l'objet). Verifie sur les essais terrain (residus IK
+                 # 40-110mm, jamais retenus), et un objet assez proche pour ces
+                 # angles est de toute facon pris en top-down (0, prefere).
                  candidate_pitches_deg: tuple = (0.0, 45.0, 90.0),
                  approach_height_m: float = 0.08,
                  grasp_offset_m: float = 0.0,
@@ -619,48 +615,50 @@ class AdaptiveGrasp(GraspStrategy):
                  gripper_close_pct: float = 0.0,
                  align_wrist_roll: bool = True,
                  yaw_offset_deg: float = 0.0,
-                 # le top-down (theta=0) reste refuse au-dela de cette hauteur
+                 # Le top-down (theta=0) reste refuse au-dela de cette hauteur
                  # (collision pince/objet par le haut, comme TopDownGrasp). Les
-                 # candidats INCLINES, eux, sont justement la pour les objets
-                 # hauts -> pas de plafond de hauteur pour theta != 0.
+                 # candidats inclines, eux, sont justement la pour les objets
+                 # hauts : pas de plafond de hauteur pour theta != 0.
                  max_object_height_m: float = 0.12,
                  grasp_lateral_offset_mm: float = 0.0,
                  fixed_finger_dir_gripper: tuple = (0, -1, 0),
                  adaptive_gripper_open: bool = True,
                  gripper_open_margin_mm: float = 10.0,
                  gripper_max_opening_mm: float = 150.0,
-                 table_z_m: float = 0.0,  # z=0 = PLAQUE (la ou les objets reposent) -- repere demande par Maxence 2026-06-20. L'offset de pince est gere a part (gripper_grab_offset_m).
-                 min_grasp_clearance_m: float = 0.0,   # plancher AU NIVEAU plaque (z=0) ; +5mm RETIRE (Maxence 2026-06-20). Seul le 90 garde un plancher (tilted_grasp_center_min_m = 7mm).
-                 # OFFSET PINCE (cf TopDownGrasp) : DEFAUT 0 (Maxence 2026-06-21).
-                 # On vise table + H/2 directement (cameras calibrees sur la plaque).
-                 # L'ancien +14mm = rustine de sous-lecture de hauteur, faux en general.
+                 table_z_m: float = 0.0,  # z=0 = plaque (la ou les objets reposent). L'offset de pince est gere a part (gripper_grab_offset_m).
+                 min_grasp_clearance_m: float = 0.0,   # plancher au niveau plaque (z=0). Seul le 90 garde un plancher (tilted_grasp_center_min_m = 7mm).
+                 # Offset pince (cf TopDownGrasp) : defaut 0. On vise table + H/2
+                 # directement (cameras calibrees sur la plaque). Un offset constant
+                 # (par exemple +14mm) ne compense qu'un cas de sous-lecture de
+                 # hauteur et devient faux en general.
                  gripper_grab_offset_m: float = 0.0,
-                 # Seuil de detection d'EMPILEMENT (cf TopDownGrasp.stack_detect_m).
+                 # Seuil de detection d'empilement (cf TopDownGrasp.stack_detect_m).
                  stack_detect_m: float = 0.015,
-                 # DEGAGEMENT TABLE pour une prise INCLINEE : a l'horizontale
+                 # Degagement table pour une prise inclinee : a l'horizontale
                  # (theta=+/-90) les machoires sont a mi-hauteur de l'objet et il
-                 # faut que le BAS de la pince degage la table. Hauteur de prise
+                 # faut que le bas de la pince degage la table. Hauteur de prise
                  # mini requise = min_grasp_clearance + |sin(theta)| * ce terme.
-                 # 25mm = hauteur du doigt a sa BASE (mesure Maxence : doigt 10mm a
-                 # la pointe, 25mm a la fixation 3d) -> au plus bas la pince occupe
-                 # ~25mm sous la ligne de prise a l'horizontale. Reglable
-                 # (--side-grasp-min-height). A theta=0 ce terme est nul -> le
-                 # top-down n'est JAMAIS contraint par ce filtre (comme avant).
-                 side_grasp_min_height_m: float = 0.025,   # (obsolete : remplace par tilted_grasp_center_min_m)
-                 # DEGAGEMENT TABLE v2 (2026-06-20, mesure Maxence) : hauteur MINI
-                 # du CENTRE de prise au-dessus de la plaque pour une prise
-                 # INCLINEE. Limite PLATE (meme pour 45 ET 90), remplace l'ancienne
-                 # formule min_clearance + |sin(theta)|*side_min_height (trop dure :
-                 # exigeait H>=45mm a 45 / 60mm a 90). Geometrie pince Maxence :
-                 # bout du doigt ~10mm, prise ~15mm, fond ~25mm -> un centre a >=7mm
+                 # 25mm = hauteur du doigt a sa base (mesure terrain : doigt 10mm a
+                 # la pointe, 25mm a la fixation imprimee) : au plus bas la pince
+                 # occupe ~25mm sous la ligne de prise a l'horizontale. Reglable
+                 # (--side-grasp-min-height). A theta=0 ce terme est nul, donc le
+                 # top-down n'est jamais contraint par ce filtre.
+                 side_grasp_min_height_m: float = 0.025,   # conserve pour compatibilite ; le filtre actif est tilted_grasp_center_min_m
+                 # Degagement table (mesure terrain) : hauteur minimale du centre
+                 # de prise au-dessus de la plaque pour une prise inclinee. Limite
+                 # plate (meme pour 45 et 90), remplace l'ancienne formule
+                 # min_clearance + |sin(theta)|*side_min_height (trop dure :
+                 # exigeait H>=45mm a 45 / 60mm a 90). Geometrie de la pince : bout
+                 # du doigt ~10mm, prise ~15mm, fond ~25mm ; un centre a >=7mm
                  # au-dessus de la plaque suffit, meme a 90 qui avance sur la plaque.
-                 # Top-down (theta=0) JAMAIS contraint (delegue plus haut). Reglable.
-                 tilted_grasp_center_min_m: float = 0.007,   # 7mm AU-DESSUS de la plaque. ATTENTION repere : au runtime z=0 EST la plaque (table_z_m=0), donc ce plancher vaut +7mm en repere base. Le "39.4mm = 32.4 (plaque) + 7" ne vaut QUE dans le datum CAD/URDF, qui n'est JAMAIS utilise par le code.
-                 # Roll (rad-via-deg) applique aux prises INCLINEES autour de l'axe
-                 # d'approche pour la convention pince. None = reutilise yaw_offset_deg
-                 # (mesure en TOP-DOWN). ⚠️ Le SIGNE n'est PAS valide en incline ;
-                 # reglable sans recompiler (PipelineConfig.grasp_tilt_roll_deg /
-                 # --tilt-roll-offset) si les machoires ferment de travers au 1er essai.
+                 # Top-down (theta=0) jamais contraint (delegue plus haut). Reglable.
+                 tilted_grasp_center_min_m: float = 0.007,   # 7mm au-dessus de la plaque. Repere : au runtime z=0 est la plaque (table_z_m=0), donc ce plancher vaut +7mm en repere base.
+                 # Roll (deg) applique aux prises inclinees autour de l'axe
+                 # d'approche pour la convention pince. None = reutilise
+                 # yaw_offset_deg (mesure en top-down). Le signe n'est pas valide en
+                 # incline ; reglable sans recompiler (PipelineConfig.grasp_tilt_roll_deg
+                 # / --tilt-roll-offset) si les machoires ferment de travers au
+                 # premier essai.
                  tilted_roll_deg: Optional[float] = None,
                  ):
         self.candidate_pitches_deg = tuple(float(t) for t in candidate_pitches_deg)
@@ -685,8 +683,8 @@ class AdaptiveGrasp(GraspStrategy):
         self.side_grasp_min_height_m = side_grasp_min_height_m
         self.tilted_grasp_center_min_m = tilted_grasp_center_min_m
         self.tilted_roll_deg = tilted_roll_deg
-        # Le candidat theta=0 DELEGUE a TopDownGrasp (memes parametres) : le
-        # comportement top-down reste IDENTIQUE bit-pour-bit (aucune regression).
+        # Le candidat theta=0 delegue a TopDownGrasp (memes parametres) : le
+        # comportement top-down reste identique bit pour bit (aucune regression).
         self._top_down = TopDownGrasp(
             stack_detect_m=stack_detect_m,
             approach_height_m=approach_height_m,
@@ -716,14 +714,14 @@ class AdaptiveGrasp(GraspStrategy):
         """Construit la GraspPose pour un tangage donne, ou None si infaisable
         geometriquement (ouverture pince ou degagement table).
 
-        theta=0 -> delegation EXACTE a TopDownGrasp (non-regression). theta!=0 ->
-        prise inclinee : machoires LATERALES (horizontales, perpendiculaires au
-        plan sagittal) -> elles serrent une dimension horizontale de l'objet, ne
+        theta=0 -> delegation exacte a TopDownGrasp (non-regression). theta!=0 ->
+        prise inclinee : machoires laterales (horizontales, perpendiculaires au
+        plan sagittal) ; elles serrent une dimension horizontale de l'objet, ne
         risquent jamais la table et ne tentent pas de serrer la hauteur.
-        L'alignement fin sur le petit axe en 3D pour les prises inclinees est hors
-        scope v1 (cf plan).
+        L'alignement fin sur le petit axe en 3D pour les prises inclinees reste
+        hors du perimetre de cette version.
         """
-        # --- theta == 0 : top-down EXACT (delegation) ---
+        # --- theta == 0 : top-down exact (delegation) ---
         if abs(theta_deg) < 1e-6:
             gp = self._top_down.plan(obj)
             if gp is not None and gp.meta is not None:
@@ -735,7 +733,7 @@ class AdaptiveGrasp(GraspStrategy):
                     if obj.bbox_3d_m is not None else 0.0)
             return gp
 
-        # --- theta != 0 : prise INCLINEE (necessite la bbox 3D) ---
+        # --- theta != 0 : prise inclinee (necessite la bbox 3D) ---
         if obj.bbox_3d_m is None:
             return None
         x, y, z = (float(obj.position_base_m[0]), float(obj.position_base_m[1]),
@@ -743,40 +741,43 @@ class AdaptiveGrasp(GraspStrategy):
         phi = float(np.arctan2(y, x))
         th = np.radians(float(theta_deg))
         obj_h = float(obj.bbox_3d_m[2])
-        # profondeur de prise : ancrage table CONSCIENT de l'empilement (si l'objet
+        # profondeur de prise : ancrage table conscient de l'empilement (si l'objet
         # repose sur un autre, on vise le centroide detecte, pas table+H/2).
         z_center = _grasp_depth_z(obj, z, self.table_z_m, self.grasp_offset_m,
                                   self.stack_detect_m, self.min_grasp_clearance_m)
 
-        # --- filtre DEGAGEMENT TABLE : UNIQUEMENT pour les prises NEAR-HORIZONTALES
-        #     (~90deg). Elles AVANCENT sur la plaque -> le bout de pince risque de
-        #     la taper. Le 45 (et le top-down) DESCENDENT en diagonale -> pas de
-        #     skim plaque -> AUCUNE limite (Maxence : "le cas vient surtout pour 90
-        #     et pas 45"). Seuil 67.5deg = a mi-chemin 45/90 : seul le 90 est
-        #     contraint. Limite = centre de prise >= tilted_grasp_center_min_m
-        #     au-dessus de la plaque. (z_center - table_z) = demi-hauteur DETECTEE.
-        #     ⚠️ Travaille sur la hauteur DETECTEE (sous-lue) -> vrai fix = hauteur.
+        # --- filtre degagement table : uniquement pour les prises quasi
+        #     horizontales (~90deg). Elles avancent sur la plaque, donc le bout de
+        #     pince risque de la taper. Le 45 (et le top-down) descendent en
+        #     diagonale, sans raser la plaque -> aucune limite (le cas se pose
+        #     surtout pour 90, pas pour 45). Seuil 67.5deg = a mi-chemin 45/90 :
+        #     seul le 90 est contraint. Limite = centre de prise >=
+        #     tilted_grasp_center_min_m au-dessus de la plaque ; (z_center -
+        #     table_z) = demi-hauteur detectee. Le filtre s'appuie sur la hauteur
+        #     detectee (potentiellement sous-lue), donc le vrai correctif est de
+        #     fiabiliser la hauteur.
         if (abs(theta_deg) >= 67.5
                 and (z_center - self.table_z_m) < self.tilted_grasp_center_min_m):
             return None
 
-        # AZIMUT D'APPROCHE psi. Par defaut RADIAL (base->objet) : l'axe des
+        # Azimut d'approche psi. Par defaut radial (base->objet) : l'axe des
         # machoires u (perpendiculaire a psi, horizontal) est alors fixe par la
-        # direction du bras, INDEPENDAMMENT de l'orientation de l'objet. C'est OK
-        # pour un objet rond/compact, mais FAUX pour un objet ALLONGE (couche) :
-        # si son grand axe est tangentiel (// Y), u tombe LE LONG de la longueur
-        # -> machoires ecartees sur la longueur -> ferme a vide (essais cylindre
-        # couche // Y, 2026-06-20). Correction : quand le grand axe base est connu
-        # (yaw_base_rad, objet allonge), on approche LE LONG du grand axe -> u
-        # devient PERPENDICULAIRE au grand axe = en travers du PETIT cote (prise
-        # correcte, coherent avec la convention top-down). Debout (yaw_base None,
-        # dessus rond) et compact non concernes -> psi = phi inchange.
+        # direction du bras, independamment de l'orientation de l'objet. C'est
+        # correct pour un objet rond/compact, mais faux pour un objet allonge
+        # (couche) : si son grand axe est tangentiel (// Y), u tombe le long de la
+        # longueur, les machoires s'ecartent sur la longueur et ferment a vide
+        # (essais cylindre couche // Y). Correction : quand le grand axe base est
+        # connu (yaw_base_rad, objet allonge), on approche le long du grand axe ;
+        # u devient perpendiculaire au grand axe, donc en travers du petit cote
+        # (prise correcte, coherente avec la convention top-down). Debout
+        # (yaw_base None, dessus rond) et compact non concernes -> psi = phi
+        # inchange.
         psi = phi
         _meta_obj = obj.meta or {}
         _yaw_base = _meta_obj.get("yaw_base_rad")
         _elong = float(_meta_obj.get("footprint_elongation", 1.0) or 1.0)
         if _yaw_base is not None and _elong >= 1.3:
-            # 2 sens possibles (yb, yb+pi) : on retient celui dont le DEPART
+            # 2 sens possibles (yb, yb+pi) : on retient celui dont le depart
             # d'approche est le plus proche de la base (le bras ne passe pas
             # au-dessus de l'objet pour l'attaquer).
             _best = None
@@ -788,13 +789,13 @@ class AdaptiveGrasp(GraspStrategy):
                 if _best is None or _r < _best[0]:
                     _best = (_r, _psi)
             psi = _best[1]
-        # axe d'approche a (vers l'objet) et axe LATERAL u (machoires physiques)
+        # axe d'approche a (vers l'objet) et axe lateral u (machoires physiques)
         cpsi, spsi = np.cos(psi), np.sin(psi)
         a = np.array([np.sin(th) * cpsi, np.sin(th) * spsi, -np.cos(th)])
         u = np.array([-spsi, cpsi, 0.0])   # horizontal, perpendiculaire a l'approche
 
-        # --- filtre OUVERTURE : dimension serree = extension de l'objet le long
-        #     de l'axe des machoires PHYSIQUE (u) ---
+        # --- filtre ouverture : dimension serree = extension de l'objet le long
+        #     de l'axe des machoires physique (u) ---
         jaw_width_m = _extent_along(obj.bbox_3d_m, u)
         need_mm = jaw_width_m * 1000.0 + 2.0 * self.gripper_open_margin_mm
         if need_mm > self.gripper_max_opening_mm:
@@ -805,38 +806,38 @@ class AdaptiveGrasp(GraspStrategy):
         else:
             gripper_open = self.gripper_open_pct
 
-        # CONVENTION PINCE : yaw_offset_deg (mesure en top-down) corrige le zero du
-        # POIGNET, c.-a-d. une rotation autour de l'axe d'approche -> on l'applique
-        # comme un ROLL. roll = +yaw_offset (derive de la convention top-down : la
-        # pince ferme a yaw_offset du nominal) pour que les machoires PHYSIQUES
+        # Convention pince : yaw_offset_deg (mesure en top-down) corrige le zero du
+        # poignet, c.-a-d. une rotation autour de l'axe d'approche ; on l'applique
+        # comme un roll. roll = +yaw_offset (derive de la convention top-down : la
+        # pince ferme a yaw_offset du nominal) pour que les machoires physiques
         # finissent laterales (= u). La largeur serree est calculee sur u (axe
-        # physique), donc independante du roll commande. [Sens du roll a confirmer
-        # au 1er essai incline -- logge ; reglable via tilted_roll_deg.]
+        # physique), donc independante du roll commande. Le sens du roll est logge
+        # et reglable via tilted_roll_deg.
         roll_deg = (self.tilted_roll_deg if self.tilted_roll_deg is not None
                     else self.yaw_offset_deg)
         roll = float(np.radians(roll_deg))
         R = _rotation_grasp(psi, th, roll)
 
-        # --- A2 : decalage vers le doigt fixe (defaut 0) ---
+        # --- Decalage lateral vers le doigt fixe (defaut 0) ---
         offset_base = R @ (-self.fixed_finger_dir_gripper) * (
             self.grasp_lateral_offset_mm / 1000.0)
         center = np.array([x, y, z_center]) + offset_base
         center[2] = max(center[2], self.table_z_m + self.min_grasp_clearance_m)
-        # Remonte au point de SERRAGE des machoires LE LONG DE L'AXE D'APPROCHE (a).
-        # L'offset pince (~14mm) est la distance TCP->machoires le long de l'axe
-        # d'approche du gripper (Z_pince = a), PAS une translation verticale fixe.
+        # Remonte au point de serrage des machoires le long de l'axe d'approche (a).
+        # L'offset pince est la distance TCP->machoires le long de l'axe d'approche
+        # du gripper (Z_pince = a), pas une translation verticale fixe.
         #   - top-down  : a = (0,0,-1) -> center -= offset*a = center[2] += offset
-        #     (IDENTIQUE au comportement historique, aucune regression).
-        #   - incline   : appliquer +Z fermerait les machoires TROP HAUT. A 90deg,
-        #     a est horizontal -> l'ancien +14mm Z mettait les machoires 14mm
-        #     AU-DESSUS du centre (= au bord haut d'un cube bas : "pinces plus
-        #     hautes que le cube", essai cube 44cm 2026-06-21). En reculant le TCP
-        #     le long de -a, les machoires (a +offset*a) retombent PILE sur le
-        #     centre objet, quel que soit le tangage. Le filtre de degagement table
-        #     ci-dessus utilise z_center (centre OBJET, sans offset) : OK.
+        #     (identique au comportement historique, aucune regression).
+        #   - incline   : appliquer +Z fermerait les machoires trop haut. A 90deg,
+        #     a est horizontal, donc un +offset en Z mettrait les machoires
+        #     au-dessus du centre (au bord haut d'un cube bas, machoires plus hautes
+        #     que le cube). En reculant le TCP le long de -a, les machoires
+        #     (a +offset*a) retombent sur le centre objet, quel que soit le tangage.
+        #     Le filtre de degagement table ci-dessus utilise z_center (centre
+        #     objet, sans offset), ce qui reste correct.
         center = center - self.gripper_grab_offset_m * a
 
-        # approche reculee LE LONG DE L'AXE D'APPROCHE ; retract = levee VERTICALE
+        # approche reculee le long de l'axe d'approche ; retract = levee verticale
         approach_pos = center - self.approach_height_m * a
         retract_pos = center + np.array([0.0, 0.0, self.retract_height_m])
 
@@ -874,29 +875,29 @@ class AdaptiveGrasp(GraspStrategy):
 
     def replan_oriented(self, obj: ObjectInstance, pitch_deg: float,
                         yaw_base_rad: float) -> Optional[GraspPose]:
-        """Replanifie la prise au MEME pitch en imposant le grand axe (yaw)
+        """Replanifie la prise au meme pitch en imposant le grand axe (yaw)
         mesure par cam_2 (plus fiable que la stereo oblique).
 
-        Reutilise `_build_pose` -> geometrie IDENTIQUE au planning : l'azimut
+        Reutilise `_build_pose`, donc geometrie identique au planning : l'azimut
         d'approche psi est aligne sur le grand axe, donc l'axe des machoires (u,
-        perpendiculaire a psi) tombe en travers du PETIT cote, QUEL QUE SOIT le
+        perpendiculaire a psi) tombe en travers du petit cote, quel que soit le
         pitch (0 / 45 / 90). C'est le re-alignement cam_2 pour les prises
-        INCLINEES (le top-down passe par reorient_grasp_pose). Le pitch n'est PAS
-        modifie ; seule l'orientation des machoires change (cf demande Maxence
-        2026-06-21). La POSITION est celle de `obj` (stereo) ; le pipeline
-        re-applique ensuite la correction de position cam_2. None si infaisable.
+        inclinees (le top-down passe par reorient_grasp_pose). Le pitch n'est pas
+        modifie ; seule l'orientation des machoires change. La position est celle
+        de `obj` (stereo) ; le pipeline re-applique ensuite la correction de
+        position cam_2. None si infaisable.
         """
         from dataclasses import replace
         meta = dict(obj.meta or {})
         meta["yaw_base_rad"] = float(yaw_base_rad)
-        # force la branche "objet allonge" pour aligner psi sur le grand axe
+        # force la branche objet allonge pour aligner psi sur le grand axe
         meta["footprint_elongation"] = max(
             float(meta.get("footprint_elongation", 1.0) or 1.0), 1.3)
         obj2 = replace(obj, meta=meta)
         return self._build_pose(obj2, float(pitch_deg))
 
     def plan_candidates(self, obj: ObjectInstance) -> list[GraspPose]:
-        """Liste des prises geometriquement faisables, DANS L'ORDRE DE PREFERENCE.
+        """Liste des prises geometriquement faisables, dans l'ordre de preference.
 
         Le pipeline filtre ensuite par atteignabilite IK et garde la premiere.
         """
@@ -917,28 +918,28 @@ class AdaptiveGrasp(GraspStrategy):
         return cands[0] if cands else None
 
 
-# Zones d'utilisation des angles d'attaque, en METRES. REGLABLES.
-# POLITIQUE 2026-06-21, MAJ 2026-06-26 (Maxence) : le choix d'angle est pilote par
-# la HAUTEUR DU SOMMET h_top (= z + H/2) ET la DISTANCE d = sqrt(x^2+y^2) :
+# Zones d'utilisation des angles d'attaque, en metres. Reglables.
+# Politique : le choix d'angle est pilote par la hauteur du sommet h_top
+# (= z + H/2) et la distance d = sqrt(x^2+y^2) :
 #                          proche (d<=32)        au-dela (d>32)
-#   h_top < 12cm  (BAS)    top-down 0            45  (best-effort jusqu'au bord)
+#   h_top < 12cm  (bas)    top-down 0            45  (best-effort jusqu'au bord)
 #   12cm <= h_top < 18cm   45                    45
-#   h_top >= 18cm (HAUT)   90 (face)             90 (face)
-# Pourquoi (essais 2026-06-26) :
-#  - Objet BAS : top-down de pres (le plus stable), diagonale 45 au-dela. PLUS DE
-#    FACE 90 : elle n'etait jamais choisie que LOIN (bord d'atteinte), or c'est
-#    exactement la que le poignet/tete eye-in-hand BUTE contre la table (couple=1004
-#    mesure le 2026-06-26) -> l'objet est trop bas pour positionner la pince de face
-#    sans forcer/abimer les moteurs. Le 45 garde la tete plus haute et reste le
-#    meilleur pari longue portee. Au-dela de l'atteinte du 45 = LIMITE DE DOMAINE
-#    assumee (cf memoire), pas un cas a forcer.
-#  - Objet HAUT (h_top >= face_m) : la FACE 90 redevient legitime (le sommet donne
-#    la garde, la tete ne bute plus). Aucun objet de Maxence n'est aussi haut -> en
-#    pratique le 90 dort, c'est VOLONTAIRE.
-GRASP_ZONE_NEAR_M = 0.32   # objet BAS pris en TOP-DOWN jusqu'ici ; au-dela -> 45. REGLABLE (--zone-topdown).
+#   h_top >= 18cm (haut)   90 (face)             90 (face)
+# Justification (essais terrain) :
+#  - Objet bas : top-down de pres (le plus stable), diagonale 45 au-dela. Pas de
+#    face 90 : elle n'etait choisie que loin (bord d'atteinte), or c'est
+#    precisement la que le poignet et la tete eye-in-hand butent contre la table
+#    (couple mesure 1004) ; l'objet est trop bas pour positionner la pince de face
+#    sans forcer les moteurs. Le 45 garde la tete plus haute et reste le meilleur
+#    pari longue portee. Au-dela de l'atteinte du 45 = limite de domaine assumee
+#    (cf memoire), pas un cas a forcer.
+#  - Objet haut (h_top >= face_m) : la face 90 redevient legitime (le sommet donne
+#    la garde, la tete ne bute plus). En pratique aucun objet du banc d'essai n'est
+#    aussi haut, donc le 90 ne se declenche pas : c'est volontaire.
+GRASP_ZONE_NEAR_M = 0.32   # objet bas pris en top-down jusqu'ici ; au-dela -> 45. Reglable (--zone-topdown).
 GRASP_ZONE_FAR_M = 0.45    # (conserve pour compat ; n'influe plus le choix d'angle)
-GRASP_ZONE_TALL_M = 0.12   # sommet < : objet "BAS" (top-down/45) ; >= : "moyen/haut"
-GRASP_ZONE_FACE_M = 0.18   # sommet >= : objet HAUT -> FACE 90 (garde suffisante) ; entre TALL et FACE -> 45.
+GRASP_ZONE_TALL_M = 0.12   # sommet < : objet bas (top-down/45) ; >= : moyen/haut
+GRASP_ZONE_FACE_M = 0.18   # sommet >= : objet haut -> face 90 (garde suffisante) ; entre TALL et FACE -> 45.
 
 
 def preferred_pitch_deg(obj: ObjectInstance,
@@ -946,19 +947,19 @@ def preferred_pitch_deg(obj: ObjectInstance,
                         far_m: float = GRASP_ZONE_FAR_M,
                         tall_m: float = GRASP_ZONE_TALL_M,
                         face_m: float = GRASP_ZONE_FACE_M) -> float:
-    """Angle d'attaque PREFERE, pilote par la HAUTEUR DU SOMMET (h_top = z + H/2)
-    et la DISTANCE d = sqrt(x^2+y^2).
+    """Angle d'attaque prefere, pilote par la hauteur du sommet (h_top = z + H/2)
+    et la distance d = sqrt(x^2+y^2).
 
-    POLITIQUE 2026-06-21, MAJ 2026-06-26 (Maxence, cf bloc GRASP_ZONE_* ci-dessus) :
-      - h_top < tall_m (12cm) : objet BAS -> top-down si d<=near_m, sinon 45.
-        JAMAIS 90 : la face 90 ne se declenchait que LOIN (bord d'atteinte), or la
-        tete eye-in-hand y bute contre la table et force les moteurs (essais
-        2026-06-26). Au-dela de l'atteinte du 45 = limite de domaine assumee.
-      - tall_m <= h_top < face_m : objet MOYENNEMENT haut -> diagonale 45.
-      - h_top >= face_m (18cm) : objet HAUT -> face 90 (le sommet donne la garde).
+    Politique (cf bloc GRASP_ZONE_* ci-dessus) :
+      - h_top < tall_m (12cm) : objet bas -> top-down si d<=near_m, sinon 45.
+        Jamais 90 : la face 90 ne se declenchait que loin (bord d'atteinte), or la
+        tete eye-in-hand y bute contre la table et force les moteurs. Au-dela de
+        l'atteinte du 45 = limite de domaine assumee.
+      - tall_m <= h_top < face_m : objet moyennement haut -> diagonale 45.
+      - h_top >= face_m (18cm) : objet haut -> face 90 (le sommet donne la garde).
 
-    Ce n'est PAS un verrou : le pipeline filtre ensuite par atteignabilite IK et
-    retient l'angle atteignable LE PLUS PROCHE de ce prefere (si le prefere n'est
+    Ce n'est pas un verrou : le pipeline filtre ensuite par atteignabilite IK et
+    retient l'angle atteignable le plus proche de ce prefere (si le prefere n'est
     pas atteignable, on bascule sur le voisin). Bornes reglables ci-dessus.
     """
     x, y, z = (float(obj.position_base_m[0]), float(obj.position_base_m[1]),
@@ -967,17 +968,17 @@ def preferred_pitch_deg(obj: ObjectInstance,
     bbox = obj.bbox_3d_m
     H = float(bbox[2]) if bbox is not None else 0.0
     h_top = z + 0.5 * H
-    # --- objet BAS (sommet < 12cm) : top-down de pres, 45 au-dela ---
-    # Pas de 90 : elle n'arriverait que LOIN (bord d'atteinte) ou la tete
-    # eye-in-hand bute contre la table et force les moteurs (couple=1004 mesure le
-    # 2026-06-26). Le 45 garde la tete plus haute ; au-dela de son atteinte =
-    # limite de domaine assumee (cf memoire). far_m conserve pour compat.
+    # --- objet bas (sommet < 12cm) : top-down de pres, 45 au-dela ---
+    # Pas de 90 : elle n'arriverait que loin (bord d'atteinte) ou la tete
+    # eye-in-hand bute contre la table et force les moteurs (couple mesure 1004).
+    # Le 45 garde la tete plus haute ; au-dela de son atteinte = limite de domaine
+    # assumee (cf memoire). far_m conserve pour compat.
     if h_top < tall_m:
         if d <= near_m:
             return 0.0    # bas + proche -> top-down (le plus stable)
         return 45.0       # bas + au-dela -> diagonale 45 (best-effort longue portee)
-    # --- objet MOYEN/HAUT : 45 puis FACE 90 au-dela de face_m (sommet haut = garde
-    # suffisante, la tete ne bute plus). top-down exclu (collision pince par le haut).
+    # --- objet moyen/haut : 45 puis face 90 au-dela de face_m (sommet haut = garde
+    # suffisante, la tete ne bute plus). Top-down exclu (collision pince par le haut).
     if h_top >= face_m:
         return 90.0
     return 45.0
@@ -1019,12 +1020,12 @@ if __name__ == "__main__":
         position_base_m=np.array([0.15, 0.0, 0.03]),
         bbox_3d_m=(0.03, 0.03, 0.03),
     )
-    # Test sans decalage smart ni decalage Z adaptatif pour valider la
+    # Test sans decalage lateral ni ancrage Z adaptatif pour valider la
     # logique de base : les 3 poses doivent etre verticalement alignees au
-    # cube. Avec le decalage smart (defaut 8mm), le grasp est decale en Y
-    # pour aligner avec la pince fixe -- teste plus bas. Idem pour Fix 7
-    # (grasp 1/4 sous centre) : on desactive en passant bbox_3d_m=None
-    # pour ce test puis on teste avec bbox plus bas.
+    # cube. Avec le decalage lateral (defaut 8mm), le grasp est decale en Y
+    # pour aligner avec la pince fixe (teste plus bas). De meme pour l'ancrage
+    # de profondeur : on le desactive en passant bbox_3d_m=None pour ce test,
+    # puis on le teste avec bbox.
     obj_no_bbox = ObjectInstance(
         label="red_cube",
         position_base_m=np.array([0.15, 0.0, 0.03]),
@@ -1043,19 +1044,19 @@ if __name__ == "__main__":
     assert np.allclose(Zp, [0, 0, -1])
     print(f"  [OK] TopDownGrasp.plan (offset=0) : 3 poses verticales pour cube a (15, 0, 3) cm")
 
-    # 3bis. TopDownGrasp avec decalage smart : le grasp est decale d'offset
-    # mm dans la direction OPPOSEE au doigt fixe ; Z = ancrage table + H/2.
+    # 3bis. TopDownGrasp avec decalage lateral : le grasp est decale d'offset
+    # mm dans la direction opposee au doigt fixe ; Z = ancrage table + H/2.
     strategy_smart = TopDownGrasp(approach_height_m=0.08, retract_height_m=0.10,
                                     grasp_lateral_offset_mm=8.0)
     gp_smart = strategy_smart.plan(obj)  # cube 30mm bbox, centre Z=0.03
     # Avec yaw=0 et fixed_finger_dir_gripper=(0,-1,0), l'offset oppose dans
     # le repere base est (0, -0.008, 0). Donc grasp Y = -0.008.
     assert abs(gp_smart.T_base_gripper_grasp[1, 3] - (-0.008)) < 1e-6, \
-        f"grasp Y attendu -0.008 (decalage smart), recu {gp_smart.T_base_gripper_grasp[1, 3]}"
-    # Ancrage D-Z : grasp Z = table_z_m + hauteur/2 = 0 + 0.03/2 = 0.015
+        f"grasp Y attendu -0.008 (decalage lateral), recu {gp_smart.T_base_gripper_grasp[1, 3]}"
+    # Ancrage profondeur : grasp Z = table_z_m + hauteur/2 = 0 + 0.03/2 = 0.015
     assert abs(gp_smart.T_base_gripper_grasp[2, 3] - 0.015) < 1e-6, \
         f"grasp Z attendu 0.015 (table + H/2), recu {gp_smart.T_base_gripper_grasp[2, 3]}"
-    print(f"  [OK] TopDownGrasp.plan (offset smart 8mm + Z=1/4 sous centre)")
+    print(f"  [OK] TopDownGrasp.plan (offset lateral 8mm + ancrage table + H/2)")
 
     # 4. Filtre objet trop haut : gobelet de 15 cm -> plan() = None
     obj_hi = ObjectInstance(
@@ -1102,7 +1103,7 @@ if __name__ == "__main__":
     assert np.allclose(_rotation_grasp(0.0, np.radians(90), 0.0)[:, 2], [1, 0, 0])
     print("  [OK] _rotation_grasp : orthonormale, det=+1, axes d'approche corrects")
 
-    # 8. NON-REGRESSION : le candidat theta=0 d'AdaptiveGrasp == TopDownGrasp
+    # 8. Non-regression : le candidat theta=0 d'AdaptiveGrasp == TopDownGrasp
     obj_cube = ObjectInstance(label="cube",
                               position_base_m=np.array([0.15, 0.0, 0.015]),
                               bbox_3d_m=(0.03, 0.03, 0.03))
@@ -1116,14 +1117,12 @@ if __name__ == "__main__":
     assert abs(td.gripper_open_pct - ad.gripper_open_pct) < 1e-6
     print(f"  [OK] non-regression : AdaptiveGrasp(theta=0) identique a TopDownGrasp")
 
-    # 9. Objet TRES PLAT (centre de prise sous le degagement plaque 7mm) -> le
-    #    filtre table REJETTE la prise near-horizontale 90 (elle skimmerait la
-    #    plaque), le top-down reste. Le 45 n'est PAS filtre (il descend en
-    #    diagonale, pas de skim plaque -- politique 2026-06-20).
-    #    MAJ 2026-06-26 : l'ancien attendu [0.0] datait d'avant ce choix (le 45
-    #    n'est plus jamais filtre) ET d'un seuil de degagement plus haut ; un objet
-    #    de 3cm (centre 15mm) passe desormais le seuil 7mm -> les 3 angles sortent.
-    #    On teste donc le VRAI garde-fou : un objet sous 7mm de centre rejette le 90.
+    # 9. Objet tres plat (centre de prise sous le degagement plaque 7mm) : le
+    #    filtre table rejette la prise quasi horizontale 90 (elle raserait la
+    #    plaque), le top-down reste. Le 45 n'est pas filtre (il descend en
+    #    diagonale, sans raser la plaque). Un objet de 3cm (centre 15mm) passe le
+    #    seuil 7mm et sort les 3 angles ; on teste donc le garde-fou reel : un objet
+    #    sous 7mm de centre rejette le 90.
     obj_flat = ObjectInstance(label="flat",
                               position_base_m=np.array([0.20, 0.0, 0.005]),
                               bbox_3d_m=(0.05, 0.05, 0.01))   # centre de prise = 5mm < 7mm
@@ -1135,7 +1134,7 @@ if __name__ == "__main__":
         f"objet tres plat : le top-down doit rester faisable, recu {pitches_flat}"
     print(f"  [OK] objet tres plat -> 90 rejete (degagement plaque), candidats {pitches_flat}")
 
-    # 10. Objet HAUT (18 cm) -> top-down REFUSE (trop haut), inclines proposes
+    # 10. Objet haut (18 cm) -> top-down refuse (trop haut), inclines proposes
     obj_tall = ObjectInstance(label="tall",
                               position_base_m=np.array([0.20, 0.0, 0.09]),
                               bbox_3d_m=(0.04, 0.04, 0.18))
@@ -1144,12 +1143,12 @@ if __name__ == "__main__":
     assert 0.0 not in pitches_tall, "objet haut : le top-down aurait du etre refuse"
     assert 45.0 in pitches_tall and 90.0 in pitches_tall, \
         f"objet haut : attendait des candidats inclines, recu {pitches_tall}"
-    # le candidat prefere (1er) est l'incline le plus proche du top-down
+    # le candidat prefere (premier) est l'incline le plus proche du top-down
     assert cands_tall[0].meta["pitch_deg"] == 45.0
     print(f"  [OK] objet haut -> top-down refuse, candidats inclines {pitches_tall}")
 
-    # 11. Geometrie d'une prise FRONTALE : approche reculee LE LONG de l'axe
-    #     (horizontal), retract VERTICAL
+    # 11. Geometrie d'une prise frontale : approche reculee le long de l'axe
+    #     (horizontal), retract vertical
     gp_front = AdaptiveGrasp()._build_pose(obj_tall, 90.0)
     assert gp_front is not None
     c = gp_front.T_base_gripper_grasp[:3, 3]
@@ -1166,10 +1165,10 @@ if __name__ == "__main__":
     assert _extent_along((0.03, 0.05, 0.10), [0, 0, 1]) == 0.10
     print(f"  [OK] prise frontale : approche horizontale, retract vertical")
 
-    # 12. NON-REGRESSION avec la convention de DEPLOIEMENT (yaw_offset_deg=90) :
-    #     theta=0 reste identique a TopDownGrasp, ET les candidats inclines d'un
-    #     objet haut restent faisables -- la largeur serree est calculee sur l'axe
-    #     LATERAL (physique), pas sur la hauteur (sinon faux rejet du a la conv.).
+    # 12. Non-regression avec la convention de deploiement (yaw_offset_deg=90) :
+    #     theta=0 reste identique a TopDownGrasp, et les candidats inclines d'un
+    #     objet haut restent faisables ; la largeur serree est calculee sur l'axe
+    #     lateral (physique), pas sur la hauteur (sinon faux rejet du a la convention).
     td90 = TopDownGrasp(grasp_lateral_offset_mm=0.0, yaw_offset_deg=90.0).plan(obj_cube)
     ad90 = AdaptiveGrasp(grasp_lateral_offset_mm=0.0, yaw_offset_deg=90.0)
     ad90_0 = ad90._build_pose(obj_cube, 0.0)
@@ -1186,8 +1185,8 @@ if __name__ == "__main__":
     print(f"  [OK] convention 90deg : top-down identique + inclines faisables")
 
     # 13. tilted_roll_deg : le roll des prises inclinees est reglable sans
-    #     recompiler (pour corriger le sens de la convention au 1er essai), et la
-    #     largeur serree (axe lateral physique) en est INDEPENDANTE.
+    #     recompiler (pour corriger le sens de la convention au premier essai), et
+    #     la largeur serree (axe lateral physique) en est independante.
     g_def = AdaptiveGrasp(yaw_offset_deg=90.0)._build_pose(obj_tall, 45.0)
     g_ovr = AdaptiveGrasp(yaw_offset_deg=90.0, tilted_roll_deg=-90.0)._build_pose(obj_tall, 45.0)
     assert abs(np.degrees(g_def.meta["roll_rad"]) - 90.0) < 1e-6
@@ -1195,8 +1194,8 @@ if __name__ == "__main__":
     assert abs(g_def.meta["jaw_width_mm"] - g_ovr.meta["jaw_width_mm"]) < 1e-6
     print("  [OK] tilted_roll_deg : roll incline reglable, largeur serree inchangee")
 
-    # 14. Ancrage de profondeur CONSCIENT de l'empilement (_grasp_depth_z) :
-    #     objet SUR LA TABLE -> table + H/2 (robuste) ; objet SUR UN AUTRE OBJET
+    # 14. Ancrage de profondeur conscient de l'empilement (_grasp_depth_z) :
+    #     objet sur la table -> table + H/2 (robuste) ; objet sur un autre objet
     #     -> centroide detecte (sinon on viserait le support = grasp trop bas).
     obj_tbl = ObjectInstance(label="t", position_base_m=np.array([0.2, 0, 0.05]),
                              bbox_3d_m=(0.03, 0.03, 0.10))

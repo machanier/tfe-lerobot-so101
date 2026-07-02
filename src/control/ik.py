@@ -94,7 +94,7 @@ class IKResult:
 class IKSolver:
     """Solveur IK numerique (Gauss-Newton/Levenberg-Marquardt) pour le SO-101.
 
-    Le solveur opere SANS hardware : on lui passe une pose cible (SE(3)) et
+    Le solveur opere sans materiel : on lui passe une pose cible (SE(3)) et
     une configuration de depart (optionnelle), il retourne les angles.
 
     Limites articulaires : chargees depuis configs/calibration_follower.json
@@ -146,11 +146,11 @@ class IKSolver:
         if calib_path.exists():
             calib = load_motor_calibration(calib_path)
             # Conversion plage raw -> radians.
-            # LeRobot motors_bus.py:858 : angle_deg = (raw - mid) * 360 / 4095
-            # donc 1 count = 360/4095 deg = 2*pi/4095 rad
+            # Convention LeRobot (motors_bus) : angle_deg = (raw - mid) * 360 / 4095,
+            # donc 1 count = 360/4095 deg = 2*pi/4095 rad.
             #
-            # MARGE DE SECURITE : on retire 3 deg = 0.052 rad de chaque cote.
-            # Eviter d'envoyer aux butees physiques pour 2 raisons :
+            # Marge de securite : on retire 3 deg = 0.052 rad de chaque cote,
+            # pour eviter d'envoyer aux butees physiques, et ce pour deux raisons :
             #   1. Le motor_controller a un seuil interne strict, et un
             #      angle pile sur la butee + arrondi flottant peut declencher
             #      un depassement de quelques counts.
@@ -164,20 +164,17 @@ class IKSolver:
                     half_safe = max(0.0, half - SAFETY_MARGIN_RAD)
                     self.joint_limits[j] = (-half_safe, +half_safe)
 
-            # === LIMITE ANTI-RETOURNEMENT wrist_roll (2026-06-17) ===
+            # Limite anti-retournement de wrist_roll.
             # La course calibree de wrist_roll est ~330deg (symetrique +/-163.8deg
-            # autour du centre raw=2047). Probleme : pour une cible donnee, les DEUX
-            # symetries 180deg de la pince tiennent dans cette course, donc l'IK peut
-            # atteindre la config A L'ENVERS (pince/camera retournee vers la table ;
-            # observe + photos). On rogne donc la course a une FENETRE ASYMETRIQUE de
+            # autour du centre raw=2047). Pour une cible donnee, les deux symetries
+            # 180deg de la pince tiennent dans cette course, donc l'IK peut atteindre
+            # la configuration retournee (pince et camera orientees vers la table).
+            # On rogne donc la course a une fenetre asymetrique de largeur
             # WRIST_ROLL_USEFUL_SPAN_DEG ancree sur la butee range_min.
-            # SENS (tranche d'apres les logs robot) : les prises A L'ENDROIT ont
-            # wrist_roll NEGATIF (vers range_min, raw=150) ; les retournements ont
-            # wrist_roll POSITIF (~+92deg, vers range_max, raw=3944). On garde donc
-            # la butee NEGATIVE (range_min) et on coupe le cote POSITIF.
-            # >>> SI au 1er essai le robot REFUSE des prises top-down NORMALES, c'est
-            #     que le cote a couper est l'autre : remplacer 'range_min' par
-            #     'range_max' et inverser le signe du span ci-dessous. <<<
+            # Sens (mesure sur les logs du robot) : les prises a l'endroit ont
+            # wrist_roll negatif (vers range_min, raw=150) ; les retournements ont
+            # wrist_roll positif (~+92deg, vers range_max, raw=3944). On conserve
+            # donc la butee negative (range_min) et on coupe le cote positif.
             WRIST_ROLL_USEFUL_SPAN_DEG = 200.0
             if "wrist_roll" in calib:
                 c = calib["wrist_roll"]
@@ -200,8 +197,8 @@ class IKSolver:
         """Resout l'IK pour la pose cible avec random restarts.
 
         Strategie : essaie d'abord avec q_init (ou zero), puis
-        `n_random_restarts` essais avec configurations aleatoires dans les
-        plages articulaires. Retourne la MEILLEURE solution trouvee.
+        `n_random_restarts` essais avec des configurations aleatoires dans les
+        plages articulaires. Retourne la meilleure solution trouvee.
 
         Args:
             T_target : matrice 4x4 SE(3) de la pose pince desiree (repere base).
@@ -214,9 +211,9 @@ class IKSolver:
         if T_target.shape != (4, 4):
             raise ValueError(f"T_target doit etre 4x4, recu {T_target.shape}")
 
-        # RNG RE-SEEDE A CHAQUE APPEL : les restarts aleatoires sont identiques
-        # d'un run a l'autre pour une meme pose -> mouvement REPRODUCTIBLE (fini
-        # le "meme situation, comportement different").
+        # RNG re-seede a chaque appel : les restarts aleatoires sont identiques
+        # d'un run a l'autre pour une meme pose, ce qui garantit un mouvement
+        # reproductible (comportement identique a situation identique).
         rng = np.random.default_rng(self._restart_seed)
         starts = []
         if q_init is not None:
@@ -231,9 +228,9 @@ class IKSolver:
                                for (lo, hi) in self.joint_limits.values()])
             starts.append(q_rand)
 
-        # On resout TOUS les departs et on collecte les solutions convergees
-        # (plus de "premiere convergee" : c'etait elle qui pouvait etre
-        # enroulee selon le hasard).
+        # On resout tous les departs et on collecte les solutions convergees.
+        # Retenir la premiere convergee ne suffit pas : selon le hasard, elle
+        # pouvait etre une configuration enroulee.
         converged: list[IKResult] = []
         best_any: Optional[IKResult] = None
         for q0 in starts:
@@ -244,9 +241,9 @@ class IKSolver:
                 converged.append(result)
 
         if converged:
-            # Parmi les convergees, on garde la PLUS PROCHE de q_init
-            # (continuite articulaire -> mouvement lisse, pas de saut ni de
-            # poignet retourne). Si q_init absent : reference = smart_init.
+            # Parmi les convergees, on garde la plus proche de q_init
+            # (continuite articulaire, mouvement lisse, sans saut ni poignet
+            # retourne). Si q_init est absent, la reference est smart_init.
             ref = (self._to_vector(q_init) if q_init is not None
                    else self._smart_init(T_target))
             return min(converged, key=lambda r: float(np.linalg.norm(
@@ -285,12 +282,12 @@ class IKSolver:
             elbow = +0.4
             wflex = -0.4
         # wrist_roll : aligner sur le yaw demande par la pose cible. Le
-        # shoulder_pan ET le wrist_roll tournent autour de la verticale, donc
-        # wrist_roll ~= yaw_cible - pan. La pince etant SYMETRIQUE, yaw et
-        # yaw+-180deg sont la MEME prise : on prend le representant le plus
-        # proche du neutre (dans [-pi/2, pi/2]). Sans ca, l'IK partait de
-        # wrist_roll=0 et convergeait parfois vers la solution RETOURNEE
-        # (+-180deg) -> "tete a l'envers" intermittente (cf observations robot).
+        # shoulder_pan et le wrist_roll tournent tous deux autour de la verticale,
+        # donc wrist_roll ~= yaw_cible - pan. La pince etant symetrique, yaw et
+        # yaw+-180deg sont la meme prise : on prend le representant le plus proche
+        # du neutre (dans [-pi/2, pi/2]). Sans cette initialisation, l'IK part de
+        # wrist_roll=0 et peut converger vers la solution retournee (+-180deg),
+        # d'ou une orientation inversee intermittente.
         yaw_target = float(np.arctan2(T_target[1, 0], T_target[0, 0]))
         wrist_roll = yaw_target - pan
         while wrist_roll > np.pi / 2:
@@ -349,19 +346,19 @@ class IKSolver:
         Strategie : chaque solve utilise la solution precedente comme point de
         depart (continuite articulaire, evite les sauts entre approach et grasp).
 
-        PERSISTANCE DU CHOIX D'ORIENTATION (persist_choice=True) : si la
+        Persistance du choix d'orientation (persist_choice=True) : si la
         variante retournee de 180deg est choisie, les matrices de grasp_pose
-        sont REECRITES avec cette orientation. CONTRAT : apres l'appel,
+        sont reecrites avec cette orientation. Contrat : apres l'appel,
         FK(solution) == grasp_pose.T_base_gripper_*.
 
-        LOCK D'ORIENTATION (lock_orientation=True) : on NE re-explore PAS la
-        symetrie 180deg ; on resout les matrices TELLES QUELLES. A utiliser a
-        TOUS les re-solves (apres refinement cam_2, au retry) une fois
+        Verrou d'orientation (lock_orientation=True) : on ne re-explore pas la
+        symetrie 180deg, on resout les matrices telles quelles. A utiliser a
+        tous les re-solves (apres raffinement cam_2, au retry) une fois
         l'orientation engagee : sinon le cout (penalite de non-convergence
-        ASYMETRIQUE entre A et B en top-down sous-actionne) pouvait faire
-        BASCULER le choix d'un re-solve a l'autre -> demi-tour 180deg du poignet
-        (essai 10 du 2026-06-12 : retry -153deg -> +18deg). Le 1er solve garde
-        lock_orientation=False (il choisit l'orientation), les suivants True.
+        asymetrique entre A et B en top-down sous-actionne) pouvait faire
+        basculer le choix d'un re-solve a l'autre, produisant un demi-tour de
+        180deg du poignet. Le premier solve garde lock_orientation=False (il
+        choisit l'orientation), les suivants True.
 
         Returns:
             (result_approach, result_grasp, result_retract)
@@ -370,9 +367,9 @@ class IKSolver:
         if not isinstance(grasp_pose, GraspPose):
             raise TypeError(f"Attendu GraspPose, recu {type(grasp_pose).__name__}")
 
-        # LOCK : orientation deja engagee -> resoudre les matrices telles quelles
-        # (les corrections cam_2 ne touchent que la translation, donc l'orientation
-        # persistee reste valide). Stabilite garantie entre re-solves.
+        # Verrou : orientation deja engagee, on resout les matrices telles quelles.
+        # Les corrections cam_2 ne touchent que la translation, donc l'orientation
+        # persistee reste valide, ce qui garantit la stabilite entre re-solves.
         if lock_orientation:
             ra = self.solve(grasp_pose.T_base_gripper_approach, q_init=q_init)
             rg = self.solve(grasp_pose.T_base_gripper_grasp,
@@ -381,20 +378,20 @@ class IKSolver:
                             q_init=rg.joint_angles_rad or None)
             return ra, rg, rr
 
-        # === Symetrie 180deg de la pince ===
-        # Une prise a l'orientation R est IDENTIQUE a R tournee de 180deg autour
+        # Symetrie 180deg de la pince.
+        # Une prise a l'orientation R est identique a R tournee de 180deg autour
         # de l'axe d'approche (la pince ferme sur la meme ligne). On resout les
-        # DEUX orientations et on garde la config la plus NATURELLE (wrist_roll
-        # proche du neutre). Sans ca, l'IK gardait la 1ere solution convergee
-        # depuis q_init, parfois "enroulee" selon l'orientation de l'objet ->
-        # chemins interminables + tete a l'envers (diagnostic Maxence).
+        # deux orientations et on garde la configuration la plus naturelle
+        # (wrist_roll proche du neutre). A defaut, l'IK garderait la premiere
+        # solution convergee depuis q_init, parfois enroulee selon l'orientation
+        # de l'objet, d'ou des chemins tres longs et une pince retournee.
         Rz180 = np.diag([-1.0, -1.0, 1.0])
 
-        # La pince est ASYMETRIQUE (doigt fixe / doigt mobile) : retourner
-        # l'orientation de 180deg met le doigt fixe DE L'AUTRE COTE de l'objet.
-        # L'offset lateral A2 (qui plaque l'objet contre le doigt fixe) est
-        # deja integre dans la translation -> la variante retournee doit le
-        # MIROITER (t' = t - 2*offset) pour rester plaquee contre le doigt fixe.
+        # La pince est asymetrique (doigt fixe / doigt mobile) : retourner
+        # l'orientation de 180deg met le doigt fixe de l'autre cote de l'objet.
+        # L'offset lateral A2 (qui plaque l'objet contre le doigt fixe) est deja
+        # integre dans la translation ; la variante retournee doit donc le
+        # miroiter (t' = t - 2*offset) pour rester plaquee contre le doigt fixe.
         off = (grasp_pose.meta or {}).get("offset_base_xy_mm")
         d_off = np.zeros(3)
         if off is not None:
@@ -421,13 +418,13 @@ class IKSolver:
                              grasp_pose.T_base_gripper_retract)
         trio_b = _solve_trio(T_app_b, T_grp_b, T_ret_b)
 
-        # Cout = poignet naturel (|wrist_roll|) + CONTINUITE avec q_init.
+        # Cout = poignet naturel (|wrist_roll|) + continuite avec q_init.
         # La continuite empeche de basculer entre A et B d'un re-solve a
-        # l'autre (apres correction cam_2) -> sinon le bras fait un "tour" a
-        # chaque bascule (les "3 tours" observes). Au 1er calcul (q_init
-        # lointain), c'est le poignet qui tranche -> orientation naturelle ;
-        # aux re-solves (q_init = pose courante), la continuite fait RESTER sur
-        # l'orientation deja prise.
+        # l'autre (apres correction cam_2) : sinon le bras fait un tour complet
+        # a chaque bascule. Au premier calcul (q_init lointain), c'est le
+        # poignet qui tranche, d'ou une orientation naturelle ; aux re-solves
+        # (q_init = pose courante), la continuite fait rester sur l'orientation
+        # deja prise.
         q0vec = self._to_vector(q_init) if q_init is not None else None
         wr0 = (float(q_init.get("wrist_roll", 0.0))
                if q_init is not None else None)
@@ -447,15 +444,16 @@ class IKSolver:
             # Penalite forte si le poignet frole sa butee (une orientation collee
             # a +/-164deg risque de clipper a un re-solve apres correction).
             near_limit = 3.0 if wr > wr_hi - np.radians(12) else 0.0
-            # ANTI-RETOURNEMENT (2026-06-17) : les 2 symetries 180deg de la pince
-            # saisissent l'objet a l'IDENTIQUE, mais l'une met la pince A L'ENDROIT
-            # (wrist_roll proche de la pose courante) et l'autre A L'ENVERS (demi-
-            # tour ~180deg -> bras contorsionne qui plonge vers la table sur les
-            # objets debout/empiles, photos). La continuite GLOBALE (sur tous les
-            # axes) favorisait parfois la config retournee. On penalise DIRECTEMENT
-            # l'ecart de wrist_roll a la pose courante, poids 2.0 : domine la
-            # continuite globale (1.5*cont) mais reste SOUS la non-convergence
-            # (5/pose) -> jamais une config retournee-mais-inatteignable.
+            # Anti-retournement : les deux symetries 180deg de la pince saisissent
+            # l'objet a l'identique, mais l'une met la pince a l'endroit (wrist_roll
+            # proche de la pose courante) et l'autre a l'envers (demi-tour de
+            # ~180deg, bras contorsionne qui plonge vers la table sur les objets
+            # debout ou empiles). La continuite globale (sur tous les axes)
+            # favorisait parfois la configuration retournee. On penalise donc
+            # directement l'ecart de wrist_roll a la pose courante, avec un poids
+            # 2.0 : il domine la continuite globale (1.5*cont) mais reste sous la
+            # non-convergence (5/pose), pour ne jamais retenir une configuration
+            # retournee mais inatteignable.
             wrist_flip = (2.0 * abs(wr_signed - wr0)) if wr0 is not None else 0.0
             return pen + near_limit + wrist_flip + 1.5 * cont + 0.25 * wr
 
@@ -480,16 +478,15 @@ class IKSolver:
     def solve_grasp_pose_free_yaw(self, grasp_pose,
                                   q_init: Optional[dict[str, float]] = None,
                                   ) -> tuple[IKResult, IKResult, IKResult]:
-        """Resout un GraspPose a YAW LIBRE (objet DEBOUT, empreinte ronde).
+        """Resout un GraspPose a yaw libre (objet debout, empreinte ronde).
 
         Pour un objet rond, toute orientation de prise grippe de la meme facon.
-        On BALAYE le yaw et on retient celui dont la solution MINIMISE le
-        mouvement articulaire depuis q_init (continuite) -> le poignet reste pres
-        de la pose de depart au lieu de tourner ~90deg pour rien (cylindres
-        debout, essais 1,13,14 du 2026-06-12). On vise le CENTRE de l'objet
-        (offset lateral A2 sans objet pour un rond) et on PERSISTE l'orientation
-        choisie dans grasp_pose -> les re-solves ulterieurs (lock_orientation)
-        la conservent.
+        On balaye le yaw et on retient celui dont la solution minimise le
+        mouvement articulaire depuis q_init (continuite) : le poignet reste pres
+        de la pose de depart au lieu de tourner de ~90deg inutilement (cas des
+        cylindres debout). On vise le centre de l'objet (offset lateral neutralise
+        pour un rond) et on persiste l'orientation choisie dans grasp_pose ; les
+        re-solves ulterieurs (lock_orientation) la conservent.
 
         Returns: (approach, grasp, retract).
         """
@@ -539,7 +536,7 @@ class IKSolver:
             return self.solve_grasp_pose(grasp_pose, q_init=q_init)
 
         _, yaw, trio, mats = best
-        # PERSISTE l'orientation choisie (offset lateral neutralise pour un rond).
+        # Persiste l'orientation choisie (offset lateral neutralise pour un rond).
         grasp_pose.T_base_gripper_approach, grasp_pose.T_base_gripper_grasp, \
             grasp_pose.T_base_gripper_retract = mats
         if grasp_pose.meta is not None:
@@ -549,13 +546,13 @@ class IKSolver:
         return trio
 
     def solve_topdown_free_yaw(self, position_xyz, q_init=None):
-        """Resout une pose pince-vers-le-bas a une POSITION donnee, YAW LIBRE.
+        """Resout une pose pince-vers-le-bas a une position donnee, yaw libre.
 
         Cherche l'orientation (rotation autour de la verticale) qui donne la
-        config la plus NATURELLE (wrist_roll proche du neutre) parmi celles qui
-        atteignent la position. Pour la DEPOSE : seule la position compte (la
-        pince ouvre, l'objet tombe), donc inutile de forcer un yaw qui retourne
-        le poignet (contorsion / tete a l'envers a la boite lointaine).
+        configuration la plus naturelle (wrist_roll proche du neutre) parmi
+        celles qui atteignent la position. Pour la depose, seule la position
+        compte (la pince ouvre, l'objet tombe) : inutile de forcer un yaw qui
+        retourne le poignet et provoque une contorsion vers la boite lointaine.
 
         Returns: (IKResult, yaw_rad_choisi).
         """
@@ -680,9 +677,10 @@ if __name__ == "__main__":
     T_zero = solver.chain.fk({j: 0.0 for j in ARM_JOINTS})
     result = solver.solve(T_zero, q_init=None)
     assert result.converged, f"Devrait converger : {result.message}"
-    # NB : depuis la selection par CONTINUITE (fc51b09), le resultat retourne
+    # NB : avec la selection par continuite articulaire, le resultat retourne
     # peut venir d'un restart (plus d'iterations que le depart zero). Le
-    # critere pertinent est la convergence + la precision, pas le nb d'iter.
+    # critere pertinent est la convergence et la precision, pas le nombre
+    # d'iterations.
     assert result.translation_err_mm < 2.0 and result.rotation_err_deg < 2.0, \
         f"Pose zero imprecise : {result.translation_err_mm:.2f} mm / {result.rotation_err_deg:.2f} deg"
     print(f"  [OK] Pose zero : {result.n_iterations} iter, "
@@ -690,11 +688,11 @@ if __name__ == "__main__":
     print()
 
     # ========================================================
-    # Test 3 : pose top-down a une position ATTEIGNABLE
-    # La config zero donne l'effecteur a (39.1, 0, 22.7) cm pince horizontale.
+    # Test 3 : pose top-down a une position atteignable.
+    # La config zero place l'effecteur a (39.1, 0, 22.7) cm, pince horizontale.
     # Une pose top-down (pince verticale) au-dessus de la table demande de
-    # "replier" le bras, ce qui reduit la portee. On choisit une cible
-    # proche pour rester dans le workspace : (20cm devant, 10cm de haut).
+    # replier le bras, ce qui reduit la portee. On choisit une cible proche
+    # pour rester dans le workspace : 20cm devant, 10cm de haut.
     # ========================================================
     from src.planning.grasp import _rotation_top_down, _se3
     T_topdown = _se3(_rotation_top_down(0.0), [0.20, 0.0, 0.10])
@@ -722,8 +720,8 @@ if __name__ == "__main__":
     result = solver.solve(T_far, q_init=None)
     print(f"  Pose impossible (2m) : converged={result.converged}, "
           f"err {result.translation_err_mm:.0f} mm")
-    assert not result.converged, "Devrait NE PAS converger pour pose hors workspace"
-    print(f"  [OK] Pose hors workspace gerée gracieusement")
+    assert not result.converged, "Ne devrait pas converger pour une pose hors workspace"
+    print(f"  [OK] Pose hors workspace geree gracieusement")
     print()
 
     # ========================================================
@@ -742,11 +740,11 @@ if __name__ == "__main__":
     print()
 
     # ========================================================
-    # Test 6 : CONTRAT de persistance du choix d'orientation.
+    # Test 6 : contrat de persistance du choix d'orientation.
     # Apres solve_grasp_pose, FK(solution grasp) doit correspondre a la
-    # matrice ECRITE dans grasp_pose (meme si la variante 180deg a ete
-    # choisie). C'est ce contrat qui garantit que mini-descente / re-IK
-    # ulterieurs visent la meme orientation physique (anti demi-tours).
+    # matrice ecrite dans grasp_pose (meme si la variante 180deg a ete
+    # choisie). C'est ce contrat qui garantit que la mini-descente et les
+    # re-IK ulterieurs visent la meme orientation physique (anti demi-tours).
     # ========================================================
     for yaw_test_deg in (0.0, 75.0, -82.0):
         obj_y = ObjectInstance(label="x",
@@ -776,10 +774,10 @@ if __name__ == "__main__":
     print()
 
     # ========================================================
-    # Test 7 : AdaptiveGrasp — l'IK resout des poses INCLINEES (pas seulement
+    # Test 7 : AdaptiveGrasp. L'IK resout des poses inclinees (pas seulement
     # top-down) et le contrat de persistance d'orientation tient aussi hors
     # top-down. Illustre l'atteignabilite angle x distance d'un bras 5 DDL :
-    # un objet trop HAUT pour le top-down reste saisissable de biais/de face.
+    # un objet trop haut pour le top-down reste saisissable de biais ou de face.
     # ========================================================
     from src.planning.grasp import AdaptiveGrasp
     obj_tall = ObjectInstance(label="bouteille",
@@ -799,7 +797,7 @@ if __name__ == "__main__":
     gp_b, rg_b = best
     assert rg_b.translation_err_mm < 20.0, \
         f"aucune prise inclinee atteignable de pres ? best={rg_b.translation_err_mm:.1f} mm"
-    # contrat de persistance d'orientation sur la meilleure prise INCLINEE
+    # contrat de persistance d'orientation sur la meilleure prise inclinee
     T_fk = solver.chain.fk(rg_b.joint_angles_rad)
     d_mm = float(np.linalg.norm(T_fk[:3, 3] - gp_b.T_base_gripper_grasp[:3, 3]) * 1000)
     R_err7 = T_fk[:3, :3].T @ gp_b.T_base_gripper_grasp[:3, :3]

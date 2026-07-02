@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-eval_policy.py – Evaluer une politique entrainee sur le VRAI robot (LeRobot)
+eval_policy.py – Evaluer une politique entrainee sur le robot reel (LeRobot).
 
 Usage (defaut : dernier checkpoint du job ACT sur l'objet orange) :
     python scripts/eval_policy.py
@@ -10,14 +10,14 @@ Usage (defaut : dernier checkpoint du job ACT sur l'objet orange) :
         --policy-path outputs/train/act_so101_orange_cube/checkpoints/last/pretrained_model \
         --episodes 10
 
-C'est la MEME commande que l'enregistrement, mais SANS leader : c'est le reseau
-qui genere les actions (--policy.path). On enregistre N episodes d'evaluation
-pour mesurer le taux de succes.
+La commande reprend celle de l'enregistrement, mais sans bras leader : les
+actions sont generees par le reseau (--policy.path). N episodes d'evaluation
+sont enregistres afin de mesurer le taux de succes.
 
-ATTENTION COHERENCE : le decor (positions cameras, eclairage, calibration, objet)
-DOIT etre identique a celui de l'enregistrement des demos, sinon la policy
-echoue (hors distribution). Memes cles cameras "front"/"wrist" -> garanties
-par config.il_cameras_flag().
+Coherence du decor : les positions des cameras, l'eclairage, la calibration et
+l'objet doivent etre identiques a ceux de l'enregistrement des demonstrations,
+sinon la policy sort de sa distribution d'entrainement et echoue. L'identite des
+cles cameras "front"/"wrist" est garantie par config.il_cameras_flag().
 """
 
 import argparse
@@ -53,14 +53,15 @@ def main():
     parser.add_argument("--push-to-hub", action="store_true",
                         help="Envoyer le dataset d'eval sur le Hub (defaut: local)")
     parser.add_argument("--display", action="store_true",
-                        help="Afficher les cameras via rerun (utile pour debug, mais ralentit la boucle de controle)")
+                        help="Afficher les cameras via rerun (utile pour le debogage, mais ralentit la boucle de controle)")
     parser.add_argument("--episode-time", type=int, default=60,
-                        help="Duree max d'un essai en secondes (defaut: 60 ; augmente si la boucle MPS est lente)")
+                        help="Duree maximale d'un essai en secondes (defaut: 60 ; a augmenter si la boucle MPS est lente)")
     args = parser.parse_args()
 
-    # L'eval se ré-enregistre à chaque fois : on nettoie un eventuel dataset
-    # d'eval existant, sinon LeRobot refuse d'ecrire par-dessus (FileExistsError).
-    # Garde-fou : on ne supprime QUE si le nom commence par "eval" (jamais les demos).
+    # Chaque evaluation reenregistre un dataset : on nettoie un eventuel
+    # dataset d'eval existant, sinon LeRobot refuse d'ecrire par-dessus
+    # (FileExistsError). Par securite, la suppression n'est effectuee que si
+    # le nom commence par "eval" (jamais les demonstrations).
     hf_base = os.environ.get("HF_LEROBOT_HOME")
     if hf_base:
         ds_root = pathlib.Path(hf_base) / args.repo_id
@@ -93,18 +94,18 @@ def main():
     ]
 
     print(f"Evaluation de la policy : {args.policy_path}")
-    print(f"  Episodes: {args.episodes}   Eval dataset: {args.repo_id}")
+    print(f"  Episodes: {args.episodes}   Dataset d'eval: {args.repo_id}")
     print(f"  Cameras:  {il_cameras_flag()}")
-    print("  (pas de leader : c'est le reseau qui pilote)")
-    print("  Clavier : -> episode suivant | Echap = stop\n")
+    print("  (pas de bras leader : le reseau pilote le robot)")
+    print("  Clavier : -> episode suivant | Echap = arret\n")
 
     try:
         subprocess.run(cmd, check=True)
     except KeyboardInterrupt:
         print("\nEvaluation arretee.")
     except FileNotFoundError:
-        print("Commande 'lerobot-record' non trouvee.")
-        print("  Verifie que le venv est active : source venv/bin/activate")
+        print("Commande 'lerobot-record' introuvable.")
+        print("  Activer le venv au prealable : source venv/bin/activate")
         sys.exit(1)
 
 

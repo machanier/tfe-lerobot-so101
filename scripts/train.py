@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-train.py – Entrainer une politique d'imitation learning (LeRobot)
+Entrainement d'une politique d'imitation learning avec LeRobot.
 
-Usage (valeurs par defaut = config.py : ACT, dataset orange, MPS) :
+Usage avec les valeurs par defaut issues de config.py (ACT, dataset orange, MPS) :
     python scripts/train.py
 
-    ou en personnalisant :
+Personnalisation des principaux parametres :
     python scripts/train.py --policy act --dataset maxence/so101_orange_cube --steps 100000
 
-Politiques LeRobot : act (defaut, recommande), diffusion, tdmpc, vqbet, ...
+Politiques LeRobot disponibles : act (defaut), diffusion, tdmpc, vqbet, etc.
 
-NB : ACT compte en STEPS (pas en epochs). Defaut LeRobot = 100 000 steps,
-"quelques heures sur 1 GPU NVIDIA". Sur M4/MPS c'est plus lent : si trop long
-ou si un operateur n'est pas supporte (PYTORCH_ENABLE_MPS_FALLBACK=1), bascule
-sur le notebook Colab officiel ACT. Repli local : --device cpu.
+ACT se compte en steps (et non en epochs) ; le defaut LeRobot est de 100 000
+steps, soit quelques heures sur un GPU NVIDIA. Sur MPS (Apple Silicon)
+l'entrainement est plus lent, et un operateur non supporte peut necessiter
+PYTORCH_ENABLE_MPS_FALLBACK=1 ; le notebook Colab officiel ACT constitue alors
+une alternative. Repli local possible avec --device cpu.
 
-Le modele entraine reste LOCAL (checkpoints dans outputs/). Ajoute
---push-to-hub pour l'envoyer sur le Hub (necessite `hf auth login`).
+Le modele entraine reste local (checkpoints dans outputs/). L'option
+--push-to-hub permet de le publier sur le Hub (necessite `hf auth login`).
 """
 
 import argparse
@@ -50,7 +51,7 @@ def main():
     parser.add_argument("--push-to-hub", action="store_true",
                         help="Envoyer le modele sur le Hub (defaut: local seulement)")
     parser.add_argument("--resume", action="store_true",
-                        help="Reprendre l'entrainement depuis le dernier checkpoint et continuer jusqu'a --steps (TOTAL, pas en plus). Ex: entraine a 30000 puis --resume --steps 50000 = +20000.")
+                        help="Reprendre l'entrainement depuis le dernier checkpoint et poursuivre jusqu'a --steps (cible totale, non cumulative). Exemple : un entrainement arrete a 30000 relance avec --resume --steps 50000 effectue 20000 steps supplementaires.")
     args = parser.parse_args()
 
     # Nom de job lisible derive du dataset (ex: act_so101_orange_cube)
@@ -59,12 +60,12 @@ def main():
     output_dir = args.output_dir or f"outputs/train/{job_name}"
 
     if args.resume:
-        # Reprise : tout est relu depuis la config du dernier checkpoint ;
-        # on ne re-surcharge que --steps (la cible TOTALE a atteindre).
+        # Reprise : toute la configuration est relue depuis le dernier
+        # checkpoint ; seul --steps est resurcharge (cible totale a atteindre).
         ckpt_config = f"{output_dir}/checkpoints/last/pretrained_model/train_config.json"
         if not os.path.exists(ckpt_config):
             print(f"Checkpoint introuvable pour reprendre : {ckpt_config}")
-            print("  (as-tu deja lance un entrainement dans ce dossier ?)")
+            print("  (aucun entrainement n'a encore ete lance dans ce dossier ?)")
             sys.exit(1)
         cmd = [
             "lerobot-train",
@@ -72,7 +73,7 @@ def main():
             "--resume=true",
             f"--steps={args.steps}",
         ]
-        print(f"REPRISE de l'entrainement -> cible totale : {args.steps} steps")
+        print(f"Reprise de l'entrainement -> cible totale : {args.steps} steps")
         print(f"  Checkpoint: {ckpt_config}")
     else:
         cmd = [
@@ -96,8 +97,8 @@ def main():
     except KeyboardInterrupt:
         print("\nEntrainement arrete.")
     except FileNotFoundError:
-        print("Commande 'lerobot-train' non trouvee.")
-        print("  Verifie que le venv est active : source venv/bin/activate")
+        print("Commande 'lerobot-train' introuvable.")
+        print("  Verifier que l'environnement virtuel est active : source venv/bin/activate")
         sys.exit(1)
 
 

@@ -3,20 +3,19 @@ detector.py - Detection 2D d'objets dans les frames camera.
 
 Definit l'interface `ObjectDetector` (ABC) et deux implementations :
 
-    HSVDetector  (V1, deterministe)
-        Detecte les primitives colorees par seuillage HSV + analyse de
+    HSVDetector (deterministe)
+        Detecte les primitives colorees par seuillage HSV et analyse de
         contours. Permet d'isoler la contribution de la geometrie (calibration
-        + triangulation) avant d'introduire les incertitudes d'un detecteur
+        et triangulation) avant d'introduire les incertitudes d'un detecteur
         appris. Reproductible, sans dependance ML.
         Reference : Forsyth & Ponce, "Computer Vision: A Modern Approach",
         ch. 6 (color-based segmentation).
 
-    HFDetector   (V2, stub - extension prevue)
-        Wrapper pour un detecteur open-vocabulary issu de la stack Hugging
-        Face (OWL-ViT, Grounding-DINO). Coherent avec l'ecosysteme LeRobot
-        sur lequel le projet est base. L'implementation est laissee pour
-        plus tard : on a juste l'interface pour que le pipeline reste
-        ouvert. Voir docs/PROJECT_STATUS.md, section "Roadmap".
+    HFDetector (detecteur open-vocabulary Hugging Face)
+        Enveloppe un detecteur open-vocabulary issu de la stack Hugging Face
+        (OWL-ViT). Coherent avec l'ecosysteme LeRobot sur lequel le projet est
+        base. L'interface est fournie pour garder le pipeline ouvert a ce type
+        de detecteur.
 
 Toutes les sorties sont des `Detection2D` (cf src/perception/scene.py),
 dans le repere image de la camera d'origine.
@@ -52,21 +51,22 @@ class HSVRange:
 
     color_mode :
       - "chromatic" : la couleur a une teinte significative (rouge, bleu,
-        vert, violet, ...). On seuille H + S + V. Cas standard pour les
+        vert, violet, ...). On seuille H, S et V. Cas standard pour les
         primitives colorees.
-      - "black"     : LA TEINTE N'A PAS DE SENS pour le noir (V proche de 0).
-        On seuille uniquement V <= v_hi (typiquement < 60). H et S ignores.
+      - "black"     : la teinte n'est pas significative pour le noir (V proche
+        de 0). On seuille uniquement V <= v_hi (typiquement < 60). H et S
+        ignores.
       - "white"     : pas de saturation. On seuille S <= s_hi (typiquement
-        < 30) ET V >= v_lo (typiquement > 200). H ignore.
+        < 30) et V >= v_lo (typiquement > 200). H ignore.
       - "gray"      : peu de saturation, V intermediaire. On seuille S <= s_hi
-        ET v_lo <= V <= v_hi.
+        et v_lo <= V <= v_hi.
 
-    Cette distinction est CRITIQUE : sans elle, "noir" et "blanc" calibres
-    en mode chromatic captent toutes les teintes a la fois, ce qui
-    provoque des confusions massives entre objets sombres (noir/bleu/violet)
-    ou clairs (blanc/objets pales). Voir docs/PROJECT_STATUS.md D8.
+    Cette distinction est importante : sans elle, "noir" et "blanc" calibres
+    en mode chromatic captent toutes les teintes a la fois, ce qui provoque
+    des confusions entre objets sombres (noir/bleu/violet) ou clairs
+    (blanc/objets pales).
 
-    Pour le rouge qui chevauche la couture H=0/179, on definit DEUX plages
+    Pour le rouge qui chevauche la couture H=0/179, on definit deux plages
     chromatic via `hue_extra_lo`/`hue_extra_hi`.
 
     Attributes:
@@ -128,7 +128,7 @@ class ObjectSpec:
                        la distance camera-objet.
         max_area_px  : aire maximale (rejette les "blobs" qui prennent toute
                        l'image, e.g. fond colore mal eclaire).
-        top_k        : nb max de blobs gardes pour CET objet. None -> defaut du
+        top_k        : nb max de blobs gardes pour cet objet. None -> defaut du
                        detecteur (1). Utile pour le noir (top_k=3) : sur fond
                        sombre encombre, on garde plusieurs candidats et le
                        filtre workspace 3D tranche lequel est sur la table.
@@ -152,12 +152,12 @@ class ObjectSpec:
 class ObjectDetector(ABC):
     """Interface : prend une Frame, retourne une liste de Detection2D.
 
-    Une instance d'`ObjectDetector` est *stateless cote scene* (elle peut
-    avoir des params internes / poids) : appeler `detect(frame)` plusieurs
+    Une instance d'`ObjectDetector` est sans etat cote scene (elle peut avoir
+    des parametres internes ou des poids) : appeler `detect(frame)` plusieurs
     fois doit donner exactement le meme resultat.
 
-    Cette interface garantit que swap-er `HSVDetector` pour `HFDetector`
-    plus tard ne casse aucun consommateur (run_perception.py, check_perception.py).
+    Cette interface garantit que remplacer `HSVDetector` par `HFDetector` ne
+    casse aucun consommateur (run_perception.py, check_perception.py).
     """
 
     @abstractmethod
@@ -181,31 +181,31 @@ class ObjectDetector(ABC):
 
 
 # ============================================================
-# Implementation V1 : HSV + contours
+# Implementation : HSV + contours
 # ============================================================
 
 
 class HSVDetector(ObjectDetector):
-    """Detecteur deterministe basé sur seuillage HSV + analyse de contours.
+    """Detecteur deterministe base sur seuillage HSV et analyse de contours.
 
     Pipeline par image :
       1. BGR -> HSV.
       2. Pour chaque ObjectSpec : masque HSV puis morphologie (open + close).
       3. cv2.findContours, on garde ceux dont l'aire est dans [min, max].
-      4. Pour chaque contour : centre = moments, bbox, score = aire normalisée.
+      4. Pour chaque contour : centre = moments, bbox, score = aire normalisee.
       5. Optionnel : retient seulement les `top_k` plus grands contours par
          classe (par defaut 1 = on suppose un exemplaire visible par classe).
 
     Choix de design :
-      - On RETOURNE le contour entier (utile pour debug + pour passer a un
-        estimateur de pose plus fin si on veut).
-      - On NE renvoie PAS de masque par defaut (coute en memoire). Activable
+      - On retourne le contour entier (utile pour le debug et pour passer a un
+        estimateur de pose plus fin le cas echeant).
+      - On ne renvoie pas de masque par defaut (coute en memoire). Activable
         via `emit_mask=True` pour les besoins de debug.
-      - L'image cible peut etre une crop downscaled : pour la V1 on opere
-        plein resolution pour ne pas perdre les petits objets.
+      - L'image cible peut etre une crop downscaled : on opere ici en pleine
+        resolution pour ne pas perdre les petits objets.
 
-    Calibration des couleurs : Maxence enregistre des echantillons via
-    `scripts/calibrate_hsv.py` (a venir) qui ecrit configs/perception/hsv_*.json.
+    Calibration des couleurs : les echantillons sont enregistres via
+    `scripts/calibrate_hsv.py`, qui ecrit configs/perception/hsv_*.json.
     """
 
     def __init__(self, specs, *,
@@ -213,8 +213,8 @@ class HSVDetector(ObjectDetector):
                  top_k_per_label: int = 1,
                  emit_mask: bool = False):
         # `specs` peut etre :
-        #   - list[ObjectSpec] : spec GLOBALE appliquee a toutes les cameras ;
-        #   - dict[str, list[ObjectSpec]] : spec PAR cam_key (cam_0/cam_1/cam_2).
+        #   - list[ObjectSpec] : spec globale appliquee a toutes les cameras ;
+        #   - dict[str, list[ObjectSpec]] : spec par cam_key (cam_0/cam_1/cam_2).
         # En mode par-camera, self.specs est l'union (fallback + name + meta).
         if isinstance(specs, dict):
             if not specs or not any(specs.values()):
@@ -300,32 +300,32 @@ class HSVDetector(ObjectDetector):
 
 
 # ============================================================
-# Stub V2 : detecteur Hugging Face (extension prevue)
+# Detecteur Hugging Face (open-vocabulary)
 # ============================================================
 
 
 class HFDetector(ObjectDetector):
     """Detecteur open-vocabulary base sur OWL-ViTv2 (Hugging Face).
 
-    Strategie : on donne une LISTE de labels EN TEXTE NATUREL ("orange cube",
+    Strategie : on fournit une liste de labels en texte naturel ("orange cube",
     "robot arm", ...) et le modele renvoie pour chaque label une liste de
-    bboxes + scores. Le modele a ete entraine sur des millions d'images +
-    legendes : il peut distinguer le cube orange du bras orange du robot
-    par la FORME et le CONTEXTE, pas seulement la couleur.
+    bboxes et de scores. Entraine sur des millions d'images legendees, il peut
+    distinguer le cube orange du bras orange du robot par la forme et le
+    contexte, pas seulement par la couleur.
 
-    Difference cle avec HSVDetector :
+    Difference avec HSVDetector :
       - HSVDetector : "il y a des pixels oranges ici" (sans savoir ce que c'est).
-      - HFDetector  : "il y a un 'orange cube' ici (proba 0.92) ET un
-        'robot arm' la (proba 0.88)" -- distingue les categories semantiques.
+      - HFDetector  : "il y a un 'orange cube' ici (proba 0.92) et un
+        'robot arm' la (proba 0.88)", en distinguant les categories semantiques.
 
-    Coherence stack : utilise la lib `transformers` de Hugging Face, qui
-    est la meme que celle utilisee par LeRobot pour ses policies (SmolVLA,
-    ACT, etc.). Pas de fragmentation de dependances.
+    Coherence de la stack : utilise la librairie `transformers` de Hugging
+    Face, la meme que celle employee par LeRobot pour ses policies (SmolVLA,
+    ACT, etc.), ce qui evite de fragmenter les dependances.
 
     Sortie : Detection2D avec la meme convention que HSVDetector. Le pseudo-
     contour est constitue des 4 coins de la bbox (utilisable par le grasp
-    planner top-down ; pour une orientation fine du wrist_roll, il faudra
-    ajouter une segmentation a poste, mais ce n'est pas requis en V1).
+    planner top-down ; une orientation fine du wrist_roll demanderait une
+    segmentation dediee, non requise ici).
 
     Reference : Minderer et al. 2023, "Scaling Open-Vocabulary Object
     Detection", NeurIPS, arxiv:2306.09683.
@@ -342,7 +342,7 @@ class HFDetector(ObjectDetector):
         except ImportError as e:
             raise ImportError(
                 "HFDetector necessite transformers, torch, pillow. "
-                "Installe avec :\n  pip install transformers torch pillow\n"
+                "Installation :\n  pip install transformers torch pillow\n"
                 f"Erreur originale : {e}"
             ) from e
 
@@ -389,14 +389,14 @@ class HFDetector(ObjectDetector):
             outputs = self._model(**inputs)
 
         # Post-process : convertit en bboxes (xyxy en pixels), scores, labels.
-        # COMPAT transformers 4.x / 5.x : la methode a ete renommee en 5.x.
-        # On utilise la nouvelle si dispo (>=5.0), sinon l'ancienne (4.x).
-        # En 5.x, on peut passer text_labels=[...] pour avoir les textes en retour
-        # ; sinon on retombe sur les indices entiers (`labels`).
+        # Compatibilite transformers 4.x / 5.x : la methode a ete renommee en
+        # 5.x. On utilise la nouvelle si disponible (>= 5.0), sinon l'ancienne
+        # (4.x). En 5.x, on peut passer text_labels=[...] pour recuperer les
+        # textes en retour ; sinon on retombe sur les indices entiers (`labels`).
         target_sizes = self._torch.tensor([(pil.height, pil.width)]).to(self.device)
         if hasattr(self._processor, "post_process_grounded_object_detection"):
-            # transformers >= 5.0 (Maxence a 5.8.1).
-            # On tente avec text_labels en kwarg (pas toutes les versions le supportent).
+            # transformers >= 5.0.
+            # On tente text_labels en kwarg (pas toutes les versions le supportent).
             try:
                 results = self._processor.post_process_grounded_object_detection(
                     outputs=outputs, target_sizes=target_sizes,
@@ -433,8 +433,8 @@ class HFDetector(ObjectDetector):
             if labels_field is None:
                 raise RuntimeError(
                     f"Pas de labels dans les resultats. Clefs disponibles : "
-                    f"{list(results.keys())}. Version transformers : "
-                    f"vois pip show transformers."
+                    f"{list(results.keys())}. Verifier la version de "
+                    f"transformers (pip show transformers)."
                 )
             use_text_directly = False
 
@@ -482,20 +482,19 @@ def load_hf_specs(path: Optional[Path] = None) -> dict:
     if not Path(path).exists():
         raise FileNotFoundError(
             f"hf_specs.json introuvable : {path}\n"
-            "Cree-le ou utilise les valeurs par defaut de default_hf_labels()."
+            "Le creer ou utiliser les valeurs par defaut de default_hf_labels()."
         )
     return json.load(open(path))
 
 
 def default_hf_labels() -> list[str]:
-    """Labels (= descriptions textuelles) par defaut pour HFDetector.
+    """Labels (descriptions textuelles) par defaut pour HFDetector.
 
-    OWL-ViTv2 marche mieux avec des descriptions ENRICHIES (couleur + forme +
-    materiau + taille) qu'avec des labels minimalistes. Voir D13 dans
-    docs/PROJECT_STATUS.md.
+    OWL-ViTv2 donne de meilleurs resultats avec des descriptions enrichies
+    (couleur, forme, materiau, taille) qu'avec des labels minimalistes.
 
     Convention : en anglais (les modeles HF sont entraines majoritairement
-    en anglais, meilleure precision).
+    en anglais, ce qui ameliore la precision).
     """
     return [
         "a small bright orange plastic cube",
@@ -544,14 +543,15 @@ def _parse_spec_dicts(items: list[dict]) -> list[ObjectSpec]:
 def load_hsv_specs(path: Optional[Path] = None):
     """Charge les ObjectSpec depuis un JSON. Deux formats supportes :
 
-    - GLOBAL (historique) : {"specs": [ {...}, ... ]}
-      -> renvoie list[ObjectSpec], appliquee a TOUTES les cameras.
-    - PAR CAMERA : {"specs_by_cam": {"cam_0": [...], "cam_1": [...], "cam_2": [...]}}
+    - global (historique) : {"specs": [ {...}, ... ]}
+      -> renvoie list[ObjectSpec], appliquee a toutes les cameras.
+    - par camera : {"specs_by_cam": {"cam_0": [...], "cam_1": [...], "cam_2": [...]}}
       -> renvoie dict[str, list[ObjectSpec]]. HSVDetector route alors selon
       frame.cam_key. Utile car la reponse photometrique de cam_2 (eye-in-hand,
       vue rapprochee, souvent surexposee/delavee) differe de la paire stereo
-      cam_0/cam_1 : un meme objet y est moins sature. Extension par camera
-      coherente avec la calibration intrinseque/hand-eye deja par camera. D12.
+      cam_0/cam_1 : un meme objet y est moins sature. Cette extension par
+      camera est coherente avec la calibration intrinseque/hand-eye, deja
+      definie par camera.
 
     Exemple de spec : {"label": "red_cube", "h_lo": 0, "h_hi": 10,
     "s_lo": 100, "v_lo": 50, "min_area_px": 500, "max_area_px": 200000,
@@ -561,8 +561,8 @@ def load_hsv_specs(path: Optional[Path] = None):
     if not path.exists():
         raise FileNotFoundError(
             f"Specs HSV introuvables : {path}\n"
-            "Genere un fichier via scripts/calibrate_hsv.py, ou "
-            "utilise default_hsv_specs() pour partir des plages standards."
+            "Generer un fichier via scripts/calibrate_hsv.py, ou "
+            "utiliser default_hsv_specs() pour partir des plages standards."
         )
     data = json.load(open(path))
     if "specs_by_cam" in data:
@@ -587,8 +587,8 @@ def flatten_specs(specs) -> list[ObjectSpec]:
 def default_hsv_specs() -> list[ObjectSpec]:
     """Plages HSV de depart pour les 4 primitives colorees attendues.
 
-    Ces valeurs sont des MOYENNES indicatives ; la calibration finale doit
-    se faire avec scripts/calibrate_hsv.py sous l'eclairage reel du poste.
+    Ces valeurs sont des moyennes indicatives ; la calibration finale doit
+    se faire avec scripts/calibrate_hsv.py sous l'eclairage reel.
     """
     return [
         # Rouge (chevauche H=0)
@@ -666,9 +666,9 @@ if __name__ == "__main__":
     # 6. HFDetector : ne tente l'init que si transformers est installe
     try:
         import transformers  # noqa: F401
-        # Si on est la, on peut tenter une mini init (mais on skip le modele
-        # reel pour ne pas telecharger 600 Mo a chaque self-test).
-        # On verifie juste que les imports fonctionnent + ValueError sur labels vides.
+        # Le modele reel n'est pas charge (evite un telechargement de 600 Mo a
+        # chaque self-test). On verifie seulement que les imports fonctionnent
+        # et que ValueError est levee sur une liste de labels vide.
         try:
             HFDetector([])  # type: ignore[arg-type]
             raise AssertionError("aurait du lever ValueError")
@@ -687,13 +687,13 @@ if __name__ == "__main__":
                                          "blue_triangle", "yellow_rectangle"}
     print("  [OK] default_hsv_specs : 4 primitives colorees")
 
-    # 8. color_mode = "black" : ne capte que les pixels sombres, INDEPENDAMMENT de H
+    # 8. color_mode = "black" : ne capte que les pixels sombres, independamment de H
     img_blk = np.zeros((100, 100, 3), dtype=np.uint8)  # noir pur
     # BGR (40, 5, 5) : presque noir, legerement bleute. V_HSV ≈ 40
     img_almost_black_blue = np.full((100, 100, 3), [40, 5, 5], dtype=np.uint8)
     # BGR (5, 5, 40) : presque noir, legerement rouge. V_HSV ≈ 40
     img_almost_black_red = np.full((100, 100, 3), [5, 5, 40], dtype=np.uint8)
-    # BGR (200, 50, 50) : bleu MOYEN, pas noir. V_HSV ≈ 200
+    # BGR (200, 50, 50) : bleu moyen, pas noir. V_HSV ≈ 200
     img_medium_blue = np.full((100, 100, 3), [200, 50, 50], dtype=np.uint8)
     hsv_blk = cv2.cvtColor(img_blk, cv2.COLOR_BGR2HSV)
     hsv_ab = cv2.cvtColor(img_almost_black_blue, cv2.COLOR_BGR2HSV)
@@ -703,19 +703,19 @@ if __name__ == "__main__":
     assert rng_black.mask(hsv_blk).mean() > 250, "noir pur doit etre capte"
     assert rng_black.mask(hsv_ab).mean() > 250, "presque-noir bleute aussi"
     assert rng_black.mask(hsv_ar).mean() > 250, "presque-noir rouge aussi (H ignore)"
-    assert rng_black.mask(hsv_mb).mean() < 5,  "bleu moyen (V=200) ne doit PAS etre capte"
+    assert rng_black.mask(hsv_mb).mean() < 5,  "bleu moyen (V=200) ne doit pas etre capte"
     print("  [OK] color_mode='black' capte V<=v_hi peu importe H (independance teinte)")
 
-    # 9. color_mode = "white" : ne capte que pixels peu satures + clairs
-    img_wht = np.full((100, 100, 3), [240, 240, 240], dtype=np.uint8)  # blanc cassé
+    # 9. color_mode = "white" : ne capte que les pixels peu satures et clairs
+    img_wht = np.full((100, 100, 3), [240, 240, 240], dtype=np.uint8)  # blanc casse
     img_red_pure = np.full((100, 100, 3), [0, 0, 240], dtype=np.uint8)
     hsv_wht = cv2.cvtColor(img_wht, cv2.COLOR_BGR2HSV)
     hsv_red = cv2.cvtColor(img_red_pure, cv2.COLOR_BGR2HSV)
     rng_white = HSVRange(color_mode="white", s_hi=30, v_lo=200)
     m_wht = rng_white.mask(hsv_wht)
     m_red = rng_white.mask(hsv_red)
-    assert m_wht.mean() > 250, "blanc cassé doit etre capte"
-    assert m_red.mean() < 5, "rouge pur ne doit PAS etre capte (S eleve)"
+    assert m_wht.mean() > 250, "blanc casse doit etre capte"
+    assert m_red.mean() < 5, "rouge pur ne doit pas etre capte (S eleve)"
     print("  [OK] color_mode='white' capte S<=s_hi ET V>=v_lo (H ignore)")
 
     print("Tous les tests passent.")

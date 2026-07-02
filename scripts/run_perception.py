@@ -8,8 +8,8 @@ Trois modes :
                               annotees et les positions 3D estimees.
     --mode replay  : rejoue un dataset enregistre par
                               record_perception_frames.py. Pas besoin de hardware.
-    --mode oneshot : capture UNE trame, fait la perception, imprime la Scene
-                              et sauve un snapshot dans outputs/perception/.
+    --mode oneshot : capture une trame unique, fait la perception, imprime la
+                              Scene et sauve un snapshot dans outputs/perception/.
 
 Usage :
     python scripts/run_perception.py
@@ -110,10 +110,11 @@ def horizontal_tile(images, target_w=960):
 
 
 def make_detector(detector_kind: str, specs_path: str, hf_specs_path: str):
-    """Construit le detecteur (HSV ou HF) + le mapping label->meta.
+    """Construit le detecteur (HSV ou HF) et le mapping label->meta.
 
     Args:
-        detector_kind : "hsv" (V1 deterministe) ou "hf" (V2 OWL-ViTv2).
+        detector_kind : "hsv" (seuillage couleur, deterministe) ou "hf"
+                        (OWL-ViTv2, open-vocabulary).
         specs_path    : chemin hsv_specs.json (utilise si detector_kind=hsv).
         hf_specs_path : chemin hf_specs.json (utilise si detector_kind=hf).
 
@@ -149,7 +150,7 @@ def make_detector(detector_kind: str, specs_path: str, hf_specs_path: str):
 
         det = HFDetector(prompt_labels=labels, model_name=model_name,
                          score_threshold=threshold)
-        # Si un mapping est fourni, on wrap pour renommer les labels
+        # Si un mapping est fourni, on enveloppe detect() pour renommer les labels
         if mapping:
             from src.perception.detector import HFDetector as _HF  # type: ignore
             orig_detect = det.detect
@@ -162,9 +163,8 @@ def make_detector(detector_kind: str, specs_path: str, hf_specs_path: str):
                 return dets
             det.detect = detect_with_mapping  # type: ignore[assignment]
 
-        # specs_by_label vide (pas de dimensions metriques pour HF)
-        # Le PnP mono ne marchera pas sans (mais c'est OK car HF couvre
-        # plus de cas que HSV via la stereo).
+        # specs_by_label vide : pas de dimensions metriques pour HF. Le PnP
+        # monoculaire est donc indisponible, mais la stereo couvre les cas usuels.
         return det, {}
 
     raise ValueError(f"detector_kind inconnu: {detector_kind!r}")
@@ -191,11 +191,12 @@ def run_live(args):
             print(mc.info())
             win = "Perception (live)"
             cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-            # FPS measurement
+            # Mesure du framerate
             fps_start = time.time()
             fps_frames = 0
             fps = 0.0
-            # Latence de detection isolee (lissee EMA), pour comparer HSV vs HF
+            # Latence de detection isolee, lissee par moyenne mobile exponentielle,
+            # pour comparer HSV et HF.
             det_ms = 0.0
             try:
                 while True:
@@ -208,7 +209,7 @@ def run_live(args):
                         rs = provider.read_live()
                     # 2. Capture
                     frames = mc.grab(robot_state=rs)
-                    # update FPS counter
+                    # Mise a jour du compteur de trames
                     fps_frames += 1
                     elapsed = time.time() - fps_start
                     if elapsed >= 1.0:
@@ -237,12 +238,11 @@ def run_live(args):
                     cv2.imshow(win, horizontal_tile(tiles))
                     if args.print_each_frame and scene.objects:
                         print(scene.pretty())
-                    # waitKey 100ms : permet de capter 'q' meme entre des frames
-                    # lentes (HFDetector prend 3-5s par frame sur M4). Sinon
-                    # waitKey(1) n'attend que 1ms pendant lesquelles l'OS doit
-                    # detecter la touche -> souvent rate.
-                    # En boucle classique HSV (10 FPS = 100ms/frame), 100ms
-                    # ne change rien au framerate (on attend deja la frame).
+                    # waitKey(100) laisse a l'OS le temps de detecter la touche
+                    # 'q' meme entre des trames lentes (HFDetector prend plusieurs
+                    # secondes par trame) ; waitKey(1) rate souvent l'appui. En
+                    # boucle HSV (environ 10 FPS, 100 ms/trame) ce delai ne change
+                    # rien au framerate puisqu'on attend deja la trame.
                     key = cv2.waitKey(100) & 0xFF
                     if key == ord("q") or key == 27:  # 'q' ou ESC
                         break
@@ -251,8 +251,8 @@ def run_live(args):
             finally:
                 cv2.destroyAllWindows()
     finally:
-        # CRITIQUE : libere le bus moteur en TOUTES circonstances
-        # (sinon le prochain lancement echouera avec port deja ouvert).
+        # Libere le bus moteur en toutes circonstances, sans quoi le prochain
+        # lancement echouerait avec le port deja ouvert.
         provider.disconnect_live()
 
 
@@ -300,7 +300,7 @@ def run_oneshot(args):
               else provider.from_angles({j: 0.0 for j in
                                          ["shoulder_pan", "shoulder_lift",
                                           "elbow_flex", "wrist_flex", "wrist_roll"]}))
-        # Laisse 0.3 s de warm-up (autoexposure)
+        # Laisse environ 0.3 s de mise en regime (exposition automatique)
         for _ in range(3):
             mc.grab(robot_state=rs)
             time.sleep(0.1)
@@ -348,9 +348,9 @@ def main():
     parser = argparse.ArgumentParser(description="Pipeline de perception multi-cameras.")
     parser.add_argument("--mode", choices=["live", "replay", "oneshot"], default="live")
     parser.add_argument("--detector", choices=["hsv", "hf"], default="hsv",
-                        help="Detecteur a utiliser. 'hsv' = V1 (seuillage couleur, "
-                             "rapide, deterministe). 'hf' = V2 (OWL-ViTv2, robuste, "
-                             "necessite transformers+torch installes).")
+                        help="Detecteur a utiliser. 'hsv' : seuillage couleur "
+                             "(rapide, deterministe). 'hf' : OWL-ViTv2 (open-vocabulary, "
+                             "necessite transformers et torch installes).")
     parser.add_argument("--specs", type=str,
                         default=str(REPO / "configs" / "perception" / "hsv_specs.json"),
                         help="Fichier specs HSV (utilise si --detector hsv).")

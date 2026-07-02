@@ -7,13 +7,12 @@ du robot a partir des angles articulaires :
     T_base_gripper = fk_so101(joint_angles_rad)
 
 Le modele geometrique est lu depuis un fichier URDF
-(configs/so101_new_calib.urdf, genere par TheRobotStudio a partir du CAD
-Onshape, recupere depuis le depot TheRobotStudio/SO-ARM100). L'URDF est la
-SEULE source de verite pour la geometrie : pour corriger ou changer le modele,
-on remplace le fichier URDF, pas le code.
+(configs/so101_new_calib.urdf, issu du depot TheRobotStudio/SO-ARM100).
+L'URDF est l'unique source de verite pour la geometrie : pour corriger ou
+changer le modele, on remplace le fichier URDF, pas le code.
 
 Convention de calibration : l'URDF "new_calib" place le zero de chaque
-articulation au MILIEU de sa course, ce qui correspond exactement a la
+articulation au milieu de sa course, ce qui correspond exactement a la
 conversion faite par src/calibration/motor_to_angle.py.
 
 Chaine cinematique (base -> effecteur), 5 articulations rotoides + 1 joint fixe :
@@ -55,7 +54,7 @@ EE_LINK = "gripper_frame_link"
 def _parse_joints(urdf_path):
     """Lit les articulations de l'URDF (enfants directs de <robot>).
 
-    findall("joint") ne retourne que les enfants DIRECTS de <robot>, donc les
+    findall("joint") ne retourne que les enfants directs de <robot>, donc les
     <joint> imbriques dans les <transmission> sont naturellement ignores.
 
     Returns:
@@ -116,7 +115,7 @@ class KinematicChain:
         if not self.urdf_path.exists():
             raise FileNotFoundError(
                 f"URDF introuvable : {self.urdf_path}\n"
-                "Recupere-le depuis TheRobotStudio/SO-ARM100 "
+                "A recuperer depuis TheRobotStudio/SO-ARM100 "
                 "(Simulation/SO101/so101_new_calib.urdf)."
             )
         self.joints = _parse_joints(self.urdf_path)
@@ -178,7 +177,7 @@ def fk_so101(joint_angles_rad, urdf_path=DEFAULT_URDF):
 
 
 # ============================================================
-# Tests rapides (lance avec : python -m src.calibration.forward_kinematics)
+# Tests unitaires (lancer avec : python -m src.calibration.forward_kinematics)
 # ============================================================
 if __name__ == "__main__":
     print("Tests forward_kinematics.py")
@@ -226,7 +225,7 @@ if __name__ == "__main__":
 
     # 4. Integration motor_to_angle -> FK : le centre de deroulage de chaque
     #    encodeur correspond a un angle nul, donc doit redonner la pose zero T0.
-    #    (test base sur la calibration courante, pas sur d'anciennes captures)
+    #    Le test s'appuie sur la calibration courante du depot.
     from src.calibration.motor_to_angle import (
         load_encoder_unwrap,
         load_motor_calibration,

@@ -7,7 +7,7 @@ perception :
   - la pose de l'effecteur dans le repere base (T_base_gripper),
   - les T_base_cam des cameras eye-in-hand (par composition).
 
-Ce module est volontairement LE SEUL endroit ou la perception touche au
+Ce module est volontairement le seul endroit ou la perception touche au
 hardware moteur. Tout le reste du pipeline lit ses sorties (`RobotState`).
 
 Mode hors-ligne : on peut construire un `RobotState` directement depuis une
@@ -42,7 +42,7 @@ from src.calibration.motor_to_angle import (
 
 @dataclass
 class RobotState:
-    """Etat instantane du robot, prêt a être consomme par la perception.
+    """Etat instantane du robot, pret a etre consomme par la perception.
 
     Attributes:
         joint_angles_rad : {joint_name: rad}, contient au moins ARM_JOINTS.
@@ -58,7 +58,7 @@ class RobotState:
 
 
 class RobotStateProvider:
-    """Fournit des `RobotState` cohérents au pipeline.
+    """Fournit des `RobotState` coherents au pipeline.
 
     Trois modes d'utilisation :
 
@@ -67,7 +67,7 @@ class RobotStateProvider:
       2. `from_angles(joint_angles)` : utilise une configuration fixe (tests).
       3. `from_raw(raw_positions)`   : utilise des valeurs encodeur (replay).
 
-    Les calibrations moteur et l'unwrap d'encodeur sont charges UNE fois
+    Les calibrations moteur et l'unwrap d'encodeur sont charges une seule fois
     a l'init ; idem pour la chaine cinematique.
     """
 
@@ -134,8 +134,8 @@ class RobotStateProvider:
             from lerobot.motors.feetech import FeetechMotorsBus
         except ImportError as e:
             raise ImportError(
-                "LeRobot indisponible. Active le venv (source venv/bin/activate) "
-                "ou installe-le selon setup_env.sh."
+                "LeRobot indisponible. Activer le venv (source venv/bin/activate) "
+                "ou l'installer selon setup_env.sh."
             ) from e
 
         motors = {
@@ -162,13 +162,14 @@ class RobotStateProvider:
 
         Tente jusqu'a `max_retries` fois en cas d'echec ponctuel du bus
         (typique : 'Incorrect status packet' quand un paquet est corrompu
-        ou un servo a glitche). Si tous les retries echouent et
-        `fallback_to_last=True`, renvoie le dernier RobotState lu plutot
-        que de lever une exception : pour la perception, c'est generalement
-        acceptable (le robot bouge lentement, la pose change peu en 100 ms).
+        ou qu'un servo presente un defaut transitoire). Si tous les essais
+        echouent et `fallback_to_last=True`, renvoie le dernier RobotState lu
+        plutot que de lever une exception : pour la perception, c'est
+        generalement acceptable (le robot bouge lentement, la pose change peu
+        en 100 ms).
         """
         if self._bus is None:
-            raise RuntimeError("Bus non connecte. Appelle connect_live(port) d'abord.")
+            raise RuntimeError("Bus non connecte. Appeler connect_live(port) au prealable.")
         last_err = None
         for attempt in range(max_retries):
             try:
@@ -181,16 +182,16 @@ class RobotStateProvider:
             except (ConnectionError, RuntimeError) as e:
                 last_err = e
                 if attempt < max_retries - 1:
-                    time.sleep(0.02)  # mini pause avant retry
+                    time.sleep(0.02)  # breve pause avant nouvel essai
                     continue
-        # Tous les retries ont echoue
+        # Tous les essais ont echoue
         if fallback_to_last and getattr(self, "_last_state", None) is not None:
-            print(f"[robot_state] read_live KO {max_retries}x, fallback derniere pose "
+            print(f"[robot_state] read_live en echec {max_retries}x, fallback derniere pose "
                   f"({last_err})", file=sys.stderr)
             return self._last_state
         raise ConnectionError(
             f"Lecture moteur impossible apres {max_retries} essais. {last_err}\n"
-            "Verifie : (1) le robot est sous tension, (2) le cable USB n'est pas debranche, "
+            "Verifier : (1) le robot est sous tension, (2) le cable USB n'est pas debranche, "
             "(3) aucun autre process n'utilise le bus."
         )
 
@@ -204,7 +205,7 @@ class RobotStateProvider:
 
 
 # ============================================================
-# Self-tests (lance avec : python -m src.perception.robot_state)
+# Self-tests (execution : python -m src.perception.robot_state)
 # ============================================================
 if __name__ == "__main__":
     print("Tests robot_state.py")

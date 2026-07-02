@@ -17,9 +17,9 @@ equivalente la matrice qui transforme un point exprime en B vers A. Quand on
 parle de cv2.calibrateHandEye, on garde la convention OpenCV "FROM2TO" pour
 les noms d'argument (R_target2cam, etc.), mais on documente l'equivalence.
 
-Astuce eye-to-hand : cv2.calibrateHandEye est concue pour eye-in-hand. Pour
-l'eye-to-hand on inverse les poses gripper->base avant d'appeler (on substitue
-la base au role du gripper). La sortie "R_cam2gripper" est alors R_cam2base.
+Cas eye-to-hand : cv2.calibrateHandEye est concue pour l'eye-in-hand. Pour
+l'eye-to-hand, on inverse les poses gripper->base avant l'appel (la base joue
+alors le role du gripper) ; la sortie "R_cam2gripper" correspond a R_cam2base.
 Voir Tsai & Lenz 1989, Horaud & Dornaika 1995.
 """
 
@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import numpy as np
 
-# OpenCV : meme convention partout (units quelconques tant qu'elles sont
+# OpenCV : meme convention partout (unites quelconques tant qu'elles restent
 # coherentes entre gripper2base et target2cam).
 import cv2
 

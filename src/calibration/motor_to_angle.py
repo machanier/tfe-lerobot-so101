@@ -1,33 +1,32 @@
-"""
-motor_to_angle.py - Conversion entre valeurs encodeur brutes et angles articulaires.
+"""Conversion entre valeurs encodeur brutes et angles articulaires.
 
 Les servomoteurs Feetech STS3215 retournent une "Present_Position" : un entier
-sur 12 bits (0 a 4095) qui represente la position sur UN tour. L'encodeur est
-CIRCULAIRE : apres 4095 on revient a 0 (comme une boussole).
+sur 12 bits (0 a 4095) representant la position sur un tour. L'encodeur est
+circulaire : apres 4095 la valeur revient a 0, a la maniere d'une boussole.
 
 LeRobot convertit en degres avec (cf motors_bus.py:858) :
     angle_deg = (raw - mid) * 360 / max_resolution
     avec mid = (range_min + range_max) / 2  et  max_resolution = 4095
 
-Mais cette formule ignore le caractere circulaire de l'encodeur : si la course
-d'un joint chevauche la couture 0/4095, deux positions physiquement voisines
-(ex: raw=4090 et raw=5) donnent des angles a ~360 deg d'ecart. C'est le cas de
-wrist_roll sur ce robot.
+Cette formule ignore le caractere circulaire de l'encodeur : si la course d'un
+joint chevauche la couture 0/4095, deux positions physiquement voisines
+(par exemple raw=4090 et raw=5) donnent des angles a environ 360 deg d'ecart.
+C'est le cas de wrist_roll sur ce robot.
 
-On corrige donc en "deroulant" la valeur autour d'un centre :
+La correction consiste a "derouler" la valeur autour d'un centre :
     angle_deg = wrap(raw - center) * 360 / 4095
     avec wrap(d) = ((d + 2048) % 4096) - 2048   (ramene dans (-180, 180] deg)
 
 - Pour la plupart des joints, center = (range_min + range_max) / 2 et wrap()
-  ne change rien (la plage ne touche pas la couture).
+  n'a aucun effet (la plage ne touche pas la couture).
 - Pour wrist_roll, dont la course chevauche la couture, center est lu depuis
   configs/encoder_unwrap.json (mesure par scripts/measure_wrist_roll.py).
 
-Le drive_mode (0 ou 1) inverse le sens de rotation. homing_offset n'intervient
-pas ici : il est applique cote hardware, donc deja inclus dans la "raw" lue.
+Le drive_mode (0 ou 1) inverse le sens de rotation. Le homing_offset n'intervient
+pas ici : il est applique cote materiel, donc deja inclus dans la valeur brute lue.
 
-Reference :
-- LeRobot motors_bus.py, _normalize() ligne 838-865
+References :
+- LeRobot motors_bus.py, _normalize() lignes 838-865
 - Documentation Feetech STS3215 : 0-4095 = 0-360 deg
 """
 
@@ -87,7 +86,7 @@ def load_encoder_unwrap(path, calibration=None):
                     f"  AVERTISSEMENT : encoder_unwrap.json pour '{joint}' a ete mesure "
                     f"avec homing_offset={measured}, mais la calibration courante a "
                     f"homing_offset={current}.\n"
-                    f"  -> le follower a ete recalibre, relance scripts/measure_wrist_roll.py"
+                    f"  -> le follower a ete recalibre ; relancer scripts/measure_wrist_roll.py"
                 )
     return centers
 
@@ -154,7 +153,7 @@ def raw_dict_to_radians(raw_positions, calibration, motor_order, unwrap_centers=
 
 
 # ============================================================
-# Tests rapides (lance avec : python -m src.calibration.motor_to_angle)
+# Tests rapides (execution : python -m src.calibration.motor_to_angle)
 # ============================================================
 if __name__ == "__main__":
     print("Tests motor_to_angle.py")
@@ -166,22 +165,22 @@ if __name__ == "__main__":
     print(f"  {len(calib)} moteurs, centres de deroulage specifiques : {list(unwrap)}")
     print()
 
-    # 1. Le centre de deroulage donne toujours 0 rad
+    # 1. Le centre de deroulage donne toujours 0 rad.
     for name, c in calib.items():
         center = unwrap.get(name, (c["range_min"] + c["range_max"]) / 2)
         angle = raw_to_radians(center, c, unwrap.get(name))
         assert abs(angle) < 1e-9, f"{name}: centre -> {angle} (devrait etre 0)"
     print("  [OK] le centre de deroulage donne 0 rad pour chaque moteur")
 
-    # 2. Continuite a la couture 0/4095 pour un joint deroule (wrist_roll)
+    # 2. Continuite a la couture 0/4095 pour un joint deroule (wrist_roll).
     if "wrist_roll" in unwrap:
         c = calib["wrist_roll"]
         ctr = unwrap["wrist_roll"]
         a_4095 = np.rad2deg(raw_to_radians(4095, c, ctr))
         a_0 = np.rad2deg(raw_to_radians(0, c, ctr))
-        # avec deroulage : 4095 et 0 sont voisins -> ~0.09 deg d'ecart
+        # Avec deroulage, 4095 et 0 sont voisins (environ 0.09 deg d'ecart).
         assert abs(a_4095 - a_0) < 1.0, f"discontinuite a la couture : {a_4095} vs {a_0}"
-        # sans deroulage : la formule naive ferait un saut de ~360 deg
+        # Sans deroulage, la formule naive ferait un saut d'environ 360 deg.
         naive_4095 = (4095 - (c["range_min"] + c["range_max"]) / 2) * 360 / 4095
         naive_0 = (0 - (c["range_min"] + c["range_max"]) / 2) * 360 / 4095
         print(f"  [OK] wrist_roll continu a la couture : raw 4095->{a_4095:+.2f} deg, "
@@ -189,19 +188,19 @@ if __name__ == "__main__":
         print(f"       sans deroulage la formule naive sauterait de "
               f"{abs(naive_4095 - naive_0):.0f} deg")
 
-    # 3. wrist_roll : toute sa course reste dans une plage d'angles plausible
+    # 3. wrist_roll : toute sa course reste dans une plage d'angles plausible.
     if "wrist_roll" in unwrap:
         c = calib["wrist_roll"]
         ctr = unwrap["wrist_roll"]
         angles = [np.rad2deg(raw_to_radians(r, c, ctr)) for r in range(0, 4096, 16)]
-        # course mesuree ~334 deg -> tous les angles atteignables dans +-170 deg
-        # (les valeurs de la zone morte peuvent depasser, c'est normal)
+        # Course mesuree d'environ 334 deg : les angles atteignables tiennent dans
+        # +-170 deg (les valeurs de la zone morte peuvent depasser, c'est attendu).
         reachable = [a for a in angles if abs(a) <= 170]
         assert len(reachable) > 0.85 * len(angles), "trop d'angles hors plage plausible"
         print(f"  [OK] wrist_roll : course deroulee dans [{min(angles):+.0f}, "
               f"{max(angles):+.0f}] deg")
 
-    # 4. Recapitulatif par moteur
+    # 4. Recapitulatif par moteur.
     print()
     print(f"  {'moteur':<14} {'plage raw':<14} {'centre':>7}  {'amplitude angulaire'}")
     for name, c in calib.items():

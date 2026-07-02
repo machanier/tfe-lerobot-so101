@@ -7,7 +7,7 @@ intrinseque+hand-eye chargees par camera_io.py.
 
 Deux strategies, complementaires :
 
-  TRIANGULATION STEREO (cam_0 + cam_1)
+  Triangulation stereo (cam_0 + cam_1)
       Quand un objet est vu par les deux cameras eye-to-hand simultanement,
       on triangule a partir des deux rayons.
       Algorithme : DLT lineaire (Hartley & Zisserman 2018, ch. 12) sur les
@@ -15,26 +15,26 @@ Deux strategies, complementaires :
       cv2.undistortPoints). Puis raffinement non-lineaire via cv2.solvePnP
       retroprojete sur les deux vues.
 
-  PNP MONOCULAIRE (cam_2 eye-in-hand, fallback)
+  PnP monoculaire (cam_2 eye-in-hand, fallback)
       Quand un objet n'est vu que par une seule camera mais qu'on connait
-      sa TAILLE METRIQUE reelle (depuis ObjectSpec.meta), on resout le PnP
+      sa taille metrique reelle (depuis ObjectSpec.meta), on resout le PnP
       a partir du contour 2D et d'un modele 3D simple (carre / disque /
       polygone planaire). Permet de couvrir les cas d'occlusion partielle.
       Reference : EPnP (Lepetit et al. 2009), utilise via cv2.solvePnP.
 
-      LIMITE CONNUE : pour 4 points coplanaires (cube/rectangle vu de face),
-      il existe une AMBIGUITE planaire (deux poses possibles) et le solveur
+      Limite connue : pour 4 points coplanaires (cube/rectangle vu de face),
+      il existe une ambiguite planaire (deux poses possibles) et le solveur
       IPPE_SQUARE peut choisir la branche flippee si l'objet est quasi
       parallele au plan image. En pratique le PnP eye-in-hand suppose une
-      vue oblique. La validation experimentale du Sprint 2 reposera sur la
-      triangulation stereo (cam_0 + cam_1), plus robuste.
+      vue oblique, et la validation experimentale repose sur la triangulation
+      stereo (cam_0 + cam_1), plus robuste.
       Cette limite est mentionnee dans Lepetit et al. 2009 (sec. "Planar case").
 
-Toutes les positions retournees sont en METRES dans le repere base.
+Toutes les positions retournees sont en metres dans le repere base.
 Toutes les covariances en mm^2.
 
-Architecture : ce module est PURE (pas d'I/O, pas de hardware). On lui passe
-les Detection2D et les Frame correspondantes, il rend les ObjectInstance.
+Ce module est pur (pas d'I/O, pas de hardware) : on lui passe les Detection2D
+et les Frame correspondantes, il rend les ObjectInstance.
 """
 
 from __future__ import annotations
@@ -48,13 +48,13 @@ import numpy as np
 from src.perception.scene import Detection2D, Frame, ObjectInstance, Scene
 
 
-# Offset horizontal MAX (m) entre le sommet triangule et le centroide pour qu'un
-# objet a bbox image haute & fine soit accepte comme DEBOUT. Au-dela, le "sommet"
-# de la bbox est en realite le BOUT LOINTAIN d'un objet allonge qui FUIT vers les
-# cameras (cylindre couche // X) -> on REFUSE le classement "debout" (sinon hauteur
-# = longueur -> prise bien trop haute). ~ rayon max plausible d'un dessus d'objet
-# debout (nos objets <= 30mm de diametre -> rayon <= 15mm ; couche // X -> offset
-# ~ demi-longueur ~ 30mm). Reglable. cf grasp-frame-bias-diagnostic.
+# Offset horizontal maximal (m) entre le sommet triangule et le centroide pour
+# qu'un objet a bbox image haute et fine soit accepte comme debout. Au-dela, le
+# "sommet" de la bbox est en realite le bout lointain d'un objet allonge qui fuit
+# vers les cameras (cylindre couche // X) : on refuse le classement "debout"
+# (sinon hauteur = longueur -> prise trop haute). Ordre de grandeur : rayon max
+# plausible d'un dessus d'objet debout (objets <= 30mm de diametre -> rayon
+# <= 15mm ; couche // X -> offset ~ demi-longueur ~ 30mm). Reglable.
 DEBOUT_TOP_OFFSET_MAX_M = 0.025
 
 
@@ -65,7 +65,7 @@ DEBOUT_TOP_OFFSET_MAX_M = 0.025
 
 def _projection_matrix(K: np.ndarray, T_base_cam: np.ndarray) -> np.ndarray:
     """Matrice de projection 3x4 P = K @ [R|t]_cam_base d'un point 3D
-    exprime DANS LE REPERE BASE vers le plan image de la camera.
+    exprime dans le repere base vers le plan image de la camera.
 
     On a T_base_cam (pose camera dans base), il faut [R|t]_cam_base pour
     projeter, donc on inverse :
@@ -155,7 +155,7 @@ def _shape_object_points(spec_meta: dict) -> Optional[np.ndarray]:
     """Construit les points 3D de reference selon la forme attendue de l'objet.
 
     Utilise pour le PnP monoculaire : besoin de connaitre la taille metrique
-    pour resoudre la profondeur. Les coordonnees sont en METRES, dans le
+    pour resoudre la profondeur. Les coordonnees sont en metres, dans le
     repere local de l'objet (origine au centre, Z normal a la face avant).
     """
     shape = spec_meta.get("shape")
@@ -258,21 +258,18 @@ class PoseEstimatorConfig:
     """
 
     stereo_keys: tuple[str, str] = ("cam_0", "cam_1")
-    # Compensation SYSTEMATIQUE du biais de calibration mesure
-    # empiriquement (e.g. biais Y +28mm sur le poste de Maxence).
+    # Compensation systematique du biais de calibration mesure empiriquement.
     # Chargee depuis configs/perception/bias_correction.json si present.
-    # Soustraite a CHAQUE position triangulee : pos_corrigee = pos - bias.
-    # Permet d'avoir une correction PERMANENTE sans modifier gt_test.json.
+    # Soustraite a chaque position triangulee : pos_corrigee = pos - bias.
+    # Permet une correction permanente sans modifier gt_test.json.
     bias_correction_m: Optional[object] = None  # ndarray (3,) ou None
-    # Seuil reprojection : 60 px (a 40 px on rejettait des detections valides
-    # juste au-dessus du seuil, ex: reproj=40.1px -> annulation tout le pipeline).
-    # Historique :
-    #   - 25 px : calcul theorique pur (7mm * 1225 / 500 + marge 1.5x)
-    #   - 40 px : empirique avec HF, ne suffisait pas (cas du cube a Y=165mm
-    #             ou la triangulation est juste au-dessus)
-    #   - 60 px : assez permissif pour les detections HF a la marge, mais
-    #             reste assez strict pour rejeter les mauvaises correspondances
-    #             (qui donnent typiquement reproj > 200 px).
+    # Seuil de reprojection : 60 px. Justification du reglage :
+    #   - 25 px : calcul theorique pur (7mm * 1225 / 500 + marge 1.5x).
+    #   - 40 px : empirique, insuffisant (des detections valides juste au-dessus
+    #             du seuil etaient rejetees, annulant tout le pipeline).
+    #   - 60 px : assez permissif pour les detections a la marge, mais reste
+    #             assez strict pour rejeter les mauvaises correspondances (qui
+    #             donnent typiquement reproj > 200 px).
     max_reproj_error_px: float = 60.0
     max_z_base_m: float = 0.40
     min_z_base_m: float = -0.05
@@ -290,13 +287,13 @@ class PoseEstimator:
          trop grande) et que l'option fallback est active, tente le PnP
          monoculaire sur cam_2 (eye-in-hand, le plus precis).
       4. Filtre les estimations dont z (base) est dehors de la plage attendue.
-      5. Filtre les estimations qui tombent dans une **zone d'exclusion**
-         (charge depuis configs/scene.json) : c'est ce qui evite de detecter
+      5. Filtre les estimations qui tombent dans une zone d'exclusion
+         (chargee depuis configs/scene.json) : c'est ce qui evite de detecter
          le robot lui-meme comme un objet (cas du cube orange vs filament
          orange du robot).
 
-    L'implementation reste SIMPLE et lisible : la sophistication sera ajoutee
-    si necessaire au Sprint 3 (e.g. RANSAC sur N>2 vues, prior bayesien...).
+    L'implementation reste simple et lisible : des raffinements pourront etre
+    ajoutes si necessaire (e.g. RANSAC sur N>2 vues, prior bayesien...).
     """
 
     def __init__(self, config: Optional[PoseEstimatorConfig] = None,
@@ -319,7 +316,7 @@ class PoseEstimator:
         self._workspace_bounds: Optional[dict] = None
         if load_scene_config:
             self._load_scene_config(self.config.scene_config_path)
-        # Compensation systematique du biais (cf D11+experimentation Maxence)
+        # Compensation systematique du biais de calibration
         self._bias_m: Optional[np.ndarray] = None
         self._load_bias_correction()
 
@@ -345,7 +342,7 @@ class PoseEstimator:
         """Charge la compensation systematique depuis
         configs/perception/bias_correction.json si present.
         Format : {"dx_mm": ..., "dy_mm": ..., "dz_mm": ...}
-        La valeur sera SOUSTRAITE a chaque position triangulee.
+        La valeur est soustraite a chaque position triangulee.
         """
         import json
         from pathlib import Path
@@ -374,10 +371,10 @@ class PoseEstimator:
         table + dz/2).
 
         Methode : taille_metrique ~= taille_pixel * profondeur / focale.
-        APPROXIMATION (la bbox image melange empreinte au sol et hauteur selon
+        Approximation (la bbox image melange empreinte au sol et hauteur selon
         l'angle de vue) ; suffisante pour adapter la prise, a raffiner avec les
         dimensions reelles connues des objets si besoin. dz est borne a
-        [5, 150] mm. Renvoie None (=> comportement non-adaptatif) si indispo.
+        [5, 150] mm. Renvoie None (comportement non-adaptatif) si indisponible.
         """
         try:
             if det is None or getattr(det, "bbox", None) is None or frame is None:
@@ -402,10 +399,10 @@ class PoseEstimator:
         Le haut de bbox des deux vues correspond approximativement au meme
         point physique (le sommet) pour deux cameras d'elevation voisine
         (paire stereo cam_0/cam_1) : erreur typique de quelques mm. C'est la
-        hauteur FIABLE qui remplace le proxy 'hauteur pixels' de
+        hauteur fiable qui remplace le proxy 'hauteur pixels' de
         _estimate_bbox_3d_m, lequel melange longueur et hauteur quand l'objet
-        pointe vers les cameras (bug 'cylindre // Y saisi trop haut',
-        diagnostic 2026-06-12 : 53mm estimes pour un cylindre de 30mm).
+        pointe vers les cameras (cas du cylindre // Y saisi trop haut : hauteur
+        estimee a 53mm pour un cylindre de 30mm).
 
         Returns: position 3D (3,) du sommet en repere base, ou None.
         """
@@ -431,15 +428,15 @@ class PoseEstimator:
         return X_top
 
     def _footprint_orientation(self, det, frame, z_plane_m: float):
-        """Orientation du grand axe de l'EMPREINTE de l'objet, en repere BASE.
+        """Orientation du grand axe de l'empreinte de l'objet, en repere base.
 
         Projette les points du contour (ou les coins de bbox a defaut) sur le
         plan horizontal z=z_plane_m par intersection rayon-plan (pixels
         undistordus d'abord), puis ACP 2D dans le plan XY base.
 
-        Contrairement a yaw_from_contour (angle dans le repere IMAGE), le
+        Contrairement a yaw_from_contour (angle dans le repere image), le
         resultat est independant de l'orientation de la camera -> les objets
-        poses EN BIAIS donnent un yaw correct. Approximation connue : la
+        poses en biais donnent un yaw correct. Approximation connue : la
         silhouette inclut des points au-dessus du plan -> legere elongation
         parasite le long de l'axe de visee (quelques degres de biais au pire).
 
@@ -503,11 +500,11 @@ class PoseEstimator:
     def _estimate_geometry(self, det_L, det_R, f_L, f_R, X_base):
         """Geometrie 3D enrichie : bbox_3d corrige + classe de pose + yaw base.
 
-        1. HAUTEUR par triangulation du sommet (fiable, remplace le proxy
+        1. Hauteur par triangulation du sommet (fiable, remplace le proxy
            pixels qui surestimait quand l'objet pointe vers les cameras).
-        2. CLASSE : "debout" si hauteur >> largeur d'empreinte horizontale,
+        2. Classe : "debout" si hauteur >> largeur d'empreinte horizontale,
            sinon "couche" (empreinte allongee) ou "compact".
-        3. YAW repere base du grand axe (objets couches, biais inclus) par
+        3. Yaw repere base du grand axe (objets couches, biais inclus) par
            projection rayon-plan du contour a mi-hauteur.
 
         Returns:
@@ -530,17 +527,17 @@ class PoseEstimator:
             height = float(bbox_old[2])
             meta["height_method"] = "proxy_bbox"
 
-        # --- 1bis. OBJET HAUT detecte en IMAGE (bbox haute & fine, 2 vues) ---
-        # Un objet DEBOUT (cylindre, boite verticale) a une bbox image nettement
-        # plus HAUTE que LARGE. Le detecter ICI evite deux pieges qui cassaient
+        # --- 1bis. objet haut detecte en image (bbox haute et fine, 2 vues) ---
+        # Un objet debout (cylindre, boite verticale) a une bbox image nettement
+        # plus haute que large. Le detecter ici evite deux pieges qui cassaient
         # la hauteur des cylindres debout (-> Z de prise trop bas -> cam_2
         # sur-corrige X) :
-        #   (a) le sommet triangule sous-estime un DESSUS DE CYLINDRE (cercle,
+        #   (a) le sommet triangule sous-estime un dessus de cylindre (cercle,
         #       pas un point : le haut de bbox des 2 vues n'est pas le meme point),
         #   (b) la projection de l'empreinte sur le plan table cree une fausse
         #       elongation -> classe 'couche' + h_cap qui rabote la hauteur.
         # Pour ces objets : classe 'debout', yaw libre (dessus rond), hauteur =
-        # extent VERTICAL de la bbox image (proxy fiable pour un debout), SANS
+        # extent vertical de la bbox image (proxy fiable pour un debout), sans
         # passer par l'empreinte projetee ni h_cap.
         def _img_aspect(det):
             b = getattr(det, "bbox", None)
@@ -549,17 +546,17 @@ class PoseEstimator:
             w, h = abs(float(b[2] - b[0])), abs(float(b[3] - b[1]))
             return (h / w) if w > 1e-6 else None
         a_L, a_R = _img_aspect(det_L), _img_aspect(det_R)
-        # GARDE-FOU anti-FORESHORTENING (cylindre COUCHE pointant VERS les cameras,
-        # ex // X) : une bbox image HAUTE & FINE peut venir d'un objet DEBOUT *ou*
-        # d'un objet allonge qui S'ELOIGNE (le "haut" de bbox = le BOUT LOINTAIN,
+        # Garde-fou anti-foreshortening (cylindre couche pointant vers les cameras,
+        # ex // X) : une bbox image haute et fine peut venir d'un objet debout ou
+        # d'un objet allonge qui s'eloigne (le "haut" de bbox = le bout lointain,
         # pas un sommet a la verticale du centre). On les separe par la position 3D
-        # du sommet triangule : un vrai DEBOUT a son sommet ~A LA VERTICALE du
-        # centroide (offset horizontal ~ rayon du dessus, petit) ; un COUCHE qui fuit
+        # du sommet triangule : un vrai debout a son sommet ~a la verticale du
+        # centroide (offset horizontal ~ rayon du dessus, petit) ; un couche qui fuit
         # a son "sommet" sur le bout lointain (offset horizontal ~ demi-longueur,
-        # grand). L'offset est INVARIANT au biais (X_top et X_base le portent tous
+        # grand). L'offset est invariant au biais (X_top et X_base le portent tous
         # deux). Sans ce garde-fou, un cylindre // X -> hauteur = longueur -> prise
         # ancree a table + longueur/2 = bien trop haut + cam_2 projette sur un plan
-        # Z errone -> X ET Y faux (essai // X 2026-06-21 "trop haut + decale a droite").
+        # Z errone -> X et Y faux (cas observe : "trop haut + decale a droite").
         foreshortened = False
         if (X_top is not None and X_base is not None
                 and a_L is not None and a_R is not None
@@ -580,7 +577,7 @@ class PoseEstimator:
             return (diam, diam, h_up), meta
 
         # --- 2. classe debout / couche / compact ---
-        # Largeur d'empreinte approx = extent HORIZONTAL image (peu pollue par
+        # Largeur d'empreinte approx = extent horizontal image (peu pollue par
         # la hauteur), le min des deux vues.
         foot_w = None
         for det, frm in ((det_L, f_L), (det_R, f_R)):
@@ -589,9 +586,9 @@ class PoseEstimator:
                 foot_w = b[0] if foot_w is None else min(foot_w, b[0])
         dx = float(bbox_old[0]) if bbox_old else 0.03
         dy = float(bbox_old[1]) if bbox_old else 0.03
-        # MEME garde-fou foreshortening : un objet allonge qui FUIT vers les cameras
+        # Meme garde-fou foreshortening : un objet allonge qui fuit vers les cameras
         # (couche // X) a une hauteur 3D (sommet triangule = bout lointain) qui peut
-        # depasser 1.6x l'empreinte -> ne PAS le classer debout non plus. On le
+        # depasser 1.6x l'empreinte -> ne pas le classer debout non plus. On le
         # laisse a la classification couche/compact (section 3), avec la hauteur =
         # diametre (sommet du bout lointain ~ table + diametre).
         if (not foreshortened and foot_w is not None
@@ -601,9 +598,9 @@ class PoseEstimator:
             return (dx, dy, height), meta
 
         # --- 3. objet couche/compact : yaw du grand axe en repere base ---
-        # DIAGNOSTIC : on calcule l'orientation vue par CHAQUE camera separement
+        # Diagnostic : on calcule l'orientation vue par chaque camera separement
         # et on la stocke (yaw_cam0_deg / yaw_cam1_deg). Si les deux cameras
-        # donnent le meme angle ET qu'il correspond a l'objet reel -> perception
+        # donnent le meme angle et qu'il correspond a l'objet reel -> perception
         # fiable. Si elles divergent ou collent toujours a ~0deg -> detection a
         # ameliorer. (Permet de distinguer 'perception fausse' de 'convention 90deg'.)
         ori = None
@@ -622,9 +619,9 @@ class PoseEstimator:
             return (dx, dy, height), meta
         yaw_b, elong, ext_long, ext_court = ori
 
-        # BORNE PHYSIQUE : un objet pose STABLEMENT repose sur sa plus grande
+        # Borne physique : un objet pose stablement repose sur sa plus grande
         # face -> sa hauteur <= largeur courte de l'empreinte. Le sommet
-        # triangule surestime encore quand l'objet pointe PILE vers les
+        # triangule surestime encore quand l'objet pointe droit vers les
         # cameras (le haut de bbox = le bout lointain, pas le meme point dans
         # les 2 vues) ; l'empreinte, elle, reste fiable. On prend le min, et
         # on re-projette une fois l'empreinte au bon plan (hauteur corrigee).
@@ -640,11 +637,11 @@ class PoseEstimator:
         height = max(0.005, h_cap)
 
         meta["footprint_elongation"] = round(elong, 2)
-        # ORIENTATION (yaw_base) DECOUPLEE de la classe de pose. On fournit le
-        # grand axe (yaw_base) des que l'empreinte a une orientation FIABLE :
-        # nettement allongee (ratio > 1.25 ET difference absolue > 12mm). Sinon
+        # Orientation (yaw_base) decouplee de la classe de pose. On fournit le
+        # grand axe (yaw_base) des que l'empreinte a une orientation fiable :
+        # nettement allongee (ratio > 1.25 et difference absolue > 12mm). Sinon
         # (empreinte ~ronde/carree ou trop bruitee pour trancher) yaw_base=None
-        # -> la pince saisira en yaw LIBRE (rotation minimale), ce qui est correct
+        # -> la pince saisira en yaw libre (rotation minimale), ce qui est correct
         # pour un rond et sans risque quand l'orientation est incertaine.
         ax_diff = ext_long - ext_court
         has_axis = (ax_diff > 0.012) and (ext_long > 1.25 * ext_court)
@@ -655,7 +652,7 @@ class PoseEstimator:
                      and ax_diff > 0.015)
         meta["pose_class"] = "couche" if elongated else "compact"
         # Empreinte projetee = meilleures dimensions au sol disponibles
-        # (ext_court ~ largeur PERPENDICULAIRE a la prise -> ouverture pince).
+        # (ext_court ~ largeur perpendiculaire a la prise -> ouverture pince).
         return (float(ext_long), float(ext_court), float(height)), meta
 
     def build_scene(self,
@@ -665,17 +662,17 @@ class PoseEstimator:
 
         Si plusieurs detections du meme label sont presentes dans une meme
         camera (cas typique : OWL-ViTv2, ou un fond bruite -> plusieurs bboxes),
-        on essaie d'abord la paire la PLUS CONFIANTE (score max = comportement
-        historique) ; si elle ne donne pas de position DANS la scene, on essaie
+        on essaie d'abord la paire la plus confiante (score max = comportement
+        historique) ; si elle ne donne pas de position dans la scene, on essaie
         les candidats suivants et on retient le premier in-scene (reproj valide).
         """
-        # Groupe par label : on conserve TOUS les candidats par (label, cam),
-        # tries par score decroissant. _estimate_one essaie la MEILLEURE paire
+        # Groupe par label : on conserve tous les candidats par (label, cam),
+        # tries par score decroissant. _estimate_one essaie la meilleure paire
         # d'abord (= historique) puis, si elle echoue (hors-scene / reproj), les
-        # candidats suivants -> garde celui qui tombe DANS la scene (Maxence
-        # 2026-06-25 : prisme noir avec k=3, le fond cree de faux blobs plus
-        # confiants que l'objet -> la paire au score max trianglait hors-scene et
-        # on echouait alors que le bon blob etait #2 ou #3).
+        # candidats suivants -> garde celui qui tombe dans la scene. Cas observe :
+        # prisme noir avec k=3, le fond cree de faux blobs plus confiants que
+        # l'objet -> la paire au score max triangulait hors-scene et on echouait
+        # alors que le bon blob etait #2 ou #3.
         cands_by_label: dict[str, dict[str, list[Detection2D]]] = {}
         for cam_key, dets in detections_by_cam.items():
             for d in dets:
@@ -712,13 +709,13 @@ class PoseEstimator:
         # Diagnostic : stocke la raison du rejet (utile pour _last_rejections)
         reject_reason = None
 
-        # 1) STEREO. Paires (gauche, droite) du MEME label essayees par SCORE
+        # 1) Stereo. Paires (gauche, droite) du meme label essayees par score
         # decroissant. La 1ere = (meilleur gauche, meilleur droite) = historique :
-        # si elle est VALIDE (in-scene + reproj OK) on la retourne -> IDENTIQUE a
+        # si elle est valide (in-scene + reproj OK) on la retourne -> identique a
         # avant. Sinon on essaie les paires suivantes et on garde la 1ere qui tombe
-        # DANS la scene (fix prisme noir / fond bruite, Maxence 2026-06-25). La
-        # contrainte reproj rejette au passage les MAUVAIS appariements (blob
-        # gauche d'un objet + blob droit d'un autre -> grande erreur de reproj).
+        # dans la scene (correctif prisme noir / fond bruite). La contrainte reproj
+        # rejette au passage les mauvais appariements (blob gauche d'un objet +
+        # blob droit d'un autre -> grande erreur de reproj).
         if dets_L and dets_R and f_L is not None and f_R is not None:
             pairs = sorted(
                 ((i, j) for i in range(len(dets_L)) for j in range(len(dets_R))),
@@ -728,8 +725,8 @@ class PoseEstimator:
                     label, dets_L[i], dets_R[j], f_L, f_R)
                 if inst is not None:
                     if rank > 0:
-                        # trace : ce n'est PAS la paire la plus confiante (un blob
-                        # plus confiant trianglait hors-scene) -> utile au debug.
+                        # trace : ce n'est pas la paire la plus confiante (un blob
+                        # plus confiant triangulait hors-scene) -> utile au debug.
                         inst.meta["stereo_pair_rank"] = rank
                     return inst
                 if rank == 0:
@@ -767,10 +764,10 @@ class PoseEstimator:
     def _try_stereo_pair(self, label: str, det_L: Detection2D, det_R: Detection2D,
                          f_L: Frame, f_R: Frame
                          ) -> tuple[Optional[ObjectInstance], Optional[str]]:
-        """Triangule UNE paire (gauche, droite). Renvoie (ObjectInstance, None) si
+        """Triangule une paire (gauche, droite). Renvoie (ObjectInstance, None) si
         la position est valide (dans la scene + reproj sous le seuil), sinon
-        (None, raison_du_rejet). Logique IDENTIQUE a l'ancien bloc stereo unique :
-        triangulation -> reproj -> compensation biais -> bornes scene -> geometrie.
+        (None, raison_du_rejet). Enchainement : triangulation -> reproj ->
+        compensation biais -> bornes scene -> geometrie.
         """
         kL, kR = self.config.stereo_keys
         try:
@@ -779,8 +776,8 @@ class PoseEstimator:
             return None, f"triangulation exception: {e}"
         if X is None:
             return None, "triangulation impossible (None)"
-        # IMPORTANT : reproj_error est calcule sur X NON COMPENSE (coherence
-        # triangulation/pixels) ; la compensation biais est appliquee APRES
+        # Note : reproj_error est calcule sur X non compense (coherence
+        # triangulation/pixels) ; la compensation biais est appliquee apres
         # validation, sur la position finale.
         err_L = reproject_error(X, det_L, f_L)
         err_R = reproject_error(X, det_R, f_R)
@@ -791,12 +788,12 @@ class PoseEstimator:
         pos_mm = X * 1000
         if ws_reason is not None:
             return None, (
-                f"stereo OK (reproj {err:.1f}px) MAIS rejet : {ws_reason} "
+                f"stereo OK (reproj {err:.1f}px) mais rejet : {ws_reason} "
                 f"-- position ({pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f}) mm")
         if err > self.config.max_reproj_error_px:
             return None, (
                 f"stereo OK (pos {pos_mm[0]:+.0f},{pos_mm[1]:+.0f},{pos_mm[2]:+.0f} mm) "
-                f"MAIS reproj_err={err:.1f}px > seuil {self.config.max_reproj_error_px}px")
+                f"mais reproj_err={err:.1f}px > seuil {self.config.max_reproj_error_px}px")
         score = float(min(det_L.score, det_R.score) * np.exp(-err / 8.0))
         # Geometrie enrichie : hauteur par sommet triangule, classe debout/couche,
         # yaw du grand axe en repere base.
@@ -819,10 +816,10 @@ class PoseEstimator:
         return self._workspace_reject(X) is None
 
     def _workspace_reject(self, X: np.ndarray):
-        """Retourne None si la position est valide, sinon une raison PRECISE
+        """Retourne None si la position est valide, sinon une raison precise
         (bornes Z code / portee / bornes scene.json / zone d'exclusion <label>).
-        Permet un diagnostic clair (avant : tout etait note 'hors workspace',
-        meme un rejet par zone d'exclusion -> trompait le debug, cf essais 13/14).
+        Permet un diagnostic clair : sans cela, tout etait note 'hors workspace',
+        meme un rejet par zone d'exclusion, ce qui trompait le debug.
         """
         x, y, z = float(X[0]), float(X[1]), float(X[2])
         # Bornes Z par defaut (de la config code)
@@ -836,26 +833,25 @@ class PoseEstimator:
             wb = self._workspace_bounds
             if not (wb["x_min"] <= x <= wb["x_max"]): return f"X={x*1000:.0f}mm hors bornes scene [{wb['x_min']*1000:.0f},{wb['x_max']*1000:.0f}]"
             if not (wb["y_min"] <= y <= wb["y_max"]): return f"Y={y*1000:.0f}mm hors bornes scene [{wb['y_min']*1000:.0f},{wb['y_max']*1000:.0f}]"
-            # Borne Z INFERIEURE : tolerance vers le bas. Le Z du CENTROIDE stereo
+            # Borne Z inferieure : tolerance vers le bas. Le Z du centroide stereo
             # est notoirement sous-estime sur les objets non plats (debout/couche) :
             # le centroide de la silhouette se triangule trop bas, jusqu'a passer
-            # SOUS la table (ex. cylindre couche : Z=-23mm alors qu'il est pose
-            # dessus). La PRISE n'utilise pas ce Z (elle ancre Z=table+H/2), donc
+            # sous la table (ex. cylindre couche : Z=-23mm alors qu'il est pose
+            # dessus). La prise n'utilise pas ce Z (elle ancre Z=table+H/2), donc
             # rejeter la detection sur ce Z faux fait perdre un objet bien vu en 2D
-            # (// X "impossible", 2026-06-20). On tolere Z_UNDERSHOOT_TOL_M sous
-            # z_min ; la borne HAUTE reste stricte (un objet trop HAUT est suspect).
+            # (cas du cylindre // X juge "impossible"). On tolere Z_UNDERSHOOT_TOL_M
+            # sous z_min ; la borne haute reste stricte (un objet trop haut est
+            # suspect).
             Z_UNDERSHOOT_TOL_M = 0.030
             if not (wb["z_min"] - Z_UNDERSHOOT_TOL_M <= z <= wb["z_max"]):
                 return f"Z={z*1000:.0f}mm hors bornes scene [{wb['z_min']*1000:.0f},{wb['z_max']*1000:.0f}] (tol basse {Z_UNDERSHOOT_TOL_M*1000:.0f}mm)"
-        # Zones d'exclusion : la position ne doit etre dans AUCUNE zone.
-        # CARVE-OUT TABLE (2026-06-13) : la zone 'robot_arm_envelope' (box
-        # englobant le bras replie) couvre x[0,0.20] z[0,0.30] et avalait donc
-        # les objets reels POSES sur la table devant le robot (crash 'NON
-        # DETECTE' essais 13/14 : cylindre a (199,44,35)mm rejete alors que la
-        # triangulation etait excellente, reproj 4.2px). Un objet pose sur la
-        # table (z bas) n'est jamais le bras (qui est sureleve quand replie) ->
-        # on n'applique PAS cette enveloppe sous TABLE_OBJECT_Z_M. Les autres
-        # zones (base robot) restent strictes.
+        # Zones d'exclusion : la position ne doit etre dans aucune zone.
+        # Carve-out table : la zone 'robot_arm_envelope' (box englobant le bras
+        # replie) couvre x[0,0.20] z[0,0.30] et avalait donc les objets reels
+        # poses sur la table devant le robot (un objet correctement triangule
+        # etait rejete a tort). Un objet pose sur la table (z bas) n'est jamais
+        # le bras (sureleve quand replie) : on n'applique pas cette enveloppe
+        # sous TABLE_OBJECT_Z_M. Les autres zones (base robot) restent strictes.
         TABLE_OBJECT_Z_M = 0.06
         for zone in self._exclusion_zones:
             if zone.get("label") == "robot_arm_envelope" and z < TABLE_OBJECT_Z_M:
@@ -958,7 +954,7 @@ if __name__ == "__main__":
     # load_scene_config=False pour test independant des configs reelles
     spec_meta = {"x": {"shape": "cube", "side_mm": 30.0}}
     est = PoseEstimator(specs_by_label=spec_meta, load_scene_config=False)
-    # Ce test valide la GEOMETRIE de triangulation, qui doit etre independante de
+    # Ce test valide la geometrie de triangulation, qui doit etre independante de
     # la compensation de biais empirique (bias_correction.json). On la desactive
     # ici, sinon le biais courant (~-32mm en X) fait echouer le seuil <1mm.
     est._bias_m = None
@@ -1107,9 +1103,9 @@ if __name__ == "__main__":
     assert elong > 2.0
     assert abs(ext_l - 0.090) < 0.012 and abs(ext_c - 0.030) < 0.010
 
-    # 8. GARDE-FOU anti-FORESHORTENING : un cylindre DEBOUT reste 'debout' ; un
-    #    cylindre COUCHE qui FUIT vers les cameras (// X, "sommet" de bbox = bout
-    #    lointain) N'est PAS classe debout (sinon hauteur = longueur -> prise trop
+    # 8. Garde-fou anti-foreshortening : un cylindre debout reste 'debout' ; un
+    #    cylindre couche qui fuit vers les cameras (// X, "sommet" de bbox = bout
+    #    lointain) n'est pas classe debout (sinon hauteur = longueur -> prise trop
     #    haute). Distinction = offset horizontal sommet-vs-centroide.
     est3._bias_m = None  # test dans un repere coherent (X_top et X_base non biaises)
 
@@ -1122,16 +1118,16 @@ if __name__ == "__main__":
                 cam_key=f2.cam_key, label="cyl", center_px=(c[0], c[1]),
                 bbox=(a[0] - halfw_px, a[1], a[0] + halfw_px, a[1] + h_px)))
         return out
-    # DEBOUT : sommet A LA VERTICALE du centroide -> garde 'debout'
+    # Debout : sommet a la verticale du centroide -> garde 'debout'
     dL, dR = _dets_haute([0.25, 0.0, 0.03], [0.25, 0.0, 0.06], 50, 180)
     _, m_deb = est3._estimate_geometry(dL, dR, f_L2, f_R2, np.array([0.25, 0.0, 0.03]))
     assert m_deb.get("pose_class") == "debout", \
         f"un vrai debout doit rester debout, recu {m_deb.get('pose_class')}"
-    # COUCHE // X : 'sommet' = bout lointain (offset ~30mm) -> PAS debout, hauteur ~ diametre
+    # Couche // X : 'sommet' = bout lointain (offset ~30mm) -> pas debout, hauteur ~ diametre
     dL, dR = _dets_haute([0.25, 0.0, 0.0125], [0.22, 0.0, 0.025], 50, 180)
     b_cou, m_cou = est3._estimate_geometry(dL, dR, f_L2, f_R2, np.array([0.25, 0.0, 0.0125]))
     assert m_cou.get("pose_class") != "debout", \
-        f"un cylindre couche // X ne doit PAS etre classe debout, recu {m_cou.get('pose_class')}"
+        f"un cylindre couche // X ne doit pas etre classe debout, recu {m_cou.get('pose_class')}"
     assert b_cou[2] < 0.035, \
         f"hauteur couche // X attendue ~diametre (<35mm), recu {b_cou[2]*1000:.0f}mm"
     print(f"  [OK] garde-fou foreshortening : debout garde, couche // X reclasse "

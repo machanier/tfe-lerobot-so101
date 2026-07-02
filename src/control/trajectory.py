@@ -1,27 +1,27 @@
-"""
-trajectory.py - Generation de trajectoires articulaires lisses pour le SO-101.
+"""Generation de trajectoires articulaires lisses pour le SO-101.
 
-Probleme : passer de la configuration articulaire courante q_0 a une
-configuration cible q_f en evitant les a-coups (vitesse/acceleration nulle
-aux extremites, profil lisse au milieu).
+Objectif : passer de la configuration articulaire courante q_0 a une
+configuration cible q_f en limitant les a-coups (vitesse et acceleration
+nulles aux extremites, profil lisse entre les deux).
 
-DEUX METHODES IMPLEMENTEES :
+Deux methodes sont disponibles :
 
-  linear      : interpolation lineaire q(t) = (1-s) q_0 + s q_f, s in [0, 1].
-                Simple, mais vitesse constante => saut a t=0 et t=T.
-                Acceptable pour le SO-101 (mouvements lents, gear ratio eleve).
+  linear   : interpolation lineaire q(t) = (1-s) q_0 + s q_f, s dans [0, 1].
+             Simple mais a vitesse constante, d'ou un saut a t=0 et t=T.
+             Acceptable pour le SO-101 (mouvements lents, reducteur eleve).
 
-  quintic     : polynome de degre 5 verifiant :
-                  q(0) = q_0,  q(T) = q_f
-                  v(0) = v(T) = 0   (vitesse nulle aux extremites)
-                  a(0) = a(T) = 0   (acceleration nulle => pas de jerk)
-                Standard en robotique. Coefficients fermes (cf Sciavicco & Siciliano).
+  quintic  : polynome de degre 5 verifiant :
+               q(0) = q_0,  q(T) = q_f
+               v(0) = v(T) = 0   (vitesse nulle aux extremites)
+               a(0) = a(T) = 0   (acceleration nulle, donc pas de jerk)
+             Formulation standard en robotique, a coefficients fermes
+             (cf Sciavicco & Siciliano).
 
-Pour le pipeline pick-and-place, on enchaine plusieurs trajectoires :
+Pour le pipeline pick-and-place, plusieurs trajectoires sont enchainees :
   q_courant -> q_approach -> q_grasp -> q_retract -> q_drop_above -> q_drop_release
 
 Chaque sous-trajectoire est echantillonnee a une cadence dt (par defaut 30 Hz,
-coherent avec le rythme des cameras).
+coherente avec le rythme des cameras).
 
 Reference :
   Sciavicco & Siciliano 2000, "Modelling and Control of Robot Manipulators",
@@ -40,14 +40,14 @@ import numpy as np
 class JointTrajectory:
     """Sequence temporelle de configurations articulaires.
 
-    Attributes:
-        joint_names  : ordre des joints (ex: ARM_JOINTS).
-        timestamps   : (N,) instants en secondes depuis le debut.
-        positions    : (N, len(joints)) angles en radians par instant.
-        velocities   : (N, len(joints)) vitesses (rad/s), optionnel.
-        gripper_pct  : (N,) ouverture pince (0=ferme, 100=ouvert), optionnel.
-                       Si fourni, sera envoye en meme temps que les positions.
-        meta         : metadonnees (strategy, source, etc.).
+    Attributs :
+        joint_names : ordre des joints (par exemple ARM_JOINTS).
+        timestamps  : (N,) instants en secondes depuis le debut.
+        positions   : (N, len(joints)) angles en radians par instant.
+        velocities  : (N, len(joints)) vitesses (rad/s), optionnel.
+        gripper_pct : (N,) ouverture de la pince (0=ferme, 100=ouvert), optionnel.
+                      Si fourni, il est envoye en meme temps que les positions.
+        meta        : metadonnees (strategie, source, etc.).
     """
 
     joint_names: list[str]
@@ -61,13 +61,13 @@ class JointTrajectory:
         n = len(self.timestamps)
         if self.positions.shape != (n, len(self.joint_names)):
             raise ValueError(
-                f"positions shape doit etre ({n}, {len(self.joint_names)}), "
+                f"positions doit avoir la forme ({n}, {len(self.joint_names)}), "
                 f"recu {self.positions.shape}"
             )
         if self.velocities is not None and self.velocities.shape != self.positions.shape:
-            raise ValueError("velocities doit avoir la meme shape que positions")
+            raise ValueError("velocities doit avoir la meme forme que positions")
         if self.gripper_pct is not None and self.gripper_pct.shape != (n,):
-            raise ValueError(f"gripper_pct shape doit etre ({n},)")
+            raise ValueError(f"gripper_pct doit avoir la forme ({n},)")
 
     @property
     def duration_s(self) -> float:
@@ -103,11 +103,13 @@ def linear_trajectory(q_start: dict[str, float],
     q0 = np.array([q_start[j] for j in joint_names], dtype=np.float64)
     q1 = np.array([q_end[j] for j in joint_names], dtype=np.float64)
     positions = np.outer(1.0 - ts / duration_s, q0) + np.outer(ts / duration_s, q1)
-    # Vitesse = constante = (q1 - q0) / duration
+    # Vitesse constante egale a (q1 - q0) / duration
     velocities = np.tile((q1 - q0) / duration_s, (n, 1))
-    velocities[0] = 0.0   # convention : vitesse 0 a t=0 (en realite saut, mais convention)
+    # Convention : vitesse nulle aux extremites (le profil lineaire presente
+    # en realite un saut a t=0 et t=T)
+    velocities[0] = 0.0
     velocities[-1] = 0.0
-    # Gripper interpole de la meme facon
+    # Pince interpolee de la meme maniere
     gripper = None
     if gripper_start is not None and gripper_end is not None:
         gripper = (1.0 - ts / duration_s) * gripper_start + (ts / duration_s) * gripper_end
@@ -140,9 +142,9 @@ def quintic_trajectory(q_start: dict[str, float],
         joint_names = list(q_start.keys())
     n = max(2, int(np.ceil(duration_s / dt_s)) + 1)
     ts = np.linspace(0.0, duration_s, n)
-    tau = ts / duration_s  # temps normalise [0, 1]
+    tau = ts / duration_s  # temps normalise dans [0, 1]
     s = 10 * tau**3 - 15 * tau**4 + 6 * tau**5
-    # Derivees (utiles pour les vitesses)
+    # Derivee de s, utilisee pour les vitesses
     s_dot = (30 * tau**2 - 60 * tau**3 + 30 * tau**4) / duration_s
 
     q0 = np.array([q_start[j] for j in joint_names], dtype=np.float64)
@@ -168,11 +170,10 @@ def quintic_trajectory(q_start: dict[str, float],
 def chain_trajectories(trajectories: Iterable[JointTrajectory]) -> JointTrajectory:
     """Concatene plusieurs trajectoires bout a bout (les timestamps sont decales).
 
-    Robustesse : si certains segments ont velocities/gripper_pct et d'autres
-    pas, on PADDE les segments manquants avec des zeros (positions ou
-    velocities=0, gripper conserve la valeur courante). Sans ce padding,
-    `np.concatenate` produirait des shapes incoherents et `__post_init__`
-    leverait.
+    Si certains segments possedent velocities ou gripper_pct et d'autres non,
+    les segments manquants sont completes (velocities a zero, ouverture de pince
+    maintenue a la derniere valeur connue). Sans ce completage, np.concatenate
+    produirait des formes incoherentes et __post_init__ leverait une exception.
     """
     trajs = list(trajectories)
     if not trajs:
@@ -187,7 +188,7 @@ def chain_trajectories(trajectories: Iterable[JointTrajectory]) -> JointTrajecto
 
     ts_list = []; pos_list = []; vel_list = []; grip_list = []
     offset = 0.0
-    last_gripper = 100.0  # ouverture par defaut si pas connue
+    last_gripper = 100.0  # ouverture par defaut si elle n'est pas connue
     for t in trajs:
         ts_list.append(t.timestamps + offset)
         pos_list.append(t.positions)
@@ -195,14 +196,14 @@ def chain_trajectories(trajectories: Iterable[JointTrajectory]) -> JointTrajecto
             if t.velocities is not None:
                 vel_list.append(t.velocities)
             else:
-                # Pad : velocities = 0 partout
+                # Segment sans vitesses : complete par des zeros
                 vel_list.append(np.zeros_like(t.positions))
         if has_gripper:
             if t.gripper_pct is not None:
                 grip_list.append(t.gripper_pct)
                 last_gripper = float(t.gripper_pct[-1])
             else:
-                # Pad : maintient le dernier gripper connu
+                # Segment sans pince : maintient la derniere ouverture connue
                 grip_list.append(np.full(len(t.timestamps), last_gripper))
         offset += t.duration_s
 
@@ -218,13 +219,15 @@ def chain_trajectories(trajectories: Iterable[JointTrajectory]) -> JointTrajecto
 
 def estimate_duration_safe(q_start: dict[str, float], q_end: dict[str, float],
                             max_velocity_rad_s: float = 0.5) -> float:
-    """Estime une duree raisonnable pour qu'aucun joint ne depasse max_vel.
+    """Estime une duree raisonnable pour qu'aucun joint ne depasse max_velocity.
 
-    Conservatif : duration = max_displacement / max_velocity, avec marge x1.5
-    pour absorber le profil quintic (vitesse pic > vitesse moyenne).
+    Approche conservative : duration = deplacement_max / vitesse_max, avec une
+    marge x1.5 pour absorber le profil quintique (vitesse de pic superieure a
+    la vitesse moyenne).
 
     Args:
-        max_velocity_rad_s : 0.5 rad/s ~ 30 deg/s, prudent pour le SO-101.
+        max_velocity_rad_s : 0.5 rad/s (environ 30 deg/s), valeur prudente
+            pour le SO-101.
     """
     joints = set(q_start.keys()) | set(q_end.keys())
     max_disp = 0.0
@@ -236,7 +239,7 @@ def estimate_duration_safe(q_start: dict[str, float], q_end: dict[str, float],
 
 
 # ============================================================
-# Self-tests (lance avec : python -m src.control.trajectory)
+# Tests internes (lancer avec : python -m src.control.trajectory)
 # ============================================================
 if __name__ == "__main__":
     print("Tests trajectory.py")
@@ -251,7 +254,7 @@ if __name__ == "__main__":
     assert len(t_lin) == 21  # 2.0 / 0.1 + 1
     assert np.allclose(t_lin.positions[0], 0.0)
     assert np.allclose(t_lin.positions[-1], 0.5)
-    # mi-parcours : ~ 0.25
+    # mi-parcours attendu autour de 0.25
     mid = len(t_lin) // 2
     assert np.allclose(t_lin.positions[mid], 0.25, atol=0.05)
     print(f"  [OK] linear_trajectory : N={len(t_lin)}, duree={t_lin.duration_s}s, "
@@ -264,7 +267,7 @@ if __name__ == "__main__":
     assert np.allclose(t_q.velocities[0], 0.0, atol=1e-8), \
         f"vitesse t=0 attendue 0, recu {t_q.velocities[0]}"
     assert np.allclose(t_q.velocities[-1], 0.0, atol=1e-8)
-    # Vitesse maximum au milieu (~1.5 * (q1-q0)/T = 1.5 * 0.5/2 = 0.375)
+    # Vitesse maximale au milieu (environ 1.5 * (q1-q0)/T = 1.5 * 0.5/2 = 0.375)
     v_max = np.max(np.abs(t_q.velocities))
     assert 0.30 < v_max < 0.50, f"v_max quintic attendu ~0.375, recu {v_max}"
     print(f"  [OK] quintic_trajectory : v_max={v_max:.3f} (~1.5x linear)")
@@ -278,7 +281,7 @@ if __name__ == "__main__":
 
     # 4. estimate_duration_safe
     dur = estimate_duration_safe(q0, q1, max_velocity_rad_s=0.5)
-    # 0.5 rad / 0.5 rad/s = 1s, x1.5 = 1.5s
+    # 0.5 rad / 0.5 rad/s = 1s, puis x1.5 = 1.5s
     assert 1.4 < dur < 1.6, f"duration attendue ~1.5s, recu {dur}"
     print(f"  [OK] estimate_duration_safe : {dur:.2f}s pour 0.5 rad a 0.5 rad/s")
 
