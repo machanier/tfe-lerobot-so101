@@ -6,11 +6,18 @@ Charge la capture extrinseque (configs/extrinsic_capture_cam_<i>.json),
 calcule pour chaque pose T_base_gripper via la cinematique directe et
 T_target_cam via le rvec/tvec stocke, puis resout :
   - eye-to-hand (cam_0, cam_1) : sortie = T_base_cam
-  - eye-in-hand (cam_2)         : sortie = T_gripper_cam
+  - eye-in-hand  (cam_2)       : sortie = T_gripper_cam
 
 Sauvegarde le resultat dans configs/handeye_cam_<i>.json avec les residus.
 
-Usage:
+Entrees :
+    configs/extrinsic_capture_cam_<i>.json (poses capturees)
+    configs/calibration_follower.json      (calibration moteurs)
+    configs/encoder_unwrap.json            (deroulement encodeurs)
+Sortie :
+    configs/handeye_cam_<i>.json           (transformation + residus)
+
+Usage :
     python scripts/solve_handeye_cam.py --index 0
     python scripts/solve_handeye_cam.py --index 0 --method PARK
 """
@@ -44,7 +51,7 @@ def role_for_camera(cam_key):
     """Recupere le role 'stereo_*' ou 'eye_in_hand' depuis config.CAMERAS."""
     if cam_key in CAMERAS:
         return CAMERAS[cam_key]["role"]
-    # fallback : best guess sur l'index
+    # Camera absente de la configuration : role indetermine.
     return None
 
 
@@ -52,7 +59,7 @@ def build_pose_lists(captures, calib_motors, unwrap_centers, chain):
     """Pour chaque capture, construit T_gripper2base (FK) et T_target2cam (PnP).
 
     Returns:
-        T_g2b_list, T_t2c_list : listes de matrices 4x4 en METRES.
+        T_g2b_list, T_t2c_list : listes de matrices 4x4 en metres.
     """
     T_g2b_list = []
     T_t2c_list = []
@@ -75,7 +82,7 @@ def build_pose_lists(captures, calib_motors, unwrap_centers, chain):
 
 
 def format_4x4(T):
-    """Joliment formate une matrice 4x4 pour affichage."""
+    """Formate une matrice 4x4 pour l'affichage."""
     return "\n".join(
         "    " + "  ".join(f"{v:+10.5f}" for v in row) for row in T
     )

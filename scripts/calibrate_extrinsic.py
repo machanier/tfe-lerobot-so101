@@ -2,12 +2,12 @@
 """
 calibrate_extrinsic.py - Capture des donnees pour la calibration hand-eye.
 
-Gere les 3 cameras. La procedure physique depend du role de la camera :
-  - eye-to-hand (cam_0, cam_1, fixes) : damier colle sur la pince FERMEE,
-    la camera ne bouge pas, on bouge le BRAS devant elle.
-  - eye-in-hand (cam_2, montee sur le bras) : damier FIXE sur la table, on
-    bouge le BRAS pour que la camera le voie sous des angles varies.
-Les donnees capturees sont les memes ; seule la resolution
+Gere les trois cameras. La procedure physique depend du role de la camera :
+  - eye-to-hand (cam_0, cam_1, fixes) : damier colle sur la pince fermee, la
+    camera ne bouge pas, on deplace le bras devant elle.
+  - eye-in-hand (cam_2, montee sur le bras) : damier fixe sur la table, on
+    deplace le bras pour que la camera le voie sous des angles varies.
+Les donnees capturees sont identiques ; seule la resolution
 (cv2.calibrateHandEye) differe selon le role. Le script rappelle la
 procedure adaptee au lancement.
 
@@ -16,13 +16,14 @@ Usage :
     python scripts/calibrate_extrinsic.py --index 1 --rows 7 --cols 7 --square-size 22
 
 Procedure :
-    1. Mettre le damier en place (sur la pince OU fixe sur la table selon
-       le role de la camera - le script l'indique au lancement)
-    2. Verifier que la camera est a sa position finale (structure assemblee)
-    3. Lancer le script
-    4. Bouger le bras dans 15-25 poses variees (rotations autour de >=2 axes)
-    5. A chaque pose : attendre l'immobilisation puis 'c' pour capturer
-    6. 'q' pour terminer et sauvegarder les donnees
+    1. Mettre le damier en place (sur la pince ou fixe sur la table selon
+       le role de la camera ; le script l'indique au lancement).
+    2. Verifier que la camera est a sa position finale (structure assemblee).
+    3. Lancer le script.
+    4. Deplacer le bras dans 15 a 25 poses variees (rotations autour d'au
+       moins deux axes).
+    5. A chaque pose : attendre l'immobilisation puis 'c' pour capturer.
+    6. 'q' pour terminer et sauvegarder les donnees.
 
 Sortie :
     configs/extrinsic_capture_cam_<index>.json : poses damier-camera + angles moteurs
@@ -59,7 +60,7 @@ def connect_robot(port):
         from lerobot.motors.feetech import FeetechMotorsBus
     except ImportError:
         print("ERREUR : LeRobot non installe ou non trouve.")
-        print("  Active le venv : source venv/bin/activate")
+        print("  Activer l'environnement virtuel : source venv/bin/activate")
         sys.exit(1)
 
     if not os.path.exists(port):
@@ -70,9 +71,9 @@ def connect_robot(port):
             print("Ports usbmodem disponibles :")
             for p in available:
                 print(f"  {p}")
-            print("Utilise --port <chemin> ou mets a jour FOLLOWER_PORT dans scripts/config.py")
+            print("Preciser --port <chemin> ou mettre a jour FOLLOWER_PORT dans scripts/config.py")
         else:
-            print("Aucun port /dev/tty.usbmodem* detecte. Branche le robot.")
+            print("Aucun port /dev/tty.usbmodem* detecte. Brancher le robot.")
         sys.exit(1)
 
     motors = {
@@ -93,11 +94,11 @@ def connect_robot(port):
         if "Missing motor IDs" in msg or "Found: {}" in msg or "Full found motor list (id: model_number):\n{}" in msg:
             print("\nERREUR : aucun moteur ne repond sur ce port.")
             print("Causes les plus frequentes :")
-            print("  1. Le bras follower n'est PAS alimente (verifie l'interrupteur / l'alimentation 5V).")
+            print("  1. Le bras follower n'est pas alimente (verifier l'interrupteur / l'alimentation 5V).")
             print("  2. Le cable USB est branche mais le robot n'a pas de courant.")
-            print("  3. Le port usbmodem correspond au LEADER, pas au FOLLOWER.")
-            print(f"     Verifie avec : ls /dev/tty.usbmodem*")
-            print("  4. Un autre processus retient le port (Arduino IDE, ancienne session, etc.)")
+            print("  3. Le port usbmodem correspond au leader, pas au follower.")
+            print("     Verifier avec : ls /dev/tty.usbmodem*")
+            print("  4. Un autre processus retient le port (Arduino IDE, session precedente, etc.).")
             sys.exit(1)
         raise
 
@@ -125,21 +126,23 @@ def estimate_board_pose(frame, camera_matrix, dist_coeffs, rows, cols, square_si
 
 def main():
     parser = argparse.ArgumentParser(description="Capture des donnees pour calibration hand-eye")
-    parser.add_argument("--index", type=int, required=True, help="Index OpenCV de la camera (0 ou 1)")
+    parser.add_argument("--index", type=int, required=True, help="Index OpenCV de la camera (0 ou 1).")
     parser.add_argument("--port", type=str, default=FOLLOWER_PORT,
-                        help=f"Port USB du follower (defaut config.py : {FOLLOWER_PORT})")
+                        help=f"Port USB du follower. Defaut (depuis config.py) : {FOLLOWER_PORT}.")
     parser.add_argument("--intrinsic", type=str, default=None,
-                        help="Fichier intrinseque (defaut: configs/calibration_cam_<index>.json)")
-    parser.add_argument("--rows", type=int, default=7, help="Coins internes du damier (lignes)")
-    parser.add_argument("--cols", type=int, default=7, help="Coins internes du damier (colonnes)")
-    parser.add_argument("--square-size", type=float, default=22.0, help="Taille des carres en mm")
-    parser.add_argument("--no-save-images", action="store_true")
-    parser.add_argument("--output", type=str, default=None)
+                        help="Fichier de calibration intrinseque. Defaut : configs/calibration_cam_<index>.json.")
+    parser.add_argument("--rows", type=int, default=7, help="Nombre de coins internes du damier (lignes). Defaut : 7.")
+    parser.add_argument("--cols", type=int, default=7, help="Nombre de coins internes du damier (colonnes). Defaut : 7.")
+    parser.add_argument("--square-size", type=float, default=22.0, help="Taille des carres du damier en millimetres. Defaut : 22.0.")
+    parser.add_argument("--no-save-images", action="store_true",
+                        help="Ne pas enregistrer les images de capture sur le disque. Desactive par defaut.")
+    parser.add_argument("--output", type=str, default=None,
+                        help="Fichier JSON de sortie. Defaut : configs/extrinsic_capture_cam_<index>.json.")
     args = parser.parse_args()
 
     cam_key = next((k for k, v in CAMERAS.items() if v["index"] == args.index), None)
     if cam_key is None:
-        print(f"AVERTISSEMENT : index {args.index} non trouve dans config.CAMERAS")
+        print(f"Avertissement : index {args.index} non trouve dans config.CAMERAS")
         cam_key = f"cam_{args.index}"
         role = "eye_to_hand"
     else:
@@ -148,13 +151,13 @@ def main():
 
     print()
     if role == "eye_in_hand":
-        print("  PROCEDURE eye-in-hand (camera montee sur le bras) :")
-        print("  - Damier POSE ET FIXE sur la table (il ne bouge pas).")
-        print("  - Bouge le BRAS pour que la camera voie le damier sous des angles varies.")
+        print("  Procedure eye-in-hand (camera montee sur le bras) :")
+        print("  - Damier pose et fixe sur la table (il ne bouge pas).")
+        print("  - Deplacer le bras pour que la camera voie le damier sous des angles varies.")
     else:
-        print("  PROCEDURE eye-to-hand (camera fixe) :")
-        print("  - Damier COLLE sur la pince FERMEE du robot.")
-        print("  - La camera ne bouge pas ; bouge le BRAS pour varier la pose du damier.")
+        print("  Procedure eye-to-hand (camera fixe) :")
+        print("  - Damier colle sur la pince fermee du robot.")
+        print("  - La camera ne bouge pas ; deplacer le bras pour varier la pose du damier.")
     print()
 
     intrinsic_path = args.intrinsic or f"configs/calibration_cam_{args.index}.json"
@@ -189,17 +192,19 @@ def main():
         os.makedirs(images_dir, exist_ok=True)
         print(f"Images sauvegardees dans : {images_dir}/")
 
-    # Output path + helper de sauvegarde incrementale (fix bug 2026-05-19 :
-    # 65 captures perdues car JSON ecrit APRES bus.disconnect() qui plante
-    # parfois en cas de hoquet USB). Desormais on sauve apres chaque capture.
+    # Chemin de sortie et fonction de sauvegarde incrementale. Le fichier JSON
+    # est ecrit apres chaque capture plutot qu'a la fermeture, afin de conserver
+    # les donnees si la deconnexion du bus echoue en fin d'execution.
     output_path = args.output or f"configs/extrinsic_capture_cam_{args.index}.json"
     out_parent = os.path.dirname(output_path)
     if out_parent:
         os.makedirs(out_parent, exist_ok=True)
 
     def save_captures_now(captures_list):
-        """Sauvegarde incrementale : appelee a chaque capture + a la fin.
-        Garantit qu'on ne perd JAMAIS les captures meme si crash USB plus tard."""
+        """Sauvegarde incrementale, appelee a chaque capture et en fin d'execution.
+
+        Preserve les captures deja realisees en cas d'echec ulterieur du bus USB.
+        """
         result = {
             "camera_index": args.index,
             "camera_key": cam_key,
@@ -284,8 +289,8 @@ def main():
                 cv2.imwrite(raw_path, frame)
                 cv2.imwrite(annotated_path, display)
 
-            # Sauvegarde INCREMENTALE apres chaque capture : si crash USB plus
-            # tard, on garde tout ce qui a deja ete capture (cf bug 2026-05-19).
+            # Sauvegarde incrementale apres chaque capture : en cas d'echec du
+            # bus USB par la suite, les captures deja realisees sont conservees.
             save_captures_now(captures)
 
             print(f"  Capture {n} : distance={capture_data['distance_mm']:.0f}mm")
@@ -308,9 +313,8 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
 
-    # SAUVE AVANT bus.disconnect() : si disconnect plante (hoquet USB), on a
-    # deja le JSON ecrit sur disque. C'est exactement le bug qui a fait perdre
-    # 65 captures le 2026-05-19.
+    # Sauvegarde effectuee avant bus.disconnect() : si la deconnexion echoue
+    # (interruption USB transitoire), le fichier JSON est deja ecrit sur disque.
     if len(captures) >= 5:
         save_captures_now(captures)
         print(f"\n{len(captures)} captures sauvegardees : {output_path}")
@@ -321,14 +325,14 @@ def main():
             save_captures_now(captures)
             print(f"  Le JSON est tout de meme sauve : {output_path}")
 
-    # Disconnect du bus dans try/except : meme si le bus a un hoquet a la fin,
-    # le JSON est deja sur disque, donc echec ici = warning, pas crash.
+    # Deconnexion du bus protegee par un try/except : le fichier JSON etant deja
+    # sur disque, un echec ici produit un avertissement plutot qu'une erreur.
     try:
         bus.disconnect()
     except Exception as e:
-        print(f"  [WARN] bus.disconnect() a echoue (USB transitoire) : {e}")
-        print(f"         Les captures sont sauvees dans {output_path}, c'est OK.")
-        print(f"         Tu peux debrancher/rebrancher le follower si besoin pour la suite.")
+        print(f"  [WARN] bus.disconnect() a echoue (interruption USB transitoire) : {e}")
+        print(f"         Les captures sont sauvegardees dans {output_path}.")
+        print("         Debrancher puis rebrancher le follower si necessaire avant l'etape suivante.")
 
 
 if __name__ == "__main__":

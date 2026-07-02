@@ -4,25 +4,25 @@ check_perception.py - Validation chiffree du pipeline de perception.
 
 Mesure experimentalement l'erreur de localisation 3D :
 
-    1. L'utilisateur place les primitives colorees a des positions MESUREES
+    1. L'utilisateur place les primitives colorees a des positions mesurees
        au pied a coulisse depuis la base du robot, dans le repere robot
-       (X_pied_a_coulisse en mm).
+       (coordonnees en mm).
     2. Le script enregistre la position attendue (ground truth) et lance
        la perception.
-    3. Compare position perception <-> position pied a coulisse, calcule
-       erreur euclidienne par objet + agregat.
+    3. Compare la position estimee par la perception a la position mesuree,
+       et calcule l'erreur euclidienne par objet ainsi qu'un agregat.
 
-Le ground truth peut etre fourni de DEUX facons :
+Le ground truth peut etre fourni de deux facons :
 
-  --gt FILE   : fichier JSON pre-rempli (recommande, reproductible) :
-                  {
-                    "objects": [
-                      {"label": "red_cube", "position_base_mm": [120, -30, 25]},
-                      ...
-                    ]
-                  }
+  --gt FICHIER  : fichier JSON pre-rempli (reproductible) :
+                    {
+                      "objects": [
+                        {"label": "red_cube", "position_base_mm": [120, -30, 25]},
+                        ...
+                      ]
+                    }
 
-  --interactive : on saisit chaque position au clavier au lancement.
+  --interactive : saisie de chaque position au clavier au lancement.
 
 Sortie :
     outputs/perception/validation_<timestamp>.json
@@ -32,8 +32,8 @@ Sortie :
           "summary": {"mean_mm": ..., "max_mm": ..., "median_mm": ...}
         }
 
-Critere de succes (Sprint 2 dans PROJECT_STATUS.md) : erreur moyenne <= 10 mm
-(au plancher de bruit de la calibration hand-eye actuelle, 5-7 mm).
+Critere de succes : erreur moyenne <= 10 mm, de l'ordre du plancher de bruit
+de la calibration hand-eye (5-7 mm).
 """
 
 import argparse
@@ -81,15 +81,15 @@ def prompt_ground_truth(labels: list[str]) -> list[dict]:
     """Demande a l'utilisateur les positions des objets en mm."""
     print(f"Objets attendus (labels detectables) : {labels}")
     out = []
-    print("Pour chaque objet, tape : LABEL X Y Z (mm)")
-    print("Termine par une ligne vide.")
+    print("Pour chaque objet, saisir : LABEL X Y Z (mm)")
+    print("Terminer par une ligne vide.")
     while True:
         line = input("> ").strip()
         if not line:
             break
         parts = line.split()
         if len(parts) != 4:
-            print("  Format : LABEL X Y Z (en mm). Reessaie.")
+            print("  Format attendu : LABEL X Y Z (en mm).")
             continue
         label, x, y, z = parts[0], float(parts[1]), float(parts[2]), float(parts[3])
         out.append({"label": label, "position_base_m": np.array([x, y, z]) / 1000.0})
@@ -100,10 +100,10 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
                    detector_kind: str = "hsv",
                    hf_specs_path: Optional[str] = None,
                    warmup: int = 5):
-    """Acquiert une scene 3D avec la chaine complete (HSV ou HF detector)."""
-    # `known_labels` : liste des labels que le detecteur PEUT detecter (utile
-    # pour le mode --interactive et le retour de la fonction). En HF, ce sont
-    # les valeurs du mapping (ou les prompts si pas de mapping).
+    """Acquiert une scene 3D avec la chaine complete (detecteur HSV ou HF)."""
+    # `known_labels` : liste des labels que le detecteur peut reconnaitre (utile
+    # pour le mode --interactive et pour le retour de la fonction). En HF, ce
+    # sont les valeurs du mapping, ou les prompts en l'absence de mapping.
     if detector_kind == "hsv":
         if Path(specs_path).exists():
             specs = load_hsv_specs(Path(specs_path))
@@ -128,7 +128,7 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
             mapping = {}
         detector = HFDetector(prompt_labels=labels, model_name=model_name,
                               score_threshold=threshold)
-        # Wrap detect pour appliquer mapping si fourni
+        # Enveloppe detect() pour appliquer le mapping s'il est fourni.
         if mapping:
             orig_detect = detector.detect
             def detect_with_mapping(frame):
@@ -139,7 +139,7 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
                 return dets
             detector.detect = detect_with_mapping
         specs_meta = {}
-        # known_labels = labels internes (apres mapping) ou prompts si pas de mapping
+        # known_labels : labels internes (apres mapping), ou prompts en l'absence de mapping.
         known_labels = (list(mapping.values()) if mapping else list(labels))
     else:
         raise ValueError(f"detector_kind inconnu: {detector_kind}")
@@ -150,11 +150,11 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
         try:
             provider.connect_live(port)
         except Exception as e:
-            print(f"Robot KO ({e}). Bascule en --no-robot.")
+            print(f"Connexion au robot impossible ({e}). Bascule en mode --no-robot.")
             no_robot = True
 
-    # try/finally CRITIQUE pour liberer le bus en cas d'erreur (sinon le port
-    # USB reste occupe et le prochain lancement echoue avec "Incorrect status packet").
+    # Le try/finally garantit la liberation du bus en cas d'erreur : sans lui,
+    # le port USB resterait occupe et empecherait le lancement suivant.
     try:
         with MultiCamera() as mc:
             rs = (provider.read_live() if not no_robot
@@ -174,7 +174,7 @@ def estimate_scene(no_robot: bool, port: str, specs_path: str,
 
 
 def evaluate(scene, ground_truth):
-    """Compare scene <-> ground truth, retourne stats + entries detail."""
+    """Compare la scene au ground truth ; retourne le detail par objet et un resume."""
     est_by_label = {o.label: o for o in scene.objects}
     errors = []
     for gt in ground_truth:
@@ -220,17 +220,25 @@ def evaluate(scene, ground_truth):
 def main():
     parser = argparse.ArgumentParser(description="Validation chiffree de la perception 3D.")
     parser.add_argument("--gt", type=str, default=None,
-                        help="Fichier JSON ground truth (positions mm)")
+                        help="Fichier JSON du ground truth (positions en mm).")
     parser.add_argument("--interactive", action="store_true",
-                        help="Saisir le ground truth au clavier")
+                        help="Saisir le ground truth au clavier au lancement.")
     parser.add_argument("--detector", choices=["hsv", "hf"], default="hsv",
-                        help="hsv = V1 (rapide deterministe), hf = V2 (OWL-ViTv2 robuste)")
+                        help="Detecteur a utiliser : 'hsv' (seuillage colorimetrique, "
+                             "rapide et deterministe) ou 'hf' (OWL-ViT v2, plus robuste). "
+                             "Defaut : hsv.")
     parser.add_argument("--specs", type=str,
-                        default=str(REPO / "configs" / "perception" / "hsv_specs.json"))
+                        default=str(REPO / "configs" / "perception" / "hsv_specs.json"),
+                        help="Fichier JSON des specifications HSV. "
+                             "Defaut : configs/perception/hsv_specs.json.")
     parser.add_argument("--hf-specs", type=str,
-                        default=str(REPO / "configs" / "perception" / "hf_specs.json"))
-    parser.add_argument("--port", type=str, default=FOLLOWER_PORT)
-    parser.add_argument("--no-robot", action="store_true")
+                        default=str(REPO / "configs" / "perception" / "hf_specs.json"),
+                        help="Fichier JSON des specifications du detecteur HF. "
+                             "Defaut : configs/perception/hf_specs.json.")
+    parser.add_argument("--port", type=str, default=FOLLOWER_PORT,
+                        help="Port serie du bras suiveur. Defaut : valeur de config.FOLLOWER_PORT.")
+    parser.add_argument("--no-robot", action="store_true",
+                        help="Executer sans robot connecte (angles articulaires a zero).")
     args = parser.parse_args()
 
     print("============================================================")
@@ -250,10 +258,10 @@ def main():
             specs = default_hsv_specs()
         gt = prompt_ground_truth([s.label for s in flatten_specs(specs)])
     else:
-        print("Specifie --gt FICHIER ou --interactive")
+        print("Specifier --gt FICHIER ou --interactive.")
         sys.exit(2)
     if not gt:
-        print("Ground truth vide. Annule.")
+        print("Ground truth vide. Arret.")
         sys.exit(2)
 
     # 2. Acquisition
@@ -271,7 +279,7 @@ def main():
     print("== Erreur par objet ==")
     for e in errors:
         if not e["detected"]:
-            print(f"  {e['label']:<18} NON DETECTE  (gt={e['gt_mm']})")
+            print(f"  {e['label']:<18} non detecte  (gt={e['gt_mm']})")
             continue
         gt_mm = e["gt_mm"]; est_mm = e["est_mm"]; n = e["error_norm_mm"]
         method = e["method"]
@@ -286,19 +294,20 @@ def main():
     print(f"  erreur mediane   : {summary['median_mm']:.2f} mm")
     print(f"  erreur max       : {summary['max_mm']:.2f} mm")
 
-    # Verdict cahier des charges
+    # Verdict au regard du critere de succes.
     print()
     if summary["n_detected"] == 0:
-        print("  [!] Aucun objet detecte : verifie l'eclairage / les plages HSV "
-              "(scripts/calibrate_hsv.py)")
+        print("  [!] Aucun objet detecte : verifier l'eclairage et les plages HSV "
+              "(scripts/calibrate_hsv.py).")
     elif summary["mean_mm"] < 10:
         print("  [OK] Erreur moyenne < 10 mm : conforme au plancher de bruit "
-              "calibration. Passe au Sprint 3 (grasp planning).")
+              "de la calibration.")
     elif summary["mean_mm"] < 20:
-        print("  [ACCEPTABLE] Erreur moyenne 10-20 mm : utilisable, mais "
-              "la replanification (Sprint 4) compensera.")
+        print("  [ACCEPTABLE] Erreur moyenne 10-20 mm : utilisable, la "
+              "replanification en boucle fermee compensera l'ecart.")
     else:
-        print("  [A REVOIR] Erreur moyenne > 20 mm : verifie hand-eye + HSV.")
+        print("  [A REVOIR] Erreur moyenne > 20 mm : verifier la calibration "
+              "hand-eye et les plages HSV.")
 
     # Sauvegarde
     out_dir = REPO / "outputs" / "perception"

@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
-"""
-record_perception_frames.py - Capture synchronisee 3 cameras + etat moteur.
+"""Capture synchronisee de 3 cameras et de l'etat moteur du robot.
 
 Produit un dossier `data/perception_<timestamp>/` au format attendu par
 `src.perception.camera_io.ReplayCamera` :
 
     manifest.json     liste ordonnee de snapshots, chacun avec :
                           - id, timestamp
-                          - robot_state : raw_positions + joint_angles_rad
-                          - frames     : { "cam_0": "snap_01/cam_0.png", ... }
+                          - robot_state : raw_positions ou joint_angles_rad
+                          - frames      : { "cam_0": "snap_01/cam_0.png", ... }
     snap_01/cam_0.png ...
 
-Utilite :
-    - constituer un jeu de validation reproductible pour le memoire,
-    - iterer sur le detecteur sans avoir le robot branche (mode replay).
-    - servir de base pour un futur dataset d'annotation (YOLO / OWL-ViT V2).
+Objectifs :
+    - constituer un jeu de validation reproductible pour le memoire ;
+    - iterer sur le detecteur sans robot branche, via le mode replay ;
+    - servir de base a un futur jeu de donnees d'annotation.
 
-Procedure :
-    1. Pose les objets dans differentes configurations (occlusion, distance...).
-    2. Lance le script (le robot follower doit etre branche : on lit ses moteurs).
-    3. A chaque scene interessante, presse 'c' pour capturer un snapshot.
-    4. 'q' pour terminer et clore le manifest.
+Usage :
+    1. Disposer les objets dans differentes configurations (occlusion, distance).
+    2. Lancer le script (le robot follower doit etre branche : ses moteurs sont lus).
+    3. Presser 'c' pour capturer un snapshot de la scene courante.
+    4. Presser 'q' pour terminer et clore le manifest.
 
-Si le robot n'est pas branche, utiliser --no-robot : les snapshots seront
-enregistres avec robot_state = configuration "zero" (le pipeline pourra
-les rejouer pour cam_0/cam_1 mais cam_2 sera approximative).
+Sans robot branche, utiliser --no-robot : les snapshots sont enregistres avec
+un robot_state en configuration zero. Le pipeline peut les rejouer pour cam_0 et
+cam_1, mais cam_2 reste approximative faute d'etat moteur reel.
 """
 
 import argparse
@@ -66,7 +65,7 @@ def open_cameras(cam_keys):
 
 
 def grab_synchronized(caps):
-    """grab puis retrieve, timestamp commun."""
+    """Effectue grab puis retrieve sur chaque camera avec un timestamp commun."""
     grab_ok = {k: c.grab() for k, c in caps.items()}
     ts = time.time()
     frames = {}
@@ -80,7 +79,7 @@ def grab_synchronized(caps):
 
 
 def connect_robot(port):
-    """Connecte le bus Feetech (mode lecture moteur)."""
+    """Connecte le bus Feetech en lecture seule (torque desactive)."""
     from lerobot.motors import Motor, MotorNormMode
     from lerobot.motors.feetech import FeetechMotorsBus
 
@@ -101,13 +100,13 @@ def connect_robot(port):
 def main():
     parser = argparse.ArgumentParser(description="Enregistre des snapshots synchronises pour le replay.")
     parser.add_argument("--output", type=str, default=None,
-                        help="Dossier de sortie (defaut: data/perception_<timestamp>/)")
+                        help="Dossier de sortie. Par defaut : data/perception_<timestamp>/.")
     parser.add_argument("--port", type=str, default=FOLLOWER_PORT,
-                        help="Port USB du follower (lecture moteur)")
+                        help="Port USB du follower pour la lecture moteur. Par defaut : FOLLOWER_PORT.")
     parser.add_argument("--no-robot", action="store_true",
-                        help="Pas de robot branche : utilise une config zero")
+                        help="Enregistre sans robot branche, avec une configuration zero. Par defaut : desactive.")
     parser.add_argument("--cams", type=str, default="cam_0,cam_1,cam_2",
-                        help="Cameras a enregistrer (csv)")
+                        help="Cameras a enregistrer, en liste separee par des virgules. Par defaut : cam_0,cam_1,cam_2.")
     args = parser.parse_args()
 
     cam_keys = [k.strip() for k in args.cams.split(",") if k.strip()]
@@ -124,9 +123,9 @@ def main():
     if not args.no_robot:
         try:
             bus = connect_robot(args.port)
-            print("Robot connecte, torque OFF.")
+            print("Robot connecte, torque desactive.")
         except Exception as e:
-            print(f"Connexion robot KO ({e}). Mode --no-robot force.")
+            print(f"Echec de la connexion au robot ({e}). Bascule en mode --no-robot.")
             bus = None
 
     snapshots = []
@@ -137,7 +136,7 @@ def main():
         while True:
             frames, ts = grab_synchronized(caps)
 
-            # Affichage : pile horizontale des cameras (resize 1/2 pour tenir a l'ecran)
+            # Affichage : juxtaposition horizontale des cameras (redimensionnees a la moitie pour tenir a l'ecran)
             tiles = []
             for k in cam_keys:
                 img = frames[k]
@@ -148,7 +147,7 @@ def main():
             display = np.hstack(tiles)
             cv2.putText(
                 display,
-                f"snapshots: {len(snapshots)} | 'c'=capturer 'q'=quitter",
+                f"snapshots : {len(snapshots)} | 'c' = capturer  'q' = quitter",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA,
             )
@@ -159,9 +158,9 @@ def main():
                 break
             if key == ord("c"):
                 if any(frames[k] is None for k in cam_keys):
-                    print("  Frame manquante sur au moins une cam : capture ignoree.")
+                    print("  Frame manquante sur au moins une camera : capture ignoree.")
                     continue
-                # --- lit moteur si dispo
+                # Lecture des moteurs si le bus est disponible
                 rs_payload = None
                 if bus is not None:
                     try:
@@ -169,9 +168,9 @@ def main():
                         raw = {k: float(v) for k, v in raw.items()}
                         rs_payload = {"raw_positions": raw}
                     except Exception as e:
-                        print(f"  Lecture moteur KO : {e} (snapshot sans robot_state)")
+                        print(f"  Echec de lecture moteur : {e} (snapshot sans robot_state)")
                 else:
-                    # Configuration zero comme placeholder explicite
+                    # Configuration zero servant de valeur par defaut explicite
                     rs_payload = {
                         "joint_angles_rad": {
                             "shoulder_pan": 0.0, "shoulder_lift": 0.0,
@@ -179,7 +178,7 @@ def main():
                         },
                         "_note": "placeholder (--no-robot)"
                     }
-                # --- sauve les images
+                # Enregistrement des images
                 idx = len(snapshots) + 1
                 snap_dir = out_root / f"snap_{idx:03d}"
                 snap_dir.mkdir(parents=True, exist_ok=True)
@@ -195,7 +194,7 @@ def main():
                     "frames": rel_frames,
                 }
                 snapshots.append(snap)
-                print(f"  + snapshot #{idx} ({snap_dir.name})")
+                print(f"  Snapshot #{idx} enregistre ({snap_dir.name})")
     finally:
         for c in caps.values():
             c.release()
@@ -214,7 +213,7 @@ def main():
     }
     with open(out_root / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
-    print(f"\n{len(snapshots)} snapshot(s) ecrits : {out_root}")
+    print(f"\n{len(snapshots)} snapshot(s) enregistre(s) : {out_root}")
 
 
 if __name__ == "__main__":

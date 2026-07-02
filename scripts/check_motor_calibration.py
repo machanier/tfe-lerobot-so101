@@ -2,19 +2,23 @@
 """
 check_motor_calibration.py - Verifie la calibration moteur du follower.
 
-A lancer APRES `python scripts/calibrate.py --follower` et AVANT de recapturer
-les donnees hand-eye. Detecte les defauts qui ont casse la calibration
-precedente :
+A lancer apres `python scripts/calibrate.py --follower` et avant de recapturer
+les donnees hand-eye. Detecte les defauts susceptibles d'invalider la
+calibration :
   1. articulation sous-balayee : la plage calibree est nettement plus etroite
-     que la course prevue par l'URDF (le joint n'a pas ete bouge a fond)
-  2. plage > 345 deg : le balayage a probablement traverse la couture 0/4095
-     de l'encodeur 12 bits
-  3. plage trop proche de la couture 0/4095 (risque de wraparound a l'usage)
+     que la course prevue par l'URDF (le joint n'a pas ete amene en butee) ;
+  2. plage superieure a 345 deg : le balayage a probablement traverse la
+     couture 0/4095 de l'encodeur 12 bits ;
+  3. plage trop proche de la couture 0/4095 (risque de wraparound a l'usage).
 
 Compare configs/calibration_follower.json aux limites de
 configs/so101_new_calib.urdf.
 
-Usage:
+Entree  : configs/calibration_follower.json, configs/so101_new_calib.urdf.
+Sortie  : rapport par articulation sur la sortie standard ; code de retour 0
+          si la calibration est coherente, 1 sinon.
+
+Usage :
     python scripts/check_motor_calibration.py
 """
 
@@ -54,7 +58,7 @@ def urdf_joint_spans(urdf_path):
 def main():
     if not CALIB.exists():
         print(f"ERREUR : {CALIB} introuvable.")
-        print("  Lance d'abord : python scripts/calibrate.py --follower")
+        print("  Executer d'abord : python scripts/calibrate.py --follower")
         sys.exit(1)
     if not URDF.exists():
         print(f"ERREUR : {URDF} introuvable.")
@@ -102,13 +106,13 @@ def main():
     print()
     if all_ok:
         print("[OK] Calibration moteur coherente.")
-        print("  Etape suivante : recapturer les donnees extrinseques des 3 cameras.")
+        print("  Etape suivante : recapturer les parametres extrinseques des 3 cameras.")
         sys.exit(0)
     else:
         print("[A REVOIR] Au moins une articulation pose probleme.")
-        print("  Relance : python scripts/calibrate.py --follower")
-        print("    etape 1 : mets bien CHAQUE joint au MILIEU de sa course (surtout wrist_roll)")
-        print("    etape 2 : balaye CHAQUE joint a FOND dans les deux sens")
+        print("  Relancer : python scripts/calibrate.py --follower")
+        print("    etape 1 : placer chaque joint au milieu de sa course (en particulier wrist_roll)")
+        print("    etape 2 : balayer chaque joint jusqu'en butee dans les deux sens")
         sys.exit(1)
 
 

@@ -1,30 +1,33 @@
 #!/usr/bin/env python3
-"""
-measure_wrist_roll.py - Mesure la course reelle de wrist_roll.
+"""Mesure la course angulaire reelle du moteur wrist_roll.
 
-wrist_roll a une grande course angulaire (~330 deg) qui chevauche la couture
-0/4095 de l'encodeur 12 bits. Plutot que de tenter de le re-homer physiquement
-pour eviter la couture (fragile vu la course), on mesure sa course reelle et
-on laisse le logiciel "derouler" l'encodeur autour du centre de cette course
-(cf src/calibration/motor_to_angle.py).
+wrist_roll dispose d'une grande course angulaire (environ 330 deg) qui chevauche
+la couture 0/4095 de l'encodeur 12 bits. Plutot que de le re-homer physiquement
+pour eviter cette couture (peu fiable vu l'amplitude), le script mesure sa course
+reelle et laisse le logiciel derouler l'encodeur autour du centre de cette course
+(voir src/calibration/motor_to_angle.py).
 
-Le robot n'est jamais commande : torque desactive, tu bouges wrist_roll a la
-main pendant que le script lit les positions en continu.
+Le robot n'est jamais commande : le couple est desactive et l'operateur deplace
+wrist_roll a la main pendant que le script lit les positions en continu.
 
 Usage :
     python scripts/measure_wrist_roll.py
 
 Procedure :
-    1. ENTER pour demarrer l'enregistrement.
-    2. Balaye wrist_roll LENTEMENT d'une butee a l'autre, 2-3 allers-retours
-       COMPLETS.
-    3. ENTER pour arreter.
+    1. Appuyer sur ENTER pour demarrer l'enregistrement.
+    2. Balayer wrist_roll lentement d'une butee a l'autre, sur 2 a 3
+       allers-retours complets.
+    3. Appuyer sur ENTER pour arreter.
     4. Le script calcule le centre de la course et l'ecrit dans
        configs/encoder_unwrap.json.
 
-A relancer uniquement si tu recalibres les moteurs du follower : le centre
-mesure depend du homing courant. Le script enregistre le homing_offset du
-moment, pour pouvoir detecter une mesure devenue obsolete.
+Entree : positions lues sur le port du follower (configs/calibration_follower.json
+pour le homing_offset courant).
+Sortie : configs/encoder_unwrap.json (centre de course et amplitude mesuree).
+
+A relancer uniquement apres une recalibration des moteurs du follower : le centre
+mesure depend du homing courant. Le homing_offset du moment est enregistre afin de
+detecter une mesure devenue obsolete.
 """
 
 import json
@@ -52,27 +55,27 @@ def main():
     try:
         from lerobot.utils.utils import enter_pressed
     except ImportError:
-        print("ERREUR : LeRobot introuvable. Active le venv : source venv/bin/activate")
+        print("Erreur : LeRobot introuvable. Activez l'environnement : source venv/bin/activate")
         sys.exit(1)
 
     bus, _ = connect_robot(FOLLOWER_PORT)
     try:
         print()
         print("=" * 62)
-        print("  MESURE DE LA COURSE DE wrist_roll")
+        print("  Mesure de la course de wrist_roll")
         print("=" * 62)
-        print("  Torque desactive : tu bouges wrist_roll a la main.")
+        print("  Couple desactive : deplacez wrist_roll a la main.")
         print()
-        print("  1. ENTER pour demarrer l'enregistrement.")
-        print("  2. Balaye wrist_roll LENTEMENT d'une butee a l'autre,")
-        print("     fais 2-3 allers-retours COMPLETS (butee a butee).")
-        print("  3. ENTER de nouveau pour arreter.")
+        print("  1. Appuyez sur ENTER pour demarrer l'enregistrement.")
+        print("  2. Balayez wrist_roll lentement d'une butee a l'autre,")
+        print("     sur 2 a 3 allers-retours complets (butee a butee).")
+        print("  3. Appuyez de nouveau sur ENTER pour arreter.")
         print()
         input("  ENTER pour demarrer...")
         print()
 
-        # Echantillonnage continu : chaque pas est petit, donc wrap() leve
-        # l'ambiguite de la couture sans risque, et le deroulage est fiable.
+        # Echantillonnage continu : chaque pas etant petit, wrap() leve
+        # l'ambiguite de la couture et le deroulage reste fiable.
         prev = float(bus.sync_read("Present_Position", normalize=False)[JOINT])
         unwrapped = prev
         lo = hi = unwrapped
@@ -98,12 +101,14 @@ def main():
         print()
 
         if span_deg < 90:
-            print("  ATTENTION : course < 90 deg. As-tu bien balaye jusqu'aux DEUX")
-            print("  butees ? Rien n'a ete enregistre, relance le script.")
+            print("  Attention : course inferieure a 90 deg. Verifiez que le balayage")
+            print("  atteint bien les deux butees. Rien n'a ete enregistre, relancez le")
+            print("  script.")
             return
         if span_deg >= 358:
-            print("  PROBLEME : course >= 358 deg. wrist_roll ferait quasiment un tour")
-            print("  complet -> centre non definissable sans ambiguite. Montre-moi ca.")
+            print("  Anomalie : course superieure ou egale a 358 deg. wrist_roll ferait")
+            print("  quasiment un tour complet, le centre ne peut pas etre defini sans")
+            print("  ambiguite. Verifiez la mesure avant de relancer.")
             return
 
         calib = json.load(open(CALIB_PATH))
@@ -127,8 +132,8 @@ def main():
         print(f"  -> enregistre dans configs/{UNWRAP_PATH.name}")
         print()
         print("=" * 62)
-        print("  Termine. Montre-moi la sortie ci-dessus.")
-        print("  (inutile de relancer calibrate.py : wrist_roll est gere en logiciel)")
+        print("  Termine.")
+        print("  Inutile de relancer calibrate.py : wrist_roll est gere en logiciel.")
         print("=" * 62)
     except KeyboardInterrupt:
         print("\n  Annule (rien enregistre).")

@@ -1,36 +1,36 @@
 #!/usr/bin/env python3
-"""
-calibrate_extrinsic_stereo.py - Capture SIMULTANEE cam_0 + cam_1 pour
-calibration hand-eye stereo conjointe (B3b).
+"""Capture simultanee des cameras cam_0 et cam_1 pour la calibration hand-eye
+stereo conjointe.
 
-POURQUOI :
-La calibration separee de cam_0 et cam_1 (l'approche actuelle) produit des
-residus independants (~6mm chacun) qui peuvent s'additionner geometriquement
-lors de la triangulation -> biais Y +30-40mm constaté empiriquement.
-Calibrer les 2 cameras conjointement (sur les MEMES poses du damier au
-MEME instant) permet d'ajouter une contrainte forte : cv2.stereoCalibrate()
-calcule T_cam0_cam1 avec une precision sub-millimetrique. On en deduit
-ensuite T_base_cam1 = T_base_cam0 @ T_cam0_cam1 : les deux calibrations
-sont coherentes par construction, le biais s'annule a la triangulation.
+Principe :
+La calibration separee de cam_0 et cam_1 produit des residus independants
+(de l'ordre de 6 mm chacun) qui peuvent s'additionner geometriquement lors de
+la triangulation et introduire un biais sur l'axe Y. Calibrer les deux cameras
+conjointement, sur les memes poses du damier au meme instant, ajoute une
+contrainte forte : cv2.stereoCalibrate() estime T_cam0_cam1 avec une precision
+sub-millimetrique. On en deduit ensuite T_base_cam1 = T_base_cam0 @ T_cam0_cam1,
+de sorte que les deux calibrations sont coherentes par construction et que le
+biais s'annule a la triangulation.
 
-Reference : Hartley & Zisserman, Multiple View Geometry, 2018, ch.10.
+Reference : Hartley & Zisserman, Multiple View Geometry, 2018, chapitre 10.
 
-USAGE :
+Usage :
     python scripts/calibrate_extrinsic_stereo.py
     python scripts/calibrate_extrinsic_stereo.py --rows 6 --cols 9 --square-size 22
 
-PROCEDURE :
-  1. Damier (9x6 asymetrique par defaut) COLLE sur la pince FERMEE du robot.
-  2. Les 2 cameras sont fixes sur la barriere avant.
-  3. Bouge le BRAS dans 30-60 poses variees (>65 deg de diversite angulaire,
-     distances 30-80 cm). A chaque pose stable, appuie 'c' pour capturer.
-  4. Pour CAPTURER, le damier doit etre detecte DANS LES DEUX cameras
-     simultanement. Si une seule le voit, la capture est skip avec un message.
-  5. 'q' pour terminer et sauvegarder.
+Procedure :
+  1. Un damier (9x6 par defaut) est fixe sur la pince fermee du robot.
+  2. Les deux cameras sont fixes sur la barriere avant.
+  3. Deplacer le bras dans 30 a 60 poses variees (diversite angulaire
+     superieure a 65 degres, distances de 30 a 80 cm). A chaque pose stable,
+     appuyer sur 'c' pour capturer.
+  4. Pour capturer, le damier doit etre detecte dans les deux cameras
+     simultanement. Si une seule le voit, la capture est ignoree avec un message.
+  5. Appuyer sur 'q' pour terminer et sauvegarder.
 
-SORTIE :
-  configs/extrinsic_capture_stereo.json : paires synchronisees rvec/tvec/img_points
-                                            + motor_positions.
+Sortie :
+  configs/extrinsic_capture_stereo.json : paires synchronisees rvec, tvec,
+  points image et positions moteur.
 
 Etape suivante : python scripts/solve_handeye_stereo.py
 """
@@ -60,11 +60,11 @@ def open_camera(index: int, width: int = 1920, height: int = 1080):
     cap = cv2.VideoCapture(index)
     if not cap.isOpened():
         raise RuntimeError(f"camera {index} introuvable")
-    # MJPG pour reduire la bande passante USB (cf D10)
+    # MJPG pour reduire la bande passante USB
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    # Warmup : autoexposure
+    # Prechauffage : stabilisation de l'exposition automatique
     for _ in range(5):
         cap.read()
     return cap
@@ -91,15 +91,15 @@ def connect_robot(port: str):
 
 
 def estimate_board_pose(frame, K, D, rows, cols, square_size_mm):
-    """Detecte le damier et calcule rvec/tvec en mm. Renvoie aussi les corners 2D.
+    """Detecte le damier et calcule rvec/tvec en mm. Renvoie aussi les coins 2D.
 
-    Utilise findChessboardCornersSB (Sector Based, OpenCV 4) : plus precis et
-    plus rapide que findChessboardCorners classique. Tombe en fallback sur
-    l'ancien si SB indisponible (compat OpenCV <4).
+    Utilise findChessboardCornersSB (Sector Based, OpenCV 4), plus precis et
+    plus rapide que findChessboardCorners classique. Revient a la methode
+    classique si SB est indisponible (compatibilite OpenCV anterieur a la 4).
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Detection sub-pixel native (SB = Sector Based, ~2x plus precis)
+    # Detection sub-pixel native (SB = Sector Based, environ deux fois plus precise)
     if hasattr(cv2, "findChessboardCornersSB"):
         found, corners = cv2.findChessboardCornersSB(
             gray, (cols, rows),
@@ -118,7 +118,7 @@ def estimate_board_pose(frame, K, D, rows, cols, square_size_mm):
     if not found:
         return None, None, None, None
 
-    # Object points en mm (damier plat z=0)
+    # Points objet en mm (damier plan, z = 0)
     obj = np.zeros((rows * cols, 3), np.float32)
     obj[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2) * square_size_mm
 
@@ -129,25 +129,26 @@ def estimate_board_pose(frame, K, D, rows, cols, square_size_mm):
 
 
 def synchronized_capture(cap_l, cap_r, flush_frames: int = 5):
-    """Capture quasi-simultanee : flush les buffers OpenCV puis grab+retrieve
-    rapprochees sur les 2 cameras.
+    """Capture quasi-simultanee : vide les buffers OpenCV puis effectue des
+    grab et retrieve rapproches sur les deux cameras.
 
-    OpenCV VideoCapture bufferise ~5 frames. Sans flush, on lit une frame
-    obsolete (ex: de quand le bras bougeait encore). On vide d'abord, puis
-    on fait grab() simultane (rapide, declenche la capture sur les 2 cams)
-    et retrieve() apres (decode chaque buffer).
+    OpenCV VideoCapture bufferise environ cinq images. Sans vidage prealable,
+    on lit une image obsolete, par exemple datant du moment ou le bras bougeait
+    encore. On vide donc d'abord les buffers, puis on appelle grab() de maniere
+    rapprochee sur les deux cameras (declenche la capture) avant retrieve() qui
+    decode chaque buffer.
 
     Returns:
-        (frame_l, frame_r) ou (None, None) si echec.
+        (frame_l, frame_r) ou (None, None) en cas d'echec.
     """
-    # 1. Flush des buffers (lit et jette les frames anciennes)
+    # 1. Vidage des buffers (lit et jette les images anciennes)
     for _ in range(flush_frames):
         cap_l.grab()
         cap_r.grab()
 
-    # 2. Capture quasi-simultanee : grab() (signale "capture next frame") sur
-    #    les 2 cams le plus proche possible dans le temps, puis retrieve() pour
-    #    decoder. C'est le pattern OpenCV recommande pour multi-cam sync.
+    # 2. Capture quasi-simultanee : grab() sur les deux cameras le plus proche
+    #    possible dans le temps, puis retrieve() pour decoder. C'est le motif
+    #    OpenCV recommande pour la synchronisation multi-camera.
     ok_l = cap_l.grab()
     ok_r = cap_r.grab()
     if not (ok_l and ok_r):
@@ -163,9 +164,8 @@ def draw_overlay(frame, K, D, rvec, tvec, corners, square_size_mm,
                  cam_label, status_text, rows, cols):
     display = frame.copy()
     if rvec is not None:
-        # BUG fix 2026-05-19 21h : drawChessboardCorners attend (cols, rows)
-        # du DAMIER, pas la taille de l'image en pixels. Le passage de
-        # (1920, 1080) faisait dessiner 2M de coins -> traits partout + FPS=0.
+        # drawChessboardCorners attend les dimensions du damier (cols, rows),
+        # pas la taille de l'image en pixels.
         cv2.drawChessboardCorners(display, (cols, rows), corners, True)
         axis_len = square_size_mm * 3
         axis_pts = np.float32([[axis_len, 0, 0], [0, axis_len, 0], [0, 0, -axis_len]])
@@ -186,25 +186,30 @@ def draw_overlay(frame, K, D, rvec, tvec, corners, square_size_mm,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Capture stereo SIMULTANEE cam_0 + cam_1 pour hand-eye stereo (B3b)."
+        description="Capture stereo simultanee de cam_0 et cam_1 pour la calibration hand-eye stereo."
     )
     parser.add_argument("--cam-indices", nargs=2, type=int, default=[0, 1],
                         metavar=("LEFT", "RIGHT"),
-                        help="Indices OpenCV des 2 cameras stereo (defaut: 0 1).")
-    parser.add_argument("--port", default=FOLLOWER_PORT, help="Port USB follower")
-    parser.add_argument("--rows", type=int, default=6, help="Coins internes lignes")
-    parser.add_argument("--cols", type=int, default=9, help="Coins internes colonnes")
+                        help="Indices OpenCV des deux cameras stereo (defaut : 0 1).")
+    parser.add_argument("--port", default=FOLLOWER_PORT,
+                        help="Port USB du bras follower (defaut : valeur de la configuration).")
+    parser.add_argument("--rows", type=int, default=6,
+                        help="Nombre de coins internes par ligne du damier (defaut : 6).")
+    parser.add_argument("--cols", type=int, default=9,
+                        help="Nombre de coins internes par colonne du damier (defaut : 9).")
     parser.add_argument("--square-size", type=float, default=22.0,
-                        help="Taille case damier en mm")
-    parser.add_argument("--output", default="configs/extrinsic_capture_stereo.json")
-    parser.add_argument("--no-save-images", action="store_true")
+                        help="Taille d'une case du damier en mm (defaut : 22).")
+    parser.add_argument("--output", default="configs/extrinsic_capture_stereo.json",
+                        help="Chemin du fichier JSON de sortie (defaut : configs/extrinsic_capture_stereo.json).")
+    parser.add_argument("--no-save-images", action="store_true",
+                        help="Ne pas enregistrer les images capturees sur le disque.")
     parser.add_argument("--display-scale", type=float, default=0.45,
-                        help="Echelle d'affichage de la mosaic side-by-side (defaut 0.45)")
+                        help="Echelle d'affichage de la mosaique cote a cote (defaut : 0.45).")
     args = parser.parse_args()
 
-    # Desactive OpenCL : evite les warnings de cache OpenCL sur macOS (ocl.cpp)
-    # qui polluent la sortie. Aucun impact sur la calibration (CPU suffit pour
-    # findChessboardCorners et solvePnP).
+    # Desactive OpenCL pour eviter les avertissements de cache OpenCL sur macOS
+    # qui polluent la sortie. Aucun impact sur la calibration : le CPU suffit
+    # pour findChessboardCorners et solvePnP.
     try:
         cv2.ocl.setUseOpenCL(False)
     except Exception:
@@ -215,15 +220,15 @@ def main():
     cam_r_key = next((k for k, v in CAMERAS.items() if v["index"] == idx_r), f"cam_{idx_r}")
     print()
     print("=" * 70)
-    print(f" CALIBRATION EXTRINSEQUE STEREO  {cam_l_key} (idx {idx_l}) + {cam_r_key} (idx {idx_r})")
+    print(f" Calibration extrinseque stereo  {cam_l_key} (idx {idx_l}) + {cam_r_key} (idx {idx_r})")
     print("=" * 70)
     print()
-    print("  PROCEDURE EYE-TO-HAND STEREO :")
-    print("    1. Le damier 9x6 22mm est COLLE sur la pince FERMEE du robot.")
-    print("    2. Les 2 cameras sont FIXES sur la barriere avant.")
-    print("    3. Bouge le BRAS pour amener le damier dans le champ des DEUX cameras.")
-    print("    4. Quand les 2 voient le damier (status vert) : 'c' pour capturer.")
-    print("    5. Diversite angulaire >65deg, 30-60 poses recommandees.")
+    print("  Procedure eye-to-hand stereo :")
+    print("    1. Le damier 9x6 22 mm est fixe sur la pince fermee du robot.")
+    print("    2. Les deux cameras sont fixes sur la barriere avant.")
+    print("    3. Deplacer le bras pour amener le damier dans le champ des deux cameras.")
+    print("    4. Quand les deux voient le damier (statut vert) : 'c' pour capturer.")
+    print("    5. Diversite angulaire superieure a 65 degres, 30 a 60 poses recommandees.")
     print("    6. 'q' pour terminer, ESC pour annuler.")
     print()
 
@@ -239,10 +244,10 @@ def main():
     print(f"Intrinseques {cam_r_key} : fx={K_r[0,0]:.1f}.")
     print()
 
-    # Connect robot
+    # Connexion du robot
     print(f"Connexion au follower sur {args.port}...")
     bus, motor_names = connect_robot(args.port)
-    print(f"  6 moteurs detectes, torque desactive (bras manipulable a la main).")
+    print("  6 moteurs detectes, couple desactive (bras manipulable a la main).")
     print()
 
     # Ouvre les 2 cameras
@@ -263,15 +268,14 @@ def main():
         img_dir_r.mkdir(parents=True, exist_ok=True)
         print(f"Images sauvegardees dans : {img_dir_l}/ et {img_dir_r}/")
 
-    # Output path + helper
-    # FIX 2026-05-19 22h45 (apres incident) : on ne sauvegarde PLUS directement
-    # dans le JSON officiel a chaque capture. On sauve dans un fichier PARTIAL
-    # (outputs/extrinsic_stereo_partial.json). Le JSON officiel n'est mis a
-    # jour QUE si la session se termine avec 'q' ET assez de captures. Sur
-    # ESC ou 'q' avec captures insuffisantes, le JSON officiel reste intact.
-    # Comme ca, une session avortee ne CORROMPT PAS le pipeline existant
-    # (incident du 19 mai 22h : 3 captures avortees ecrasaient 71 bonnes captures).
-    output_path = REPO / args.output  # JSON officiel (touche seulement en fin)
+    # Chemin de sortie et fonctions utilitaires.
+    # On ne sauvegarde pas directement dans le JSON officiel a chaque capture.
+    # On enregistre dans un fichier partiel (outputs/extrinsic_stereo_partial.json).
+    # Le JSON officiel n'est mis a jour que si la session se termine avec 'q'
+    # et un nombre suffisant de captures. Sur ESC, ou sur 'q' avec des captures
+    # insuffisantes, le JSON officiel reste intact. Ainsi, une session avortee
+    # ne corrompt pas le pipeline existant.
+    output_path = REPO / args.output  # JSON officiel (ecrit seulement en fin de session)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     partial_dir = REPO / "outputs"
     partial_dir.mkdir(parents=True, exist_ok=True)
@@ -280,7 +284,7 @@ def main():
     captures = []
     img_size_l = (w_l, h_l)
     img_size_r = (w_r, h_r)
-    exit_reason = "unknown"  # mis a "q" ou "esc" en fin de boucle
+    exit_reason = "unknown"  # defini a "q" ou "esc" en fin de boucle
 
     def build_result_dict():
         result = {
@@ -304,25 +308,25 @@ def main():
         return result
 
     def save_partial():
-        """Sauvegarde incrementale dans le fichier PARTIAL (pas le officiel).
-        Comme ca une session avortee ne corrompt pas le JSON officiel utilise
-        par le solveur."""
+        """Sauvegarde incrementale dans le fichier partiel, jamais dans le JSON
+        officiel. Ainsi une session avortee ne corrompt pas le JSON officiel
+        utilise par le solveur."""
         with open(partial_path, "w") as f:
             json.dump(build_result_dict(), f, indent=2)
 
     def promote_to_official():
-        """Copie le partial vers le JSON officiel. Appele seulement en fin
-        de session reussie avec assez de captures."""
+        """Copie le fichier partiel vers le JSON officiel. Appelee uniquement en
+        fin de session reussie avec un nombre suffisant de captures."""
         with open(output_path, "w") as f:
             json.dump(build_result_dict(), f, indent=2)
         print(f"  [OK] JSON officiel mis a jour : {output_path}")
 
     print()
-    print(f"Sauvegarde incrementale (partial) : {partial_path}")
+    print(f"Sauvegarde incrementale (partielle) : {partial_path}")
     print(f"Le JSON officiel ({output_path.name}) ne sera mis a jour qu'en")
-    print(f"fin de session reussie avec >= 10 captures.")
+    print("fin de session reussie avec au moins 10 captures.")
     print()
-    print("Controles : 'c'=capturer (les 2 detectent), 'q'=terminer, ESC=annuler")
+    print("Controles : 'c' pour capturer (les deux detectent), 'q' pour terminer, ESC pour annuler.")
     print()
 
     window_name = f"Stereo extrinsec - {cam_l_key} | {cam_r_key}"
@@ -332,7 +336,7 @@ def main():
             ret_l, frame_l = cap_l.read()
             ret_r, frame_r = cap_r.read()
             if not ret_l or not ret_r:
-                print("[WARN] echec lecture frame d'une camera, retry...")
+                print("[WARN] echec de lecture d'une image sur une camera, nouvelle tentative...")
                 continue
 
             rvec_l, tvec_l, corners_l, obj_l = estimate_board_pose(
@@ -345,9 +349,9 @@ def main():
             dist_r_mm = float(np.linalg.norm(tvec_r)) if rvec_r is not None else 0.0
 
             status_l = (f"OK dist={dist_l_mm:.0f}mm" if rvec_l is not None
-                        else "Damier NON detecte")
+                        else "Damier non detecte")
             status_r = (f"OK dist={dist_r_mm:.0f}mm" if rvec_r is not None
-                        else "Damier NON detecte")
+                        else "Damier non detecte")
 
             disp_l = draw_overlay(frame_l, K_l, D_l, rvec_l, tvec_l, corners_l,
                                    args.square_size, cam_l_key, status_l,
@@ -362,7 +366,7 @@ def main():
                           (mosaic.shape[1], mosaic.shape[0]), (0, 0, 0), -1)
             global_status = (f"CAPTURES: {len(captures)}  |  "
                              + ("Les 2 OK -> 'c' pour capturer"
-                                if both_detected else "Repositionne pour que LES 2 voient le damier"))
+                                if both_detected else "Repositionner pour que les 2 voient le damier"))
             color = (0, 255, 0) if both_detected else (0, 165, 255)
             cv2.putText(mosaic, global_status,
                         (10, mosaic.shape[0] - 18),
@@ -378,32 +382,33 @@ def main():
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("c") and both_detected:
-                # Capture SYNCHRONISEE : flush buffers + grab+retrieve quasi-simultanes
-                # sur les 2 cams. Critique pour stereoCalibrate (le decalage temporel
-                # entre cap_l.read() et cap_r.read() en mode preview peut atteindre
-                # 30ms -> coins du damier desalignes si bras pas parfaitement immobile
-                # -> RMS stereo eleve).
+                # Capture synchronisee : vidage des buffers puis grab et retrieve
+                # quasi-simultanes sur les deux cameras. Important pour
+                # stereoCalibrate : le decalage temporel entre cap_l.read() et
+                # cap_r.read() en mode apercu peut atteindre 30 ms, ce qui
+                # desaligne les coins du damier si le bras n'est pas parfaitement
+                # immobile et fait monter le RMS stereo.
                 sync_l, sync_r = synchronized_capture(cap_l, cap_r, flush_frames=5)
                 if sync_l is None:
-                    print("  [WARN] capture sync echouee, retry sur le prochain frame.")
+                    print("  [WARN] capture synchronisee echouee, nouvelle tentative sur l'image suivante.")
                     continue
 
-                # Re-detection sur les frames synchronisees (les corners precedents
-                # venaient du preview, asynchrones)
+                # Nouvelle detection sur les images synchronisees (les coins
+                # precedents provenaient de l'apercu, asynchrone).
                 rvec_l_s, tvec_l_s, corners_l_s, obj_l_s = estimate_board_pose(
                     sync_l, K_l, D_l, args.rows, args.cols, args.square_size)
                 rvec_r_s, tvec_r_s, corners_r_s, obj_r_s = estimate_board_pose(
                     sync_r, K_r, D_r, args.rows, args.cols, args.square_size)
                 if rvec_l_s is None or rvec_r_s is None:
-                    print(f"  [SKIP] apres sync, damier non detecte "
+                    print(f"  [SKIP] apres synchronisation, damier non detecte "
                           f"(L={rvec_l_s is not None}, R={rvec_r_s is not None}). "
-                          f"Verifie immobilite du bras.")
+                          f"Verifier l'immobilite du bras.")
                     continue
 
                 try:
                     motor_pos = bus.sync_read("Present_Position", normalize=False)
                 except Exception as e:
-                    print(f"  [WARN] lecture moteur echouee : {e}")
+                    print(f"  [WARN] lecture des positions moteur echouee : {e}")
                     continue
 
                 dist_l_sync = float(np.linalg.norm(tvec_l_s))
@@ -428,27 +433,27 @@ def main():
                     cv2.imwrite(str(img_dir_l / f"capture_{n:02d}_axes.png"), disp_l)
                     cv2.imwrite(str(img_dir_r / f"capture_{n:02d}_raw.png"), sync_r)
                     cv2.imwrite(str(img_dir_r / f"capture_{n:02d}_axes.png"), disp_r)
-                # Sauvegarde dans le PARTIAL (le officiel n'est PAS touche)
+                # Sauvegarde dans le fichier partiel (le JSON officiel n'est pas modifie).
                 save_partial()
                 print(f"  Capture {n} : "
                       f"{cam_l_key} dist={dist_l_sync:.0f}mm, "
-                      f"{cam_r_key} dist={dist_r_sync:.0f}mm  (sync)")
+                      f"{cam_r_key} dist={dist_r_sync:.0f}mm  (synchronisee)")
             elif key == ord("c") and not both_detected:
-                print(f"  [SKIP] le damier doit etre detecte dans LES DEUX cameras "
-                      f"(actuellement L={rvec_l is not None}, R={rvec_r is not None})")
+                print(f"  [SKIP] le damier doit etre detecte dans les deux cameras "
+                      f"(actuellement L={rvec_l is not None}, R={rvec_r is not None}).")
             elif key == ord("q"):
                 exit_reason = "q"
                 break
             elif key == 27:
                 exit_reason = "esc"
-                print("Annule par utilisateur (ESC).")
+                print("Annulation par l'utilisateur (ESC).")
                 if captures:
                     save_partial()
-                    print(f"  {len(captures)} captures sauvees dans le PARTIAL : {partial_path}")
-                    print(f"  Le JSON officiel ({output_path.name}) n'est PAS modifie.")
+                    print(f"  {len(captures)} captures enregistrees dans le fichier partiel : {partial_path}")
+                    print(f"  Le JSON officiel ({output_path.name}) n'est pas modifie.")
                 break
         else:
-            exit_reason = "q"  # boucle finie sans break = q par defaut
+            exit_reason = "q"  # boucle terminee sans break : 'q' par defaut
 
     finally:
         try:
@@ -461,23 +466,24 @@ def main():
             pass
         cv2.destroyAllWindows()
 
-    # Decision finale : promote partial -> officiel SEULEMENT si :
-    #  - exit via 'q' (pas ESC)
-    #  - >= MIN_CAPTURES_FOR_PROMOTE captures
+    # Decision finale : promotion du fichier partiel vers le JSON officiel
+    # uniquement si :
+    #  - sortie via 'q' (pas ESC)
+    #  - au moins MIN_CAPTURES_FOR_PROMOTE captures
     #
     # Codes de retour :
-    #   0 = succes (JSON officiel mis a jour, solve a lancer)
-    #   2 = capture avortee (JSON officiel intact, NE PAS lancer le solve)
+    #   0 = succes (JSON officiel mis a jour, solveur a lancer)
+    #   2 = capture avortee (JSON officiel intact, ne pas lancer le solveur)
     #   1 = erreur fatale (deja sortie via sys.exit)
     MIN_CAPTURES_FOR_PROMOTE = 10
-    exit_code = 2  # par defaut : ne pas promote
+    exit_code = 2  # par defaut : pas de promotion
 
     if exit_reason == "esc":
-        # ESC : on garde le partial mais on ne touche PAS au officiel
+        # ESC : on conserve le fichier partiel mais on ne modifie pas l'officiel.
         if captures:
             print(f"\nESC avec {len(captures)} captures.")
-            print(f"  PARTIAL conserve : {partial_path}")
-            print(f"  JSON officiel INTACT : {output_path}")
+            print(f"  Fichier partiel conserve : {partial_path}")
+            print(f"  JSON officiel intact : {output_path}")
             print(f"  Pour utiliser ces captures : cp {partial_path} {output_path}")
         exit_code = 2
     elif exit_reason == "q":
@@ -485,19 +491,19 @@ def main():
             promote_to_official()
             print()
             print(f"{len(captures)} captures promues vers le JSON officiel.")
-            print(f"Etape suivante : python scripts/solve_handeye_stereo.py")
+            print("Etape suivante : python scripts/solve_handeye_stereo.py")
             exit_code = 0
         elif captures:
-            print(f"\nSeulement {len(captures)} captures, < {MIN_CAPTURES_FOR_PROMOTE} requis pour promote auto.")
-            print(f"  PARTIAL conserve : {partial_path}")
-            print(f"  JSON officiel INTACT : {output_path}")
+            print(f"\nSeulement {len(captures)} captures, moins que les {MIN_CAPTURES_FOR_PROMOTE} requises pour la promotion automatique.")
+            print(f"  Fichier partiel conserve : {partial_path}")
+            print(f"  JSON officiel intact : {output_path}")
             print(f"  Pour forcer l'utilisation : cp {partial_path} {output_path}")
             exit_code = 2
         else:
-            print("\nAucune capture, rien a sauver.")
+            print("\nAucune capture, rien a sauvegarder.")
             exit_code = 2
 
-    # Disconnect dans try/except
+    # Deconnexion du bus, protegee par un try/except.
     try:
         bus.disconnect()
     except Exception as e:

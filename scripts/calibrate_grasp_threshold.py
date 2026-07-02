@@ -1,37 +1,34 @@
 #!/usr/bin/env python3
-"""
-calibrate_grasp_threshold.py - Calibre empiriquement le seuil de detection
-de saisie reussie/ratee (P1, etape B1 de la remise au propre).
+"""Calibration empirique du seuil de detection de saisie reussie ou ratee.
 
-PROBLEME RESOLU : le seuil par defaut grasp_success_threshold_pct=15.0 est
-arbitraire. Selon ton hardware (pince TPU XLRobot + grip de tennis), la pince
-ne peut PAS se fermer en dessous de ~12-15% sur un cube 30mm. Donc une saisie
-REUSSIE (pince a 14%) se retrouve classee RATEE car marge 14-5=9% < seuil 15%.
+Le seuil grasp_success_threshold_pct de PipelineConfig fixe la marge minimale
+(en % au-dessus de la consigne de fermeture) au-dela de laquelle la pince est
+consideree comme bloquee par un objet. Une pince ne se referme jamais tout a
+fait a la consigne : sur un objet elle se bloque plus tot qu'a vide. Ce script
+mesure les deux positions reelles pour placer le seuil au bon endroit, la ou la
+discrimination entre saisie reussie et saisie a vide est maximale.
 
-PROCEDURE :
-  1. Connecte le robot (torque active).
-  2. Lit les angles articulaires courants (le bras ne bougera PAS).
-  3. Ouvre la pince a 100%, attend.
-  4. Demande a l'user de placer le cube cible entre les doigts.
-  5. Ferme la pince a la consigne (grip_close_pct=5) et lit la position reelle.
-  6. Demande a l'user de retirer le cube.
-  7. Ferme la pince a la meme consigne et lit la position reelle (a vide).
-  8. Calcule un seuil recommande = milieu entre les 2 mesures.
+Procedure :
+  1. Connexion au robot (torque active).
+  2. Lecture des angles articulaires courants ; le bras ne bouge pas.
+  3. Ouverture de la pince, puis fermeture a la consigne sur l'objet cible :
+     lecture de la position reelle atteinte.
+  4. Retrait de l'objet, fermeture a la meme consigne a vide : lecture de la
+     position reelle atteinte.
+  5. Calcul d'un seuil recommande, au milieu des deux marges mesurees.
 
-USAGE :
+Usage :
   python scripts/calibrate_grasp_threshold.py
   python scripts/calibrate_grasp_threshold.py --grip-close 5 --grip-open 100
 
-OUTPUT :
-  Affiche un seuil de marge (% au-dessus de grip_close) a mettre dans :
+Sortie :
+  Affiche une marge (% au-dessus de la consigne de fermeture) a reporter dans :
     PipelineConfig.grasp_success_threshold_pct = <valeur>
   ou en argument CLI de experiment_campaign.py :
     --grasp-threshold <valeur>
 
-A REFAIRE si tu changes :
-  - de pince (TPU vs metallique vs grip de tennis)
-  - de taille d'objet (cube 30mm vs petit cube 15mm)
-  - de consigne grip_close (different de 5%)
+La calibration est a refaire en cas de changement de pince, de taille d'objet
+ou de consigne de fermeture.
 """
 
 import argparse
@@ -65,19 +62,19 @@ def close_and_measure(controller: MotorController,
                        grip_open_pct: float,
                        grip_close_pct: float,
                        settle_s: float = 0.7) -> float:
-    """Ouvre puis ferme la pince, et renvoie la position reelle apres fermeture.
+    """Ouvre puis ferme la pince et renvoie la position reelle apres fermeture.
 
-    Le bras est MAINTENU dans sa position courante (arm_angles_rad) -- on
-    n'envoie pas de mouvement articulaire, juste de l'ouverture/fermeture pince.
+    Le bras est maintenu dans sa position courante (arm_angles_rad) : aucun
+    mouvement articulaire n'est envoye, seule la pince s'ouvre puis se ferme.
     """
-    # Ouverture
+    # Ouverture de la pince
     print(f"  -> Ouverture pince a {grip_open_pct:.0f}%...")
     controller.send_angles(arm_angles_rad, gripper_pct=grip_open_pct)
     time.sleep(settle_s)
 
-    # Attente user (placer/retirer cube)
+    # Attente de l'operateur (placement ou retrait de l'objet)
     try:
-        input("  >> Place/retire selon l'instruction puis ENTREE : ")
+        input("  Placez ou retirez l'objet selon l'instruction, puis Entree : ")
     except (EOFError, KeyboardInterrupt):
         raise
 
@@ -86,7 +83,7 @@ def close_and_measure(controller: MotorController,
     controller.send_angles(arm_angles_rad, gripper_pct=grip_close_pct)
     time.sleep(settle_s)
 
-    # Lecture position reelle
+    # Lecture de la position reelle atteinte
     pct = controller.read_gripper_pct()
     print(f"     position reelle apres fermeture : {pct:.1f}%")
     return pct
@@ -94,31 +91,31 @@ def close_and_measure(controller: MotorController,
 
 def main():
     p = argparse.ArgumentParser(
-        description="Calibration empirique du seuil de detection saisie (P1/B1).",
+        description="Calibration empirique du seuil de detection de saisie.",
     )
     p.add_argument("--port", default=FOLLOWER_PORT,
-                   help="Port USB follower.")
+                   help="Port USB du bras follower (defaut : valeur de config.py).")
     p.add_argument("--grip-open", type=float, default=100.0,
-                   help="Ouverture pince 0-100 (defaut 100 = grand ouvert).")
+                   help="Ouverture de la pince, de 0 a 100 (defaut : 100, grand ouvert).")
     p.add_argument("--grip-close", type=float, default=5.0,
-                   help="Consigne fermeture pince 0-100 (defaut 5 = quasi-ferme).")
+                   help="Consigne de fermeture de la pince, de 0 a 100 (defaut : 5, quasi ferme).")
     p.add_argument("--settle", type=float, default=0.7,
-                   help="Pause apres commande pince avant lecture (s, defaut 0.7).")
+                   help="Pause de stabilisation apres commande de pince avant lecture, en secondes (defaut : 0.7).")
     args = p.parse_args()
 
     print("=" * 70)
-    print(" CALIBRATION SEUIL DE DETECTION SAISIE (B1)")
+    print(" CALIBRATION DU SEUIL DE DETECTION DE SAISIE")
     print("=" * 70)
     print(f"  port               : {args.port}")
     print(f"  ouverture pince    : {args.grip_open:.0f}%")
     print(f"  consigne fermeture : {args.grip_close:.0f}%")
     print(f"  pause stabilisation: {args.settle:.1f}s")
     print()
-    print(" IMPORTANT : place le bras dans une position confortable POUR TOI")
-    print(" avant de continuer (le bras ne bougera pas pendant la calibration,")
-    print(" seule la pince ouvrira/fermera).")
+    print(" Placez le bras dans une position de travail confortable avant de")
+    print(" continuer. Le bras ne bouge pas pendant la calibration ; seule la")
+    print(" pince s'ouvre et se ferme.")
     try:
-        input(" ENTREE pour continuer (Ctrl+C pour annuler) : ")
+        input(" Entree pour continuer, Ctrl+C pour annuler : ")
     except (EOFError, KeyboardInterrupt):
         print("\nAnnule.")
         return
@@ -127,22 +124,22 @@ def main():
     try:
         controller.connect(args.port)
         controller.enable_torque()
-        print(">> Robot connecte, torque ACTIVE.")
+        print(">> Robot connecte, torque active.")
         print()
 
-        # Memorise les angles articulaires courants (= la position du bras
-        # qu'on va maintenir pendant les mesures).
+        # Memorise les angles articulaires courants, c'est-a-dire la position
+        # du bras maintenue pendant les mesures.
         arm_angles = current_arm_angles_rad(controller)
-        print(f">> Angles articulaires memorises (le bras restera la) :")
+        print(">> Angles articulaires memorises (le bras reste dans cette position) :")
         for j, a in arm_angles.items():
             import numpy as np
             print(f"     {j:<14} = {np.degrees(a):+7.1f} deg")
         print()
 
-        # Mesure #1 : pince ferme SUR L'OBJET
+        # Mesure 1 : fermeture de la pince sur l'objet
         print(">" * 70)
-        print(">>> MESURE #1 : pince ferme SUR L'OBJET")
-        print(">>> Place le cube cible entre les doigts de la pince.")
+        print(">>> Mesure 1 : fermeture de la pince sur l'objet")
+        print(">>> Placez l'objet cible entre les doigts de la pince.")
         print(">" * 70)
         pct_on_object = close_and_measure(
             controller, arm_angles,
@@ -152,10 +149,10 @@ def main():
         )
         print()
 
-        # Mesure #2 : pince ferme A VIDE
+        # Mesure 2 : fermeture de la pince a vide
         print(">" * 70)
-        print(">>> MESURE #2 : pince ferme A VIDE")
-        print(">>> Retire l'objet, ne laisse RIEN entre les doigts.")
+        print(">>> Mesure 2 : fermeture de la pince a vide")
+        print(">>> Retirez l'objet et ne laissez rien entre les doigts.")
         print(">" * 70)
         pct_empty = close_and_measure(
             controller, arm_angles,
@@ -168,7 +165,7 @@ def main():
         # Calcul des marges
         margin_empty = pct_empty - args.grip_close
         margin_on_object = pct_on_object - args.grip_close
-        # Seuil ideal = milieu entre les 2 marges (discrimination maximale)
+        # Seuil place au milieu des deux marges, pour une discrimination maximale.
         seuil_recommande = (margin_empty + margin_on_object) / 2.0
         delta = margin_on_object - margin_empty
 
@@ -177,34 +174,34 @@ def main():
         print("=" * 70)
         print(f"  Consigne fermeture pince : {args.grip_close:.1f}%")
         print()
-        print(f"  Pince a VIDE       : {pct_empty:5.1f}%  "
-              f"(marge {margin_empty:+5.1f}% au-dessus consigne)")
-        print(f"  Pince sur OBJET    : {pct_on_object:5.1f}%  "
-              f"(marge {margin_on_object:+5.1f}% au-dessus consigne)")
+        print(f"  Pince a vide       : {pct_empty:5.1f}%  "
+              f"(marge {margin_empty:+5.1f}% au-dessus de la consigne)")
+        print(f"  Pince sur objet    : {pct_on_object:5.1f}%  "
+              f"(marge {margin_on_object:+5.1f}% au-dessus de la consigne)")
         print(f"  Difference         : {delta:+5.1f}%  "
-              f"(plus c'est grand, plus la detection est fiable)")
+              f"(plus elle est grande, plus la detection est fiable)")
         print()
-        print(f"  --> SEUIL RECOMMANDE : grasp_success_threshold_pct = {seuil_recommande:.1f}")
+        print(f"  Seuil recommande : grasp_success_threshold_pct = {seuil_recommande:.1f}")
         print()
-        print(f"  Application :")
-        print(f"    - Dans PipelineConfig (defaut)   : grasp_success_threshold_pct = {seuil_recommande:.1f}")
-        print(f"    - Dans experiment_campaign.py CLI : --grasp-threshold {seuil_recommande:.1f}")
+        print("  Application :")
+        print(f"    - dans PipelineConfig (defaut)   : grasp_success_threshold_pct = {seuil_recommande:.1f}")
+        print(f"    - dans experiment_campaign.py CLI : --grasp-threshold {seuil_recommande:.1f}")
         print()
         if delta < 5.0:
-            print("  [WARN] Difference < 5%. La detection sera fragile.")
-            print("         Verifie que :")
-            print("         - le cube est bien centre dans la pince a la mesure #1")
-            print("         - la pince est en bon etat (pas grippee ni cassee)")
-            print("         - les angles articulaires sont corrects (bras pas tordu)")
+            print("  [WARN] Difference inferieure a 5%. La detection sera fragile.")
+            print("         Verifier que :")
+            print("         - l'objet est bien centre dans la pince a la mesure 1 ;")
+            print("         - la pince est en bon etat (ni grippee ni cassee) ;")
+            print("         - les angles articulaires sont corrects (bras non tordu).")
         elif delta < 10.0:
-            print("  [INFO] Difference moderee (5-10%). Le seuil discrimine,")
+            print("  [INFO] Difference moderee (5 a 10%). Le seuil discrimine,")
             print("         mais des saisies marginales pourront echouer.")
         else:
-            print("  [OK] Difference > 10%, detection robuste.")
+            print("  [OK] Difference superieure a 10%, detection robuste.")
         print("=" * 70)
 
     except KeyboardInterrupt:
-        print("\n!! Interrompu par utilisateur.")
+        print("\nInterrompu par l'utilisateur.")
     finally:
         try:
             controller.disable_torque()

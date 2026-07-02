@@ -1,44 +1,47 @@
 #!/usr/bin/env python3
-"""
-recalibrate_handeye.py - Recalibration hand-eye complete des 3 cameras (B3).
+"""Recalibration hand-eye complete des trois cameras.
 
-OBJECTIF : ramener les residus hand-eye au plancher de bruit du SO-101
-pour eliminer le biais Y residuel ~+40mm vu dans le refinement #1, et
-pouvoir desactiver bias_correction.json (workaround actuel).
+Objectif : ramener les residus hand-eye au plancher de bruit du SO-101 afin
+d'eliminer le biais Y residuel observe au refinement, et de pouvoir desactiver
+la compensation bias_correction.json.
 
-UNE SEULE commande pour l'utilisateur :
+Usage :
     python scripts/recalibrate_handeye.py
 
-Le script orchestre tout :
-  1. Backups automatiques (handeye_cam_*.json, extrinsic_capture_cam_*.json,
-     bias_correction.json) avec timestamp.
-  2. Pour cam_0, cam_1, cam_2 sequentiellement :
-       - Affiche la procedure adaptee (eye-to-hand vs eye-in-hand).
-       - Attend ENTREE.
-       - Lance calibrate_extrinsic.py --index <i> (interactif, OpenCV window).
-       - Lance solve_handeye_cam.py --index <i>.
-       - Affiche residus + verdict (OK / ACCEPTABLE / INSUFFISANT).
-  3. check_calibration.py + check_perception.py (si gt_test.json existe).
-  4. Si tous les residus OK : propose de desactiver bias_correction.json.
+Le script orchestre l'ensemble de la procedure :
+  1. Sauvegardes horodatees des calibrations actuelles (handeye_cam_*.json,
+     extrinsic_capture_cam_*.json, bias_correction.json).
+  2. Pour cam_0, cam_1 et cam_2 successivement :
+       - affichage de la procedure adaptee (eye-to-hand ou eye-in-hand) ;
+       - attente d'une confirmation ;
+       - capture via calibrate_extrinsic.py --index <i> (fenetre OpenCV) ;
+       - resolution via solve_handeye_cam.py --index <i> ;
+       - affichage des residus et du verdict (OK, ACCEPTABLE ou INSUFFISANT).
+  3. Validation via check_calibration.py, puis check_perception.py si le
+     fichier gt_test.json est present.
+  4. Si tous les residus sont OK, proposition de desactiver bias_correction.json.
 
-CRITERES DE SUCCES (cf Tsai-Lenz 1989, Park-Martin 1994, et plancher SO-101) :
-  - cam_0, cam_1 (eye-to-hand) : mean <= 5mm, max <= 12mm
-  - cam_2 (eye-in-hand)        : mean <= 3mm, max <= 6mm
+Criteres de succes (cf. Tsai-Lenz 1989, Park-Martin 1994 et plancher SO-101) :
+  - cam_0, cam_1 (eye-to-hand) : moyenne <= 5mm, max <= 12mm
+  - cam_2 (eye-in-hand)        : moyenne <= 3mm, max <= 6mm
 
-DAMIER : 9x6 asymetrique par defaut (cf D2 dans PROJECT_STATUS.md). 22mm/case.
+Damier : 9x6 asymetrique par defaut, cases de 22mm.
 
-USAGE COURANT :
-    # Refait tout (3 cams) :
+Exemples d'usage :
+    # Recalibrer les trois cameras :
     python scripts/recalibrate_handeye.py
 
-    # Refait seulement cam_0 (si l'une a echoue) :
+    # Recalibrer uniquement cam_0 :
     python scripts/recalibrate_handeye.py --cams 0
 
-    # Avec damier non-standard :
+    # Damier non standard :
     python scripts/recalibrate_handeye.py --cols 7 --rows 7 --square-size 25
 
-ANNULATION : Ctrl+C a tout moment. Les backups conserves dans configs/
-permettent de revenir a l'etat precedent en copiant les .before_B3_*.backup
+Entrees : configurations existantes dans configs/. Sorties : calibrations mises
+a jour et sauvegardes horodatees dans configs/.
+
+Annulation : Ctrl+C a tout moment. Les sauvegardes conservees dans configs/
+permettent de revenir a l'etat precedent en copiant les fichiers .before_B3_*.backup
 vers les originaux.
 """
 
@@ -64,9 +67,9 @@ def banner(title: str, char: str = "=", width: int = 70):
 
 
 def confirm(prompt: str) -> bool:
-    """Attend ENTREE (ou ctrl+c pour annuler). Renvoie True si confirme."""
+    """Attend une confirmation clavier. Renvoie True si confirme, False sinon."""
     try:
-        input(prompt + " [ENTREE pour continuer, Ctrl+C pour annuler] : ")
+        input(prompt + " [Entree pour continuer, Ctrl+C pour annuler] : ")
         return True
     except (EOFError, KeyboardInterrupt):
         return False
@@ -93,17 +96,17 @@ def backup_file(path: Path, suffix: str) -> Path | None:
 
 
 def run_step(cmd: list[str], label: str) -> int:
-    """Lance une sous-commande, propage stdin/stdout (necessaire pour les
-    fenetres OpenCV interactives de calibrate_extrinsic.py)."""
+    """Lance une sous-commande en propageant stdin et stdout, ce qui est
+    necessaire pour les fenetres OpenCV interactives de calibrate_extrinsic.py."""
     print(f"  $ {' '.join(cmd)}")
     rc = subprocess.run(cmd, cwd=REPO).returncode
     if rc != 0:
-        print(f"  !! {label} a echoue (return code {rc})")
+        print(f"  Echec de {label} (code de retour {rc}).")
     return rc
 
 
 def read_residuals(index: int) -> dict | None:
-    """Lit les residus du handeye_cam_<index>.json apres solve."""
+    """Lit les residus depuis handeye_cam_<index>.json apres la resolution."""
     path = REPO / "configs" / f"handeye_cam_{index}.json"
     if not path.exists():
         return None
@@ -120,12 +123,13 @@ def read_residuals(index: int) -> dict | None:
             "n_poses_total": data.get("n_poses_total"),
         }
     except Exception as e:
-        print(f"  [WARN] impossible de lire {path.name} : {e}")
+        print(f"  [WARN] Lecture de {path.name} impossible : {e}")
         return None
 
 
 def verdict_for_cam(role: str, mean_mm: float, max_mm: float) -> tuple[str, bool]:
-    """Verdict + bool 'is_ok' pour decider de desactiver bias_correction."""
+    """Renvoie le verdict et un booleen is_ok qui indique si la calibration
+    permet de desactiver bias_correction."""
     if role == "eye_in_hand":
         if mean_mm <= 3 and max_mm <= 6:
             return ("OK (mean<=3mm, max<=6mm)", True)
@@ -143,30 +147,31 @@ def verdict_for_cam(role: str, mean_mm: float, max_mm: float) -> tuple[str, bool
 
 
 def calibrate_one_cam(index: int, args) -> dict:
-    """Capture + solve pour 1 camera. Retourne dict avec residus ou status."""
+    """Capture et resolution pour une camera. Renvoie un dictionnaire contenant
+    les residus ou un statut d'echec."""
     role = ROLE_FOR_INDEX.get(index, "unknown")
-    banner(f"CAMERA cam_{index} ({role})", char="#")
+    banner(f"Camera cam_{index} ({role})", char="#")
 
     if role == "eye_in_hand":
-        print("  PROCEDURE EYE-IN-HAND (cam_2 montee sur la pince) :")
-        print("    1. POSE le damier FIXE sur la table (bien plat, bien eclaire,")
+        print("  Procedure eye-in-hand (cam_2 montee sur la pince) :")
+        print("    1. Poser le damier fixe sur la table (bien plat, bien eclaire,")
         print("       au moins 30cm de la base du robot pour eviter les zones d'exclusion).")
-        print("    2. Le script lance la capture. Tu vas TELEOPERER le bras")
-        print("       (avec le leader si branche, sinon manuellement) pour amener")
+        print("    2. Le script lance la capture. Teleoperer le bras")
+        print("       (avec le leader s'il est branche, sinon manuellement) pour amener")
         print("       cam_2 a 15-25 positions au-dessus du damier.")
         print("    3. Diversite angulaire >65deg : inclinaisons +/-30deg, rotations,")
         print("       distances variees entre 15 et 40cm de cam_2 au damier.")
-        print("    4. 'c' pour capturer chaque pose, 'q' pour terminer.")
+        print("    4. Touche 'c' pour capturer chaque pose, 'q' pour terminer.")
     else:
-        print("  PROCEDURE EYE-TO-HAND (cam_0 ou cam_1 fixes sur la barriere) :")
-        print("    1. COLLE le damier sur la PINCE FERMEE (bien centre, plat).")
-        print("    2. La camera est FIXE. Tu vas teleoperer (ou bouger a la main)")
-        print("       le BRAS pour amener le damier devant la camera.")
+        print("  Procedure eye-to-hand (cam_0 ou cam_1 fixes sur la barriere) :")
+        print("    1. Coller le damier sur la pince fermee (bien centre, plat).")
+        print("    2. La camera est fixe. Teleoperer (ou deplacer a la main)")
+        print("       le bras pour amener le damier devant la camera.")
         print("    3. Diversite angulaire >65deg : inclinaisons +/-30deg, rotations,")
         print("       distances variees entre 30cm et 80cm de la camera au damier.")
-        print("    4. Vise 50-70 poses (le solveur rejette les outliers, il restera")
-        print("       typiquement 25-30 poses utiles).")
-        print("    5. 'c' pour capturer chaque pose, 'q' pour terminer.")
+        print("    4. Viser 50-70 poses (le solveur rejette les valeurs aberrantes,")
+        print("       il en reste typiquement 25-30 utiles).")
+        print("    5. Touche 'c' pour capturer chaque pose, 'q' pour terminer.")
     print()
     if not confirm("  Pret pour la capture ?"):
         return {"aborted": True}
@@ -182,9 +187,9 @@ def calibrate_one_cam(index: int, args) -> dict:
     if run_step(cmd_cap, f"capture cam_{index}") != 0:
         return {"capture_failed": True}
 
-    # Solve
+    # Resolution
     print()
-    print(f"  -> Resolution hand-eye cam_{index}...")
+    print(f"  Resolution hand-eye cam_{index}...")
     cmd_solve = [
         sys.executable, str(REPO / "scripts" / "solve_handeye_cam.py"),
         "--index", str(index),
@@ -192,28 +197,28 @@ def calibrate_one_cam(index: int, args) -> dict:
     if run_step(cmd_solve, f"solve cam_{index}") != 0:
         return {"solve_failed": True}
 
-    # Lit residus
+    # Lecture des residus
     res = read_residuals(index)
     if res is None or res.get("mean_trans_mm") is None:
-        print(f"  [WARN] residus non lisibles pour cam_{index}")
+        print(f"  [WARN] Residus illisibles pour cam_{index}.")
         return {"unreadable": True}
 
     verdict, _ = verdict_for_cam(role, res["mean_trans_mm"], res["max_trans_mm"])
     print()
-    print(f"  --- RESULTAT cam_{index} ---")
-    print(f"    mean translation : {res['mean_trans_mm']:.2f} mm")
-    print(f"    max translation  : {res['max_trans_mm']:.2f} mm")
-    print(f"    mean rotation    : {res['mean_rot_deg']:.2f} deg")
-    print(f"    max rotation     : {res['max_rot_deg']:.2f} deg")
-    print(f"    poses utiles     : {res['n_poses_used']}/{res['n_poses_total']}")
-    print(f"    verdict          : {verdict}")
+    print(f"  --- Resultat cam_{index} ---")
+    print(f"    moyenne translation : {res['mean_trans_mm']:.2f} mm")
+    print(f"    max translation     : {res['max_trans_mm']:.2f} mm")
+    print(f"    moyenne rotation    : {res['mean_rot_deg']:.2f} deg")
+    print(f"    max rotation        : {res['max_rot_deg']:.2f} deg")
+    print(f"    poses utiles        : {res['n_poses_used']}/{res['n_poses_total']}")
+    print(f"    verdict             : {verdict}")
     res["role"] = role
     res["verdict"] = verdict
     return res
 
 
 def disable_bias_correction(stamp: str):
-    """Met dx=dy=dz=0 dans bias_correction.json apres backup."""
+    """Met dx, dy et dz a 0 dans bias_correction.json apres sauvegarde."""
     path = REPO / "configs" / "perception" / "bias_correction.json"
     if not path.exists():
         print("  [INFO] bias_correction.json absent, rien a desactiver.")
@@ -230,20 +235,20 @@ def disable_bias_correction(stamp: str):
         "Le biais Y est maintenant dans la calibration elle-meme (residus <=5mm)."
     )
     json.dump(data, open(path, "w"), indent=2)
-    print(f"  [OK] {path.name} mis a dx=dy=dz=0 (backup conserve).")
-    print(f"       Tu peux verifier : python scripts/check_perception.py --gt configs/perception/gt_test.json")
+    print(f"  [OK] {path.name} mis a dx=dy=dz=0 (sauvegarde conservee).")
+    print(f"       Verification : python scripts/check_perception.py --gt configs/perception/gt_test.json")
 
 
 def print_summary(all_residuals: dict, stamp: str):
-    banner("RESUME GLOBAL")
-    print(f"  Backups conserves avec suffix : before_B3_{stamp}")
+    banner("Resume global")
+    print(f"  Sauvegardes conservees avec le suffixe : before_B3_{stamp}")
     print()
-    print(f"  {'cam':<6} {'role':<14} {'mean':>9} {'max':>9} {'verdict'}")
+    print(f"  {'cam':<6} {'role':<14} {'moyenne':>9} {'max':>9} {'verdict'}")
     print(f"  {'-'*6} {'-'*14} {'-'*9} {'-'*9} {'-'*30}")
     all_ok = True
     for i, res in all_residuals.items():
         if "mean_trans_mm" not in res:
-            print(f"  cam_{i}  {ROLE_FOR_INDEX[i]:<14} (echec: {list(res.keys())[0]})")
+            print(f"  cam_{i}  {ROLE_FOR_INDEX[i]:<14} (echec : {list(res.keys())[0]})")
             all_ok = False
             continue
         role = res["role"]
@@ -258,57 +263,57 @@ def print_summary(all_residuals: dict, stamp: str):
 
 def main():
     p = argparse.ArgumentParser(
-        description="Recalibration hand-eye complete (B3 du plan TFE).",
+        description="Recalibration hand-eye complete des trois cameras.",
     )
     p.add_argument("--cols", type=int, default=9,
-                   help="Colonnes damier (defaut 9, asymetrique avec rows=6).")
+                   help="Nombre de colonnes du damier (defaut : 9, asymetrique avec rows=6).")
     p.add_argument("--rows", type=int, default=6,
-                   help="Lignes damier (defaut 6).")
+                   help="Nombre de lignes du damier (defaut : 6).")
     p.add_argument("--square-size", type=float, default=22.0,
-                   help="Taille case en mm (defaut 22.0).")
+                   help="Taille d'une case du damier en mm (defaut : 22.0).")
     p.add_argument("--cams", nargs="+", type=int, default=[0, 1, 2],
-                   help="Indices des cams a recalibrer (defaut : 0 1 2).")
+                   help="Indices des cameras a recalibrer (defaut : 0 1 2).")
     p.add_argument("--skip-validation", action="store_true",
-                   help="Saute check_calibration + check_perception + bias_correction.")
+                   help="Saute les etapes check_calibration, check_perception et bias_correction (defaut : desactive).")
     args = p.parse_args()
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    banner("RECALIBRATION HAND-EYE COMPLETE (B3)")
-    print(f"  damier         : {args.cols} x {args.rows} cases @ {args.square_size}mm")
-    print(f"  cameras        : cam_{', cam_'.join(map(str, args.cams))}")
-    print(f"  backup suffix  : before_B3_{stamp}")
+    banner("Recalibration hand-eye complete")
+    print(f"  damier             : {args.cols} x {args.rows} cases @ {args.square_size}mm")
+    print(f"  cameras            : cam_{', cam_'.join(map(str, args.cams))}")
+    print(f"  suffixe sauvegarde : before_B3_{stamp}")
     print()
-    print("  POURQUOI cette procedure ?")
-    print("    Le pipeline actuel montre un biais Y residuel ~+40mm au refinement #1,")
-    print("    signe d'une calibration hand-eye degradee. bias_correction.json")
+    print("  Motivation de la procedure :")
+    print("    Le pipeline actuel presente un biais Y residuel d'environ +40mm au")
+    print("    refinement, signe d'une calibration hand-eye degradee. bias_correction.json")
     print("    compense la moyenne (-30mm) mais le residu varie selon la position.")
     print("    Cette recalibration vise a ramener les residus au plancher SO-101 :")
-    print("    - cam_0, cam_1 (eye-to-hand) : mean <= 5mm, max <= 12mm")
-    print("    - cam_2        (eye-in-hand) : mean <= 3mm, max <= 6mm")
+    print("    - cam_0, cam_1 (eye-to-hand) : moyenne <= 5mm, max <= 12mm")
+    print("    - cam_2        (eye-in-hand) : moyenne <= 3mm, max <= 6mm")
     print()
-    print("  DUREE estimee : 1h30-2h hardware (capture + solve par cam).")
+    print("  Duree estimee : 1h30 a 2h de manipulation (capture et resolution par camera).")
     print()
     if not confirm("  Pret a demarrer ?"):
         print("Annule.")
         return
 
-    # Backups initiaux
-    banner("PHASE 1 : Backups des calibrations actuelles", char="-")
+    # Sauvegardes initiales
+    banner("Phase 1 : sauvegarde des calibrations actuelles", char="-")
     for i in args.cams:
         backup_file(REPO / "configs" / f"handeye_cam_{i}.json",
                     f"before_B3_{stamp}")
         backup_file(REPO / "configs" / f"extrinsic_capture_cam_{i}.json",
                     f"before_B3_{stamp}")
 
-    # Capture + solve par cam
+    # Capture et resolution par camera
     all_residuals: dict[int, dict] = {}
     for i in args.cams:
         res = calibrate_one_cam(i, args)
         all_residuals[i] = res
         if "aborted" in res:
-            print(f"\n!! Procedure abandonnee a cam_{i}. Les autres cams non faites.")
-            print("   Les backups sont conserves, tu peux relancer plus tard avec :")
+            print(f"\n  Procedure abandonnee a cam_{i}. Les autres cameras n'ont pas ete traitees.")
+            print("   Les sauvegardes sont conservees. Reprise possible avec :")
             remaining = [c for c in args.cams if c >= i]
             print(f"   python scripts/recalibrate_handeye.py --cams {' '.join(map(str, remaining))}")
             return
@@ -316,9 +321,9 @@ def main():
     # Resume global
     all_ok = print_summary(all_residuals, stamp)
 
-    # Validation + bias_correction
+    # Validation et bias_correction
     if not args.skip_validation:
-        banner("PHASE 2 : Validation globale")
+        banner("Phase 2 : validation globale")
         print("  Lancement de check_calibration.py...")
         subprocess.run([sys.executable, str(REPO / "scripts" / "check_calibration.py")],
                        cwd=REPO)
@@ -326,7 +331,7 @@ def main():
 
         gt_path = REPO / "configs" / "perception" / "gt_test.json"
         if gt_path.exists():
-            print("  Validation 3D contre ground truth (gt_test.json)...")
+            print("  Validation 3D contre la reference (gt_test.json)...")
             subprocess.run(
                 [sys.executable, str(REPO / "scripts" / "check_perception.py"),
                  "--gt", str(gt_path)],
@@ -335,31 +340,31 @@ def main():
             print()
         else:
             print(f"  [INFO] {gt_path.name} absent, validation 3D sautee.")
-            print("         Tu peux poser ton cube a une position mesuree au pied a coulisse,")
-            print("         creer ce fichier (cf gt_test_example.json), et relancer :")
+            print("         Poser le cube a une position mesuree au pied a coulisse,")
+            print("         creer ce fichier (cf. gt_test_example.json), puis relancer :")
             print(f"         python scripts/check_perception.py --gt {gt_path}")
             print()
 
-        banner("PHASE 3 : bias_correction.json")
+        banner("Phase 3 : bias_correction.json")
         if all_ok:
-            print("  ✓ Tous les residus respectent les criteres OK.")
-            print("  Tu peux DESACTIVER bias_correction.json (dx=dy=dz=0).")
-            print("  Le decalage est maintenant porte par la calibration elle-meme,")
-            print("  plus besoin de compensation systematique.")
+            print("  Tous les residus respectent les criteres OK.")
+            print("  La compensation bias_correction.json peut etre desactivee (dx=dy=dz=0).")
+            print("  Le decalage est desormais porte par la calibration elle-meme ;")
+            print("  la compensation systematique n'est plus necessaire.")
             print()
             if ask_yes_no("  Desactiver bias_correction.json maintenant ?", default_no=False):
                 disable_bias_correction(stamp)
             else:
-                print("  bias_correction.json laisse en l'etat (peut creer un sur-correction)")
-                print("  ATTENTION : avec residus OK + bias toujours actif, le pipeline")
-                print("  surcorrigera. Pense a le desactiver manuellement bientot :")
+                print("  bias_correction.json laisse en l'etat.")
+                print("  Avec des residus OK et la compensation toujours active, le pipeline")
+                print("  surcorrigera. Penser a la desactiver manuellement :")
                 print("    python -c \"import json; p='configs/perception/bias_correction.json'; "
                       "d=json.load(open(p)); d['dy_mm']=0; json.dump(d, open(p,'w'), indent=2)\"")
         else:
-            print("  ✗ Au moins une cam est en dessous des criteres OK.")
+            print("  Au moins une camera est en dessous des criteres OK.")
             print("  bias_correction.json reste actif comme filet de securite.")
             print()
-            print("  Cams a refaire :")
+            print("  Cameras a recalibrer :")
             for i, res in all_residuals.items():
                 if res.get("mean_trans_mm"):
                     role = res["role"]
@@ -368,14 +373,14 @@ def main():
                         print(f"    python scripts/recalibrate_handeye.py --cams {i}")
             print()
             print("  Causes possibles d'un residu trop eleve :")
-            print("    - pas assez de diversite angulaire (vise >65deg ecart moyen)")
+            print("    - diversite angulaire insuffisante (viser >65deg d'ecart moyen)")
             print("    - damier deforme ou impression de mauvaise qualite")
             print("    - mauvais eclairage (reflets sur le damier)")
-            print("    - structure 3D de la barriere qui a bouge (cam mecaniquement deplacee)")
+            print("    - structure de la barriere deplacee (camera bougee mecaniquement)")
 
-    banner("TERMINE")
-    print(f"  Backups conserves : configs/*.before_B3_{stamp}.backup.json")
-    print(f"  Pour revert toutes les cams :")
+    banner("Termine")
+    print(f"  Sauvegardes conservees : configs/*.before_B3_{stamp}.backup.json")
+    print(f"  Pour restaurer toutes les cameras :")
     print(f"    for i in 0 1 2; do")
     print(f"      cp configs/handeye_cam_$i.before_B3_{stamp}.backup.json configs/handeye_cam_$i.json")
     print(f"    done")
@@ -385,5 +390,5 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n!! Interrompu par utilisateur.")
+        print("\n\n  Interrompu par l'utilisateur.")
         sys.exit(130)

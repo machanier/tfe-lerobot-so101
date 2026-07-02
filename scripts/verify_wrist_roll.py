@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""
-verify_wrist_roll.py - Affichage en direct de wrist_roll pour valider la
-calibration apres fix_wrist_roll_calibration.py.
+"""Affichage en direct de l'angle wrist_roll pour valider la calibration moteur.
 
-Torque coupe : tu bouges wrist_roll a la main et tu visites 3 reperes :
+Le torque est coupe : l'articulation wrist_roll se deplace a la main afin de
+visiter trois reperes de reference.
 
-    Centre mecanique : angle ~  0 deg, Present ~ 2047
-    Butee 1          : angle ~ -167 deg, Present ~  150
-    Butee 2          : angle ~ +167 deg, Present ~ 3944
+    Centre mecanique : angle proche de 0 deg, Present proche de 2047
+    Premiere butee   : angle proche de -167 deg, Present proche de 150
+    Seconde butee    : angle proche de +167 deg, Present proche de 3944
 
-Et tu observes que les transitions entre ces reperes sont continues (pas de
-saut de 360 deg quand tu passes par la zone morte de l'autre cote). Si ces 3
-points sortent comme prevu, la calibration moteur est validee et les
-calibrations extrinsèques peuvent partir de mesures saines.
+L'objectif est de verifier que les transitions entre ces reperes sont continues,
+sans saut de 360 deg au passage de la zone morte oppose. Si ces trois points
+apparaissent comme prevu, la calibration moteur est validee et les calibrations
+extrinseques peuvent partir de mesures saines.
 
 Usage :
     python scripts/verify_wrist_roll.py
-    (ENTER pour arreter)
+    (touche ENTER pour arreter)
+
+Entrees : configs/calibration_follower.json (plage calibree de wrist_roll).
+Sortie  : affichage console de l'angle courant et des reperes atteints.
 """
 
 import sys
@@ -30,7 +32,7 @@ from config import FOLLOWER_PORT
 
 JOINT = "wrist_roll"
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# tolerance d'affichage du tag "centre/butee" (en counts encodeur)
+# Tolerance d'affichage du repere "centre/butee", exprimee en counts encodeur.
 TAG_TOL = 80
 
 
@@ -38,7 +40,7 @@ def main():
     try:
         from lerobot.utils.utils import enter_pressed
     except ImportError:
-        print("ERREUR : LeRobot introuvable. Active le venv : source venv/bin/activate")
+        print("ERREUR : LeRobot introuvable. Activer l'environnement virtuel : source venv/bin/activate")
         sys.exit(1)
 
     sys.path.insert(0, str(REPO_ROOT))
@@ -55,28 +57,28 @@ def main():
     try:
         print()
         print("=" * 62)
-        print(f"  VERIFICATION DE wrist_roll  (lecture directe, torque coupe)")
+        print("  Verification de wrist_roll  (lecture directe, torque coupe)")
         print("=" * 62)
         print(f"  Plage calibree : [{lo}, {hi}]   centre : {mid}")
-        print(f"  Attendu :  centre -> 0 deg")
+        print("  Attendu :  centre -> 0 deg")
         print(f"             Present={lo}  -> {angle_at_lo:+.1f} deg")
         print(f"             Present={hi}  -> {angle_at_hi:+.1f} deg")
         print()
-        print(f"  Bouge wrist_roll a la main : passe par le centre puis les")
-        print(f"  deux butees. Verifie que les transitions sont continues")
-        print(f"  (pas de saut de 360 deg).")
-        print(f"  ENTER pour arreter.")
+        print("  Deplacer wrist_roll a la main : passer par le centre puis les")
+        print("  deux butees, en verifiant que les transitions sont continues")
+        print("  (pas de saut de 360 deg).")
+        print("  Touche ENTER pour arreter.")
         print()
 
         while not enter_pressed():
             raw = int(bus.sync_read("Present_Position", normalize=False)[JOINT])
             angle = np.rad2deg(raw_to_radians(raw, wrist))
             if abs(raw - mid) < TAG_TOL:
-                tag = "  <-- CENTRE"
+                tag = "  <-- centre"
             elif raw - lo < TAG_TOL:
-                tag = "  <-- BUTEE (range_min)"
+                tag = "  <-- butee (range_min)"
             elif hi - raw < TAG_TOL:
-                tag = "  <-- BUTEE (range_max)"
+                tag = "  <-- butee (range_max)"
             else:
                 tag = ""
             print(f"\r    Present={raw:>4d}   angle={angle:+7.2f} deg{tag:<28}",
@@ -84,8 +86,9 @@ def main():
             time.sleep(0.05)
         print()
         print()
-        print("  Si les 3 reperes sortent comme attendu et les transitions sont")
-        print("  continues -> wrist_roll est valide, tu peux enchainer cam_0.")
+        print("  Si les trois reperes apparaissent comme attendu et que les")
+        print("  transitions sont continues, wrist_roll est valide et la")
+        print("  calibration de cam_0 peut suivre.")
     finally:
         bus.disconnect()
 

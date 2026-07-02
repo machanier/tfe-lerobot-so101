@@ -1,37 +1,41 @@
 #!/usr/bin/env python3
-"""
-solve_handeye_stereo.py - Resolution hand-eye STEREO conjointe (B3b).
+"""Resolution hand-eye stereo conjointe des deux cameras.
 
-Prend en entree le JSON stereo produit par calibrate_extrinsic_stereo.py
-(qui contient les paires d'images synchronisees du damier) et :
+Prend en entree le fichier JSON stereo produit par
+calibrate_extrinsic_stereo.py (qui contient les paires d'images synchronisees
+du damier) et enchaine les etapes suivantes :
 
-  1. Calcule T_cam0_cam1 via cv2.stereoCalibrate() (FIX_INTRINSIC : on garde
-     les K, D calibres avant). C'est l'optimisation conjointe sur les memes
-     poses du damier, ce qui donne typiquement <0.5mm de precision sur la
-     transformation entre les 2 cameras.
+  1. Calcule T_cam0_cam1 via cv2.stereoCalibrate() avec l'option
+     CALIB_FIX_INTRINSIC (les matrices K et coefficients D calibres au prealable
+     sont figes). Cette optimisation conjointe sur les memes poses du damier
+     fournit une precision de l'ordre du demi-millimetre sur la transformation
+     entre les deux cameras.
 
-  2. Resout hand-eye eye-to-hand pour cam_0 (independamment) -> T_base_cam0.
+  2. Resout le hand-eye eye-to-hand pour cam_0 independamment -> T_base_cam0.
 
-  3. DEDUIT T_base_cam1 = T_base_cam0 @ T_cam0_cam1.
-     Avec cette methode, les 2 calibrations sont COHERENTES par construction :
-     si T_base_cam0 a un biais geometrique, T_base_cam1 a le MEME biais ->
-     le biais s'annule lors de la triangulation stereo (la difference entre
-     les 2 cameras est correcte par construction).
+  3. Deduit T_base_cam1 = T_base_cam0 @ T_cam0_cam1.
+     Avec cette methode, les deux calibrations sont coherentes par
+     construction : si T_base_cam0 comporte un biais geometrique, T_base_cam1
+     porte le meme biais, qui s'annule lors de la triangulation stereo. La
+     difference entre les deux cameras reste correcte par construction.
 
   4. Calcule les residus :
-       - cam_0 : residus hand-eye classique
-       - cam_1 : meme metrique mais avec T_base_cam1 deduit
-       - stereo : RMS de cv2.stereoCalibrate (pixels)
+       - cam_0 : residus hand-eye classiques
+       - cam_1 : meme metrique, avec T_base_cam1 deduit
+       - stereo : RMS de cv2.stereoCalibrate (en pixels)
 
-  5. Sauvegarde handeye_cam_0.json et handeye_cam_1.json au meme format que
-     l'existant (compatibles pipeline) + handeye_stereo_info.json (T_cam0_cam1).
+  5. Sauvegarde handeye_cam_0.json et handeye_cam_1.json au format attendu par
+     le reste de la pipeline, ainsi que handeye_stereo_info.json (T_cam0_cam1).
 
-Reference : Hartley & Zisserman 2018 ch.10 (stereo calibration), Tsai-Lenz
-1989 (hand-eye), Zhang 2000 (camera calibration).
+References : Hartley & Zisserman 2018 ch.10 (calibration stereo), Tsai & Lenz
+1989 (hand-eye), Zhang 2000 (calibration de camera).
 
-USAGE :
+Usage :
     python scripts/solve_handeye_stereo.py
     python scripts/solve_handeye_stereo.py --capture-file configs/extrinsic_capture_stereo.json
+
+Entrees : le JSON de captures stereo et les fichiers intrinseques references.
+Sorties : configs/handeye_cam_<idx>.json (x2) et configs/handeye_stereo_info.json.
 """
 
 import argparse
@@ -70,8 +74,8 @@ def verdict(mean_mm, max_mm):
 
 
 def build_g2b_t2c(captures, cam_suffix, calib_motors, unwrap_centers, chain):
-    """Pour cam_0 (suffix='cam0') ou cam_1 (suffix='cam1') : build les
-    listes T_g2b et T_t2c utilisees par le solveur hand-eye eye-to-hand."""
+    """Construit les listes T_g2b et T_t2c utilisees par le solveur hand-eye
+    eye-to-hand, pour cam_0 (suffix='cam0') ou cam_1 (suffix='cam1')."""
     T_g2b_list, T_t2c_list = [], []
     for cap in captures:
         raw = cap["motor_positions_raw"]
@@ -108,14 +112,18 @@ def write_handeye_json(out_path, cam_key, cam_index, T_base_cam, captures,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Solve hand-eye stereo conjoint cam_0+cam_1 (B3b)."
+        description="Resolution hand-eye stereo conjointe de cam_0 et cam_1."
     )
     parser.add_argument("--capture-file", default="configs/extrinsic_capture_stereo.json",
-                        help="JSON produit par calibrate_extrinsic_stereo.py")
+                        help="Fichier JSON de captures stereo produit par "
+                             "calibrate_extrinsic_stereo.py "
+                             "(defaut : configs/extrinsic_capture_stereo.json).")
     parser.add_argument("--method", choices=list(handeye.METHODS), default="HORAUD",
-                        help="Methode cv2.calibrateHandEye (defaut: HORAUD)")
+                        help="Methode passee a cv2.calibrateHandEye "
+                             "(defaut : HORAUD).")
     parser.add_argument("--naive", action="store_true",
-                        help="Desactive le mode robuste hand-eye (debug)")
+                        help="Desactive le mode robuste du solveur hand-eye "
+                             "(defaut : mode robuste actif).")
     args = parser.parse_args()
 
     cap_path = REPO / args.capture_file
@@ -164,8 +172,8 @@ def main():
     img_pts_r = [np.array(c["img_points_cam1"], dtype=np.float32).reshape(-1, 1, 2)
                  for c in captures]
 
-    # Note : obj_points en mm, donc T sera en mm. On le convertit en m apres.
-    flags = cv2.CALIB_FIX_INTRINSIC  # K et D sont deja calibres, on les fige
+    # Les obj_points sont en mm, donc T sera en mm ; conversion en m ensuite.
+    flags = cv2.CALIB_FIX_INTRINSIC  # K et D deja calibres : on les fige
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5)
 
     rms_stereo, _, _, _, _, R_l2r, t_l2r, E, F = cv2.stereoCalibrate(
@@ -175,31 +183,28 @@ def main():
         flags=flags, criteria=criteria,
     )
 
-    # IMPORTANT (fix bug 2026-05-19 21h30) : cv2.stereoCalibrate retourne
-    # (R_l2r, t_l2r) tels que P_right = R @ P_left + T. Autrement dit,
-    # (R, T) forment T_right_left (= pose de cam_left dans repere cam_right).
-    # Pour avoir T_cam0_cam1 (= pose de cam_1 dans repere cam_0), on doit
-    # INVERSER : T_cam0_cam1 = inverse(T_right_left) = [R.T  -R.T@T; 0 1].
-    #
-    # Erreur initiale : on stockait T_cam0_cam1 = [R T; 0 1] qui etait en
-    # realite T_cam1_cam0 -> T_base_cam1 = T_base_cam0 @ T_cam1_cam0 etait
-    # une composition incorrecte -> cam_1 se retrouvait du mauvais cote
-    # (delta Y inverse, residu cam_1 = 80mm au lieu de ~6mm).
+    # cv2.stereoCalibrate retourne (R_l2r, t_l2r) tels que
+    # P_right = R @ P_left + T. Autrement dit, (R, T) forment T_right_left
+    # (pose de cam_left dans le repere cam_right). Pour obtenir T_cam0_cam1
+    # (pose de cam_1 dans le repere cam_0), il faut inverser cette
+    # transformation : T_cam0_cam1 = inverse(T_right_left) = [R.T  -R.T@T; 0 1].
+    # Prendre directement [R T; 0 1] reviendrait a stocker T_cam1_cam0 et
+    # placerait cam_1 du mauvais cote (delta Y inverse) lors de la composition.
     R_cam0_to_cam1 = R_l2r.T
     t_cam0_to_cam1_in_cam0_mm = (-R_l2r.T @ t_l2r).flatten()
     T_cam0_cam1 = np.eye(4)
     T_cam0_cam1[:3, :3] = R_cam0_to_cam1
     T_cam0_cam1[:3, 3] = t_cam0_to_cam1_in_cam0_mm / 1000.0  # mm -> m
 
-    # baseline = norme de la translation (independante du sens)
+    # Baseline : norme de la translation (independante du sens).
     baseline_mm = float(np.linalg.norm(t_l2r))
-    # Angle entre axes optiques z (apres rotation)
+    # Angle entre les axes optiques z (apres rotation).
     axis_l = np.array([0, 0, 1.0])
-    axis_r_in_l = R_l2r.T @ axis_l  # axe z de cam1 exprime dans cam0
+    axis_r_in_l = R_l2r.T @ axis_l  # axe z de cam_1 exprime dans cam_0
     angle_axes_deg = np.degrees(np.arccos(np.clip(axis_l @ axis_r_in_l, -1, 1)))
 
     print(f"  RMS reprojection stereo : {rms_stereo:.3f} px  "
-          f"({'BON <0.5' if rms_stereo < 0.5 else 'eleve, verifie les captures' if rms_stereo > 1 else 'OK'})")
+          f"({'bon (<0.5)' if rms_stereo < 0.5 else 'eleve, captures a verifier' if rms_stereo > 1 else 'OK'})")
     print(f"  Baseline cam_0 -> cam_1 : {baseline_mm:.1f} mm")
     print(f"  Angle entre axes optiques z : {angle_axes_deg:.1f} deg")
     print(f"  T_cam0_cam1 (translation cam_0 -> cam_1 dans cam_0, en mm) : "
@@ -256,8 +261,8 @@ def main():
           f"({T_base_cam1[0,3]*1000:+.1f}, {T_base_cam1[1,3]*1000:+.1f}, "
           f"{T_base_cam1[2,3]*1000:+.1f})")
 
-    # Residus pour cam_1 : avec T_base_cam1 deduit, on regarde l'erreur
-    # de prediction du target dans cam_1 (sur LES MEMES poses).
+    # Residus pour cam_1 : avec T_base_cam1 deduit, on evalue l'erreur de
+    # prediction de la cible dans cam_1, sur les memes poses.
     _, T_t2c_r_list = build_g2b_t2c(captures, "cam1", calib_motors, unwrap_centers, chain)
     stats_1 = handeye.residuals_eye_to_hand(T_g2b_list, T_t2c_r_list, T_base_cam1)
     print(f"  Residus cam_1 : mean={stats_1['translation_mean_dev_mm']:.2f}mm  "
@@ -280,14 +285,15 @@ def main():
                        source_info=source_info)
     print(f"  -> {out_l.name}")
 
-    # Pour cam_1, "used_capture_ids" = tous (puisque deduit, pas resolu)
+    # Pour cam_1, "used_capture_ids" liste toutes les captures : la pose est
+    # deduite de cam_0, non resolue independamment.
     write_handeye_json(out_r, cam_r_key, idx_r, T_base_cam1, captures,
                        list(range(len(captures))), stats_1,
                        method_label=f"{args.method}_STEREO_DEDUCED_FROM_CAM0",
                        source_info=source_info)
     print(f"  -> {out_r.name}")
 
-    # Bonus : sauve T_cam0_cam1 + RMS pour traçabilite
+    # Sauvegarde de T_cam0_cam1 et du RMS stereo, pour tracabilite.
     info_path = REPO / "configs/handeye_stereo_info.json"
     info = {
         "schema_version": "stereo_v1.1",
@@ -314,10 +320,10 @@ def main():
     print()
 
     # =====================================================================
-    # RECAP
+    # Recapitulatif
     # =====================================================================
     print("=" * 70)
-    print(" RECAP B3b")
+    print(" RECAPITULATIF")
     print("=" * 70)
     print(f"  Stereo RMS reproj : {rms_stereo:.3f} px  (baseline {baseline_mm:.1f}mm)")
     print(f"  cam_0 hand-eye    : mean={stats_0['translation_mean_dev_mm']:.2f}mm  "
@@ -330,8 +336,8 @@ def main():
     print(f"  Prochaine etape : verifier en pratique avec")
     print(f"    python scripts/check_calibration.py")
     print(f"    python scripts/pick_and_place.py --target orange_cube --detector hf --display")
-    print(f"  Si R1 correction Y reste a +30-40mm, c'est que le residu est encore eleve.")
-    print(f"  Si R1 correction Y descend a <10mm, B3b a reussi.")
+    print(f"  Une correction Y de l'ordre de +30 a +40 mm indique un residu encore eleve.")
+    print(f"  Une correction Y inferieure a 10 mm indique une calibration satisfaisante.")
 
 
 if __name__ == "__main__":

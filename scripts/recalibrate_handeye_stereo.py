@@ -1,34 +1,36 @@
 #!/usr/bin/env python3
-"""
-recalibrate_handeye_stereo.py - Orchestrateur B3b : recalibration STEREO
-conjointe de cam_0 + cam_1 en 1 commande.
+"""Recalibration hand-eye stereo conjointe de cam_0 et cam_1 en une commande.
 
-POURQUOI :
-La calibration separee de cam_0/cam_1 produit ~+40mm de biais Y residuel
-qu'on observe systematiquement dans le refinement #1. Le probleme : les
-2 cameras sont calibrees independamment, donc leurs erreurs ne s'annulent
-pas a la triangulation stereo. Solution : capturer simultanement et resoudre
-conjointement (cv2.stereoCalibrate + deduction).
+La calibration separee de cam_0 et cam_1 laisse un biais Y residuel d'environ
+40 mm a la triangulation stereo : les deux cameras etant calibrees
+independamment, leurs erreurs ne s'annulent pas. Ce script capture les deux
+vues simultanement et resout conjointement (cv2.stereoCalibrate + deduction),
+de sorte que les deux calibrations restent coherentes par construction.
 
-UNE SEULE commande pour l'utilisateur :
+Usage :
     python scripts/recalibrate_handeye_stereo.py
 
 Etapes :
-  1. Backup automatique de handeye_cam_0.json, handeye_cam_1.json,
+  1. Sauvegarde de handeye_cam_0.json, handeye_cam_1.json et
+     extrinsic_capture_stereo.json.
+  2. Capture stereo simultanee (calibrate_extrinsic_stereo.py, interactif).
+  3. Resolution stereo conjointe (solve_handeye_stereo.py, automatique).
+  4. Comparaison avant/apres et verdict.
+  5. Si les residus sont conformes, proposition de neutraliser
      bias_correction.json.
-  2. Capture stereo simultanee (calibrate_extrinsic_stereo.py interactif).
-  3. Solve stereo conjoint (solve_handeye_stereo.py auto).
-  4. Affichage verdict + comparaison avant/apres.
-  5. Si residus OK : propose de mettre dy=0 dans bias_correction.json.
 
-CRITERES DE SUCCES :
-  - Stereo RMS reprojection : < 0.5 px (calibration intra-stereo precise)
-  - cam_0 hand-eye          : mean <= 5mm, max <= 12mm
-  - cam_1 (deduit)          : mean <= 5mm, max <= 12mm (coherent avec cam_0)
+Criteres de succes :
+  - RMS de reprojection stereo : < 0.5 px.
+  - cam_0 hand-eye             : moyenne <= 5 mm, maximum <= 12 mm.
+  - cam_1 (deduit)             : moyenne <= 5 mm, maximum <= 12 mm.
 
-DAMIER : 9x6 asymetrique 22mm colle sur la pince FERMEE du robot.
+Damier : 9x6 asymetrique, cases de 22 mm, colle sur la pince fermee du robot.
 
-DUREE estimee : 30-45 min (30-60 captures simultanees).
+Duree estimee : 30 a 45 min (30 a 60 captures simultanees).
+
+Entrees  : configs/handeye_cam_{0,1}.json, configs/extrinsic_capture_stereo.json.
+Sorties  : configs/handeye_cam_{0,1}.json et configs/handeye_stereo_info.json
+           mis a jour, sauvegardes horodatees des fichiers modifies.
 """
 
 import argparse
@@ -110,55 +112,61 @@ def disable_bias(stamp):
     data["dx_mm"] = 0; data["dy_mm"] = 0; data["dz_mm"] = 0
     data["_disabled_by_B3b"] = (
         f"Compensation desactivee le {datetime.now().isoformat(timespec='seconds')} "
-        f"apres recalibration STEREO conjointe cam_0+cam_1. Valeurs precedentes : {old}."
+        f"apres recalibration stereo conjointe cam_0+cam_1. Valeurs precedentes : {old}."
     )
     json.dump(data, open(path, "w"), indent=2)
-    print(f"  [OK] bias_correction.json mis a dx=dy=dz=0 (backup conserve).")
+    print("  [OK] bias_correction.json mis a dx=dy=dz=0 (sauvegarde conservee).")
 
 
 def main():
-    p = argparse.ArgumentParser(description="Recalibration hand-eye STEREO conjointe (B3b).")
-    p.add_argument("--rows", type=int, default=6)
-    p.add_argument("--cols", type=int, default=9)
-    p.add_argument("--square-size", type=float, default=22.0)
-    p.add_argument("--cam-indices", nargs=2, type=int, default=[0, 1])
+    p = argparse.ArgumentParser(description="Recalibration hand-eye stereo conjointe de cam_0 et cam_1.")
+    p.add_argument("--rows", type=int, default=6,
+                   help="Nombre de coins internes du damier en hauteur (defaut : 6).")
+    p.add_argument("--cols", type=int, default=9,
+                   help="Nombre de coins internes du damier en largeur (defaut : 9).")
+    p.add_argument("--square-size", type=float, default=22.0,
+                   help="Taille d'une case du damier en millimetres (defaut : 22.0).")
+    p.add_argument("--cam-indices", nargs=2, type=int, default=[0, 1],
+                   help="Indices des deux cameras a recalibrer (defaut : 0 1).")
     p.add_argument("--skip-capture", action="store_true",
-                   help="Saute la capture (utilise un JSON deja existant pour debug solve)")
+                   help="Reutilise la capture stereo existante sans en refaire une "
+                        "et lance directement la resolution (defaut : desactive).")
     args = p.parse_args()
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     idx_l, idx_r = args.cam_indices
 
-    banner("RECALIBRATION HAND-EYE STEREO CONJOINTE (B3b)")
+    banner("Recalibration hand-eye stereo conjointe")
     print(f"  damier         : {args.cols} x {args.rows} cases @ {args.square_size}mm")
-    print(f"  cameras        : cam_{idx_l} + cam_{idx_r} (capture SIMULTANEE)")
-    print(f"  backup suffix  : before_B3b_{stamp}")
+    print(f"  cameras        : cam_{idx_l} + cam_{idx_r} (capture simultanee)")
+    print(f"  suffixe backup : before_B3b_{stamp}")
     print()
-    print("  POURQUOI cette procedure ?")
+    print("  Principe de la procedure :")
     print("    La calibration actuelle traite cam_0 et cam_1 separement. Leurs")
-    print("    erreurs hand-eye (~6mm chacune) s'additionnent geometriquement a")
-    print("    la triangulation stereo -> biais Y +40mm constate.")
-    print("    En calibrant CONJOINTEMENT (cv2.stereoCalibrate + deduction), les")
-    print("    2 calibrations deviennent COHERENTES par construction : la difference")
-    print("    entre les 2 cameras est ~0.5mm precis -> le biais s'annule.")
+    print("    erreurs hand-eye (environ 6 mm chacune) s'additionnent")
+    print("    geometriquement a la triangulation stereo, d'ou le biais Y d'environ")
+    print("    40 mm constate. En calibrant conjointement (cv2.stereoCalibrate +")
+    print("    deduction), les deux calibrations deviennent coherentes par")
+    print("    construction : l'ecart entre les deux cameras tombe autour de")
+    print("    0.5 mm et le biais s'annule.")
     print()
-    print("  PRE-REQUIS HARDWARE :")
-    print("    - Damier 9x6 22mm COLLE sur la pince FERMEE (eye-to-hand).")
-    print("    - Les 2 cameras a leur position definitive sur la barriere.")
+    print("  Pre-requis materiel :")
+    print("    - Damier 9x6 22 mm colle sur la pince fermee (eye-to-hand).")
+    print("    - Les deux cameras a leur position definitive sur la barriere.")
     print()
-    print("  DUREE : 30-45 min (30-60 captures simultanees).")
+    print("  Duree : 30 a 45 min (30 a 60 captures simultanees).")
     print()
     if not confirm("  Pret a demarrer ?"):
         print("Annule.")
         return
 
-    # ---- Backups ----
-    banner("PHASE 1 : Backups", char="-")
+    # ---- Sauvegardes ----
+    banner("Phase 1 : sauvegardes", char="-")
     for i in args.cam_indices:
         backup_file(REPO / f"configs/handeye_cam_{i}.json", f"before_B3b_{stamp}")
     backup_file(REPO / "configs/extrinsic_capture_stereo.json", f"before_B3b_{stamp}")
 
-    # Lit residus avant pour comparaison finale
+    # Lecture des residus avant recalibration, pour la comparaison finale.
     before = {
         idx_l: read_residuals(REPO / f"configs/handeye_cam_{idx_l}.json"),
         idx_r: read_residuals(REPO / f"configs/handeye_cam_{idx_r}.json"),
@@ -166,10 +174,11 @@ def main():
 
     # ---- Capture stereo ----
     if not args.skip_capture:
-        banner("PHASE 2 : Capture stereo simultanee (interactif)", char="-")
-        print("  Le script va ouvrir une fenetre avec les 2 vues cote a cote.")
-        print("  Le damier doit etre detecte dans LES DEUX cameras pour pouvoir capturer.")
-        print("  Bouge le bras pour varier les poses (>30 captures, diversite angulaire).")
+        banner("Phase 2 : capture stereo simultanee (interactif)", char="-")
+        print("  Le script ouvre une fenetre avec les deux vues cote a cote.")
+        print("  Le damier doit etre detecte dans les deux cameras pour capturer.")
+        print("  Deplacer le bras pour varier les poses (plus de 30 captures,")
+        print("  diversite angulaire).")
         print()
         if not confirm("  Pret pour la capture ?"):
             return
@@ -182,39 +191,39 @@ def main():
         ], cwd=REPO).returncode
 
         # Codes de retour de calibrate_extrinsic_stereo.py :
-        #   0 = succes (JSON officiel mis a jour)
-        #   2 = avorte (ESC ou < 10 captures, JSON officiel intact)
-        #   autre = erreur fatale
+        #   0     : succes (JSON officiel mis a jour).
+        #   2     : capture interrompue (ESC ou moins de 10 captures, JSON intact).
+        #   autre : erreur fatale.
         if rc == 2:
-            banner("CAPTURE AVORTEE - SOLVE NON LANCE", char="!")
-            print("  La capture a ete annulee (ESC) ou avait moins de 10 captures.")
-            print("  Le JSON officiel n'a pas ete modifie, donc les calibrations")
+            banner("Capture interrompue, resolution non lancee", char="!")
+            print("  La capture a ete annulee (ESC) ou comptait moins de 10 captures.")
+            print("  Le JSON officiel n'a pas ete modifie : les calibrations")
             print("  handeye_cam_0.json et handeye_cam_1.json restent inchangees.")
             print()
             print("  Pour reprendre :")
-            print("    python scripts/recalibrate_handeye_stereo.py    # nouvelle session")
+            print("    python scripts/recalibrate_handeye_stereo.py")
             print()
-            print("  Si tu veux quand meme utiliser un PARTIAL precedent :")
+            print("  Pour reutiliser une capture partielle precedente :")
             print("    cp outputs/extrinsic_stereo_partial_0_1.json configs/extrinsic_capture_stereo.json")
             print("    python scripts/recalibrate_handeye_stereo.py --skip-capture")
             return
         if rc != 0:
-            print(f"\n!! Capture a echoue avec code inattendu {rc}.")
+            print(f"\n!! La capture a echoue avec un code inattendu ({rc}).")
             print("   Le JSON officiel n'a pas ete modifie.")
             return
 
-    # ---- Solve stereo ----
-    banner("PHASE 3 : Resolution stereo conjointe (auto)", char="-")
+    # ---- Resolution stereo ----
+    banner("Phase 3 : resolution stereo conjointe (automatique)", char="-")
     rc = subprocess.run([
         sys.executable, str(REPO / "scripts" / "solve_handeye_stereo.py"),
     ], cwd=REPO).returncode
     if rc != 0:
-        print(f"\n!! Solve stereo a echoue (return code {rc}).")
-        print("   Tu peux relancer avec : python scripts/solve_handeye_stereo.py")
+        print(f"\n!! La resolution stereo a echoue (code de retour {rc}).")
+        print("   Relancer avec : python scripts/solve_handeye_stereo.py")
         return
 
     # ---- Comparaison avant/apres ----
-    banner("PHASE 4 : Comparaison avant / apres")
+    banner("Phase 4 : comparaison avant / apres")
     after = {
         idx_l: read_residuals(REPO / f"configs/handeye_cam_{idx_l}.json"),
         idx_r: read_residuals(REPO / f"configs/handeye_cam_{idx_r}.json"),
@@ -227,7 +236,7 @@ def main():
         b = before[i] or {}
         a = after[i] or {}
         ok = is_ok(a.get("mean"), a.get("max"))
-        verdict_str = "OK" if ok else f"INSUFF (cible mean<=5, max<=12)"
+        verdict_str = "OK" if ok else "insuffisant (cible : moyenne<=5, max<=12)"
         print(f"  cam_{i}    {(b.get('mean') or 0):>10.2f}mm "
               f"{(a.get('mean') or 0):>10.2f}mm "
               f"{(b.get('max') or 0):>10.2f}mm "
@@ -235,17 +244,17 @@ def main():
         if not ok:
             all_ok = False
 
-    # Stereo info
+    # Informations stereo
     si_path = REPO / "configs/handeye_stereo_info.json"
     if si_path.exists():
         si = json.load(open(si_path))
         print()
-        print(f"  Stereo RMS reproj : {si['stereo_rms_reprojection_px']:.3f} px  "
-              f"({'BON' if si['stereo_rms_reprojection_px'] < 0.5 else 'ELEVE >0.5'})")
+        print(f"  RMS de reprojection stereo : {si['stereo_rms_reprojection_px']:.3f} px  "
+              f"({'bon' if si['stereo_rms_reprojection_px'] < 0.5 else 'eleve, >0.5'})")
         print(f"  Baseline cam_0->cam_1 : {si['baseline_mm']:.1f} mm")
 
-    # ---- Validation pipeline ----
-    banner("PHASE 5 : Validation pipeline")
+    # ---- Validation de la pipeline ----
+    banner("Phase 5 : validation de la pipeline")
     print("  Lancement de check_calibration.py...")
     subprocess.run([sys.executable, str(REPO / "scripts" / "check_calibration.py")],
                    cwd=REPO)
@@ -253,43 +262,43 @@ def main():
     gt_path = REPO / "configs/perception/gt_test.json"
     if gt_path.exists():
         print()
-        print("  Validation 3D contre ground truth (gt_test.json)...")
+        print("  Validation 3D contre la reference (gt_test.json)...")
         subprocess.run([sys.executable, str(REPO / "scripts" / "check_perception.py"),
                         "--gt", str(gt_path)], cwd=REPO)
     else:
-        print(f"  [INFO] gt_test.json absent, validation 3D sautee.")
+        print("  [INFO] gt_test.json absent, validation 3D ignoree.")
 
-    # ---- Bias correction ----
-    banner("PHASE 6 : bias_correction.json")
+    # ---- Correction de biais ----
+    banner("Phase 6 : bias_correction.json")
     if all_ok:
-        print("  ✓ Les 2 cams sont OK.")
-        print("  Tu peux desactiver bias_correction.json (mise a dx=dy=dz=0).")
-        print("  Test rapide en parallele a recommander :")
+        print("  Les deux cameras sont conformes.")
+        print("  La correction bias_correction.json peut etre neutralisee (dx=dy=dz=0).")
+        print("  Verification rapide recommandee :")
         print("    python scripts/pick_and_place.py --target orange_cube --detector hf --display")
-        print("  Si le refinement #1 corrige <10mm en Y, B3b a reussi.")
+        print("  Si le refinement #1 corrige moins de 10 mm en Y, la recalibration a reussi.")
         print()
-        if ask_yes_no("  Desactiver bias_correction.json maintenant ?", default_no=False):
+        if ask_yes_no("  Neutraliser bias_correction.json maintenant ?", default_no=False):
             disable_bias(stamp)
         else:
             print("  bias_correction.json laisse en l'etat.")
-            print("  ATTENTION : avec residus OK + bias actif, sur-correction probable.")
-            print("  Pour le desactiver plus tard :")
+            print("  Avec des residus conformes et le biais actif, une sur-correction")
+            print("  est probable. Pour le neutraliser plus tard :")
             print("    python -c \"import json; p='configs/perception/bias_correction.json'; "
                   "d=json.load(open(p)); d['dy_mm']=0; d['dx_mm']=0; d['dz_mm']=0; "
                   "json.dump(d, open(p,'w'), indent=2)\"")
     else:
-        print("  ✗ Au moins une cam n'est pas OK.")
+        print("  Au moins une camera n'est pas conforme.")
         print("  bias_correction.json reste actif comme filet de securite.")
         print()
         print("  Causes possibles :")
-        print("    - pas assez de diversite angulaire (vise >65deg ecart moyen)")
-        print("    - damier deforme ou impression de mauvaise qualite")
-        print("    - une camera mal alignee (structure 3D qui a bouge)")
-        print("    - rms stereo > 0.5 px = probleme de coherence des coins detectes")
+        print("    - diversite angulaire insuffisante (viser plus de 65 deg d'ecart moyen) ;")
+        print("    - damier deforme ou impression de mauvaise qualite ;")
+        print("    - une camera mal alignee (structure deplacee) ;")
+        print("    - RMS stereo > 0.5 px : incoherence des coins detectes.")
 
-    banner("TERMINE")
-    print(f"  Backups conserves : configs/*.before_B3b_{stamp}.backup.json")
-    print(f"  Pour revert : ")
+    banner("Termine")
+    print(f"  Sauvegardes conservees : configs/*.before_B3b_{stamp}.backup.json")
+    print("  Pour revenir en arriere :")
     print(f"    for i in {idx_l} {idx_r}; do")
     print(f"      cp configs/handeye_cam_$i.before_B3b_{stamp}.backup.json configs/handeye_cam_$i.json")
     print(f"    done")
@@ -299,5 +308,5 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n!! Interrompu par utilisateur.")
+        print("\n\n!! Interrompu par l'utilisateur.")
         sys.exit(130)

@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""
-calibrate.py – Recalibrer le leader et/ou le follower du SO-101
+"""Recalibration du bras leader et/ou du bras follower du SO-101.
 
-Usage:
-    python scripts/calibrate.py           # Calibrer les deux (leader puis follower)
+Usage :
+    python scripts/calibrate.py            # Calibrer les deux (leader puis follower)
     python scripts/calibrate.py --leader   # Calibrer seulement le leader
     python scripts/calibrate.py --follower # Calibrer seulement le follower
 
-Rappel des articulations (de la base vers la pince) :
-    1. shoulder_pan   = Rotation de la base         (gauche/droite)
-    2. shoulder_lift  = Lever/baisser l'epaule      (haut/bas)
-    3. elbow_flex     = Plier/deplier le coude      (plie/tendu)
-    4. wrist_flex     = Plier le poignet            (haut/bas)
-    5. wrist_roll     = Tourner le poignet          (comme une cle)
-    6. gripper        = Ouvrir/fermer la pince      (ouvert/ferme)
+La calibration ecrit les fichiers configs/calibration_leader.json et
+configs/calibration_follower.json utilises par le reste du projet.
 
-Pendant la calibration :
-    - Etape 1 : Mettre CHAQUE articulation au MILIEU de sa course -> ENTER
-    - Etape 2 : Bouger CHAQUE articulation (les 6) a FOND dans les DEUX sens -> ENTER
+Rappel des articulations (de la base vers la pince) :
+    1. shoulder_pan   = Rotation de la base    (gauche/droite)
+    2. shoulder_lift  = Lever/baisser l'epaule (haut/bas)
+    3. elbow_flex     = Plier/deplier le coude (plie/tendu)
+    4. wrist_flex     = Plier le poignet       (haut/bas)
+    5. wrist_roll     = Tourner le poignet     (comme une cle)
+    6. gripper        = Ouvrir/fermer la pince (ouvert/ferme)
+
+Deroulement de la calibration :
+    - Etape 1 : placer chaque articulation au milieu de sa course, puis valider.
+    - Etape 2 : bouger chaque articulation (les six) a fond dans les deux sens, puis valider.
 """
 
 import argparse
@@ -45,7 +47,7 @@ def sync_calibration_to_configs(kind):
     try:
         from lerobot.utils.constants import HF_LEROBOT_CALIBRATION
     except ImportError:
-        print("  AVERTISSEMENT : LeRobot introuvable, copie de la calibration ignoree.")
+        print("  Avertissement : LeRobot introuvable, copie de la calibration ignoree.")
         return
 
     if kind == "leader":
@@ -59,8 +61,8 @@ def sync_calibration_to_configs(kind):
 
     candidates = list(search_dir.glob(f"*/{motor_id}.json"))
     if not candidates:
-        print(f"  AVERTISSEMENT : aucune calibration LeRobot trouvee dans {search_dir}")
-        print(f"  -> copie-la manuellement vers {dst}")
+        print(f"  Avertissement : aucune calibration LeRobot trouvee dans {search_dir}")
+        print(f"  Copiez le fichier manuellement vers {dst}")
         return
 
     # le fichier le plus recent = celui que la calibration vient d'ecrire
@@ -87,26 +89,26 @@ def check_ports(need_leader, need_follower):
     if missing:
         print(f"Ports non trouves : {', '.join(missing)}")
         print(f"  Ports detectes : {ports}")
-        print("  Modifie scripts/config.py ou lance : ls /dev/tty.usbmodem*")
+        print("  Ajustez scripts/config.py ou lancez : ls /dev/tty.usbmodem*")
         sys.exit(1)
 
 
 def calibrate_leader():
-    """Calibre le bras leader (celui que vous bougez a la main)."""
+    """Calibre le bras leader (celui que l'operateur deplace a la main)."""
     print()
     print("=" * 60)
-    print("  CALIBRATION DU LEADER (bras que vous bougez a la main)")
+    print("  Calibration du leader (bras deplace a la main)")
     print("=" * 60)
     print()
     print("  Articulations a bouger (dans l'ordre) :")
-    print("    1. shoulder_pan   -> Tourner la base a fond GAUCHE puis DROITE")
-    print("    2. shoulder_lift  -> Lever le bras tout en HAUT puis tout en BAS")
-    print("    3. elbow_flex     -> Plier le coude a FOND puis deplier a FOND")
-    print("    4. wrist_flex     -> Plier le poignet en HAUT puis en BAS")
-    print("    5. wrist_roll     -> Tourner le poignet, a fond GAUCHE puis DROITE")
-    print("    6. gripper        -> OUVRIR la pince a fond puis FERMER a fond")
+    print("    1. shoulder_pan   -> Tourner la base a fond a gauche puis a droite")
+    print("    2. shoulder_lift  -> Lever le bras tout en haut puis tout en bas")
+    print("    3. elbow_flex     -> Plier le coude a fond puis le deplier a fond")
+    print("    4. wrist_flex     -> Plier le poignet vers le haut puis vers le bas")
+    print("    5. wrist_roll     -> Tourner le poignet a fond a gauche puis a droite")
+    print("    6. gripper        -> Ouvrir la pince a fond puis la fermer a fond")
     print()
-    input("  Appuyez sur ENTER quand vous etes pret...")
+    input("  Appuyez sur Entree lorsque vous etes pret...")
     print()
 
     cmd = [
@@ -118,7 +120,7 @@ def calibrate_leader():
 
     try:
         subprocess.run(cmd, check=True)
-        print("\n  Calibration du leader terminee !")
+        print("\n  Calibration du leader terminee.")
         sync_calibration_to_configs("leader")
     except subprocess.CalledProcessError:
         print("\n  Erreur pendant la calibration du leader.")
@@ -126,20 +128,20 @@ def calibrate_leader():
 
 
 def calibrate_follower():
-    """Calibre le bras follower (celui qui imite / le robot)."""
+    """Calibre le bras follower (le bras robot qui reproduit les mouvements)."""
     print()
     print("=" * 60)
-    print("  CALIBRATION DU FOLLOWER (bras robot qui imite)")
+    print("  Calibration du follower (bras robot)")
     print("=" * 60)
     print()
-    print("  Le follower a normalement le torque (force) active.")
-    print("  LeRobot va le desactiver pour la calibration.")
-    print("  Tenez le bras pour qu'il ne tombe pas !")
+    print("  Le follower a normalement le couple (torque) active.")
+    print("  LeRobot va le desactiver le temps de la calibration.")
+    print("  Tenez le bras pour qu'il ne retombe pas.")
     print()
-    print("  Meme chose : bougez CHAQUE articulation (les 6) a FOND")
-    print("  dans les DEUX sens.")
+    print("  Comme pour le leader : bougez chaque articulation (les six)")
+    print("  a fond dans les deux sens.")
     print()
-    input("  Appuyez sur ENTER quand vous etes pret...")
+    input("  Appuyez sur Entree lorsque vous etes pret...")
     print()
 
     cmd = [
@@ -151,7 +153,7 @@ def calibrate_follower():
 
     try:
         subprocess.run(cmd, check=True)
-        print("\n  Calibration du follower terminee !")
+        print("\n  Calibration du follower terminee.")
         sync_calibration_to_configs("follower")
     except subprocess.CalledProcessError:
         print("\n  Erreur pendant la calibration du follower.")
@@ -177,12 +179,12 @@ def main():
 
     print()
     print("=" * 60)
-    print("  Calibration terminee !")
+    print("  Calibration terminee.")
     if do_follower:
-        print("  Etape suivante : verifier la calibration moteur :")
+        print("  Etape suivante : verifier la calibration moteur avec")
         print("    python scripts/check_motor_calibration.py")
     else:
-        print("  Vous pouvez maintenant teleoperer :")
+        print("  Vous pouvez maintenant teleoperer avec")
         print("    python scripts/teleoperate.py")
     print("=" * 60)
 

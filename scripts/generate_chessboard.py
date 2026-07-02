@@ -2,18 +2,21 @@
 """
 generate_chessboard.py - Genere un damier de calibration imprimable en PNG.
 
-Le PNG est genere a haute resolution (300 DPI par defaut) avec la metadonnee
-DPI embarquee, pour que l'imprimante respecte les dimensions physiques quand
-on imprime a 100 % (sans mise a l'echelle).
+Le PNG est produit a haute resolution (300 DPI par defaut) avec la metadonnee
+DPI embarquee, afin que l'imprimante respecte les dimensions physiques lors
+d'une impression a 100 % (sans mise a l'echelle).
 
-Pourquoi PNG plutot que SVG : les imprimantes/visionneuses interpretent les
-SVG de facon parfois aleatoire ; le PNG en haute resolution est plus
-predictible. Pour verifier que l'impression est correcte, mesurer au pied a
-coulisse un carre apres impression.
+Le format PNG est prefere au SVG : les imprimantes et visionneuses
+interpretent les SVG de maniere inegale, alors qu'un PNG haute resolution est
+rendu de facon reproductible. Apres impression, il est recommande de mesurer
+un carre au pied a coulisse pour verifier les dimensions.
 
-Convention damier : asymetrique (cols != rows), pour eviter l'ambiguite a 4
-plis de la detection OpenCV sur un damier carre. Recommande : 9 colonnes x 6
-lignes de coins internes, comme la plupart des tutoriels de calibration.
+Convention du damier : asymetrique (cols != rows), afin d'eviter l'ambiguite
+de detection a quatre orientations d'OpenCV sur un damier carre. Valeur
+recommandee : 9 colonnes x 6 lignes de coins internes.
+
+Entree  : parametres de dimension via les options en ligne de commande.
+Sortie  : un fichier PNG ecrit dans le repertoire de sortie choisi.
 
 Usage :
     python scripts/generate_chessboard.py
@@ -74,13 +77,14 @@ def main():
                         help="Marge blanche autour du damier (defaut: 10 mm)")
     parser.add_argument("--dpi", type=int, default=300,
                         help="Resolution d'impression (defaut: 300)")
-    parser.add_argument("--output-dir", type=str, default="outputs/chessboards")
+    parser.add_argument("--output-dir", type=str, default="outputs/chessboards",
+                        help="Repertoire de sortie du PNG (defaut: outputs/chessboards)")
     args = parser.parse_args()
 
     if args.cols == args.rows:
-        print(f"ATTENTION : damier symetrique {args.cols}x{args.rows}. OpenCV a une")
-        print(f"ambiguite de detection a 4 plis dans ce cas. Utilise une dimension")
-        print(f"paire et l'autre impaire (ex: 9x6) pour eviter ce probleme.")
+        print(f"Attention : damier symetrique {args.cols}x{args.rows}. OpenCV presente une")
+        print(f"ambiguite de detection a quatre orientations dans ce cas. Choisir une")
+        print(f"dimension paire et l'autre impaire (ex : 9x6) pour eviter ce probleme.")
         print()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -102,15 +106,15 @@ def main():
     print(f"  Resolution     : {args.dpi} DPI")
     print()
     print("Impression :")
-    print("  1. Ouvrir le PNG dans Preview (macOS).")
-    print("  2. Fichier > Imprimer (Cmd+P).")
-    print("  3. Bien decocher 'Echelle pour adapter a la page' /")
-    print("     'Scale to fit'. Choisir taille reelle / 100 %.")
-    print("  4. Apres impression, MESURER un carre au pied a coulisse :")
+    print("  1. Ouvrir le PNG dans une visionneuse d'images.")
+    print("  2. Lancer l'impression.")
+    print("  3. Decocher l'option de mise a l'echelle ('Echelle pour adapter")
+    print("     a la page' / 'Scale to fit') et choisir la taille reelle (100 %).")
+    print("  4. Apres impression, mesurer un carre au pied a coulisse :")
     print(f"     il doit faire {args.square_mm:g} mm a moins de 0.1 mm pres.")
-    print("  5. Si la mesure est differente, la passer en --square-size lors")
-    print("     de la calibration extrinseque (la calibration intrinseque a")
-    print("     deja ete faite avec ton damier 7x7 actuel, elle reste valide).")
+    print("  5. Si la mesure differe, reporter la valeur mesuree via l'option")
+    print("     --square-size lors de la calibration extrinseque ; la calibration")
+    print("     intrinseque reste valide independamment de cette dimension.")
 
 
 if __name__ == "__main__":

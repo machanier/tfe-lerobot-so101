@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """
-downscale_dataset.py – Crée une COPIE basse-résolution d'un dataset LeRobot.
+downscale_dataset.py – Crée une copie basse-résolution d'un dataset LeRobot.
 
-Le dataset source reste intact. Le nouveau dataset (mêmes états/actions, mêmes
-épisodes) a juste des images redimensionnées -> inférence plus rapide à l'éval.
+Le dataset source reste intact. Le dataset produit conserve les mêmes états,
+actions et épisodes ; seules les images sont redimensionnées, ce qui accélère
+l'inférence lors de l'évaluation.
 
-Usage:
+Entrées : un dataset LeRobot identifié par son repo_id source.
+Sorties : un nouveau dataset LeRobot basse-résolution, créé localement puis,
+en option, poussé sur le Hub.
+
+Usage :
     python scripts/downscale_dataset.py --src maxence/so101_orange_cube \
         --dst Machanier/so101_orange_cube_lowres --width 320 --height 240
-    # test rapide : --max-episodes 2   |   envoi Hub : --push
+
+    Options utiles : --max-episodes 2 pour un test rapide, --push pour
+    envoyer le résultat sur le Hub.
 """
 
 import argparse
@@ -19,18 +26,20 @@ import pathlib
 import cv2
 import numpy as np
 
-# Features ajoutées automatiquement par LeRobot (à ne PAS passer à create()).
+# Features ajoutées automatiquement par LeRobot et à ne pas passer à create().
 _AUTO = {"timestamp", "frame_index", "episode_index", "index", "task_index"}
 
 
 def main():
-    p = argparse.ArgumentParser(description="Copie basse-resolution d'un dataset LeRobot")
-    p.add_argument("--src", required=True, help="repo_id source")
-    p.add_argument("--dst", required=True, help="repo_id destination")
-    p.add_argument("--width", type=int, default=320)
-    p.add_argument("--height", type=int, default=240)
-    p.add_argument("--max-episodes", type=int, default=None, help="limiter (pour tester)")
-    p.add_argument("--push", action="store_true", help="pousser sur le Hub a la fin")
+    p = argparse.ArgumentParser(description="Copie basse-résolution d'un dataset LeRobot")
+    p.add_argument("--src", required=True, help="repo_id du dataset source")
+    p.add_argument("--dst", required=True, help="repo_id du dataset de destination")
+    p.add_argument("--width", type=int, default=320, help="largeur des images en pixels (défaut : 320)")
+    p.add_argument("--height", type=int, default=240, help="hauteur des images en pixels (défaut : 240)")
+    p.add_argument("--max-episodes", type=int, default=None,
+                   help="nombre maximal d'épisodes à traiter (défaut : tous)")
+    p.add_argument("--push", action="store_true",
+                   help="pousser le dataset sur le Hub à la fin (défaut : non)")
     args = p.parse_args()
 
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -39,8 +48,8 @@ def main():
     fps = src.meta.fps
     robot_type = src.meta.robot_type
 
-    # Features de sortie = celles du source, MAIS shapes images redimensionnees,
-    # et sans les features auto (LeRobot les rajoute).
+    # Features de sortie : celles de la source, avec les shapes des images
+    # redimensionnées et sans les features automatiques (LeRobot les rajoute).
     src_feats = src.meta.info["features"]
     img_keys = [k for k, v in src_feats.items() if v["dtype"] in ("video", "image")]
     features = {}
@@ -57,13 +66,13 @@ def main():
         robot_type=robot_type, use_videos=True,
     )
 
-    # Bornes (frame de debut/fin) par episode, depuis les metadonnees source.
+    # Bornes (frame de début et de fin) par épisode, depuis les métadonnées source.
     root = pathlib.Path(src.root)
     files = sorted(glob.glob(str(root / "meta" / "episodes" / "**" / "*.parquet"), recursive=True))
     import pandas as pd
     ep = pd.concat([pd.read_parquet(f) for f in files]).set_index("episode_index").sort_index()
     n_ep = len(ep) if args.max_episodes is None else min(args.max_episodes, len(ep))
-    print(f"Source: {args.src} ({len(ep)} episodes) -> {args.dst} en {args.width}x{args.height}")
+    print(f"Source : {args.src} ({len(ep)} épisodes) -> {args.dst} en {args.width}x{args.height}")
 
     for e in range(n_ep):
         fr = int(ep.loc[e, "dataset_from_index"])
@@ -84,10 +93,10 @@ def main():
             print(f"  episode {e + 1}/{n_ep}")
 
     dst.finalize()
-    print(f"OK -> dataset basse-res cree localement : {args.dst}")
+    print(f"OK -> dataset basse-résolution créé localement : {args.dst}")
     if args.push:
         dst.push_to_hub()
-        print(f"Pousse sur le Hub : {args.dst}")
+        print(f"Poussé sur le Hub : {args.dst}")
 
 
 if __name__ == "__main__":

@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 """
-calibrate_intrinsic.py – Calibration intrinseque d'une camera
+calibrate_intrinsic.py – Calibration intrinseque d'une camera.
 
-Usage:
-    python scripts/calibrate_intrinsic.py --index 0 --rows 6 --cols 9 --square-size 25
+Determine les parametres internes de la camera a partir de poses d'un damier :
+- Matrice de la camera (focale fx, fy et point principal cx, cy).
+- Coefficients de distorsion (k1, k2, p1, p2, k3).
 
-La calibration intrinseque determine les parametres internes de la camera :
-- Matrice de la camera (focale fx, fy et point principal cx, cy)
-- Coefficients de distorsion (k1, k2, p1, p2, k3)
+Usage :
+    python scripts/calibrate_intrinsic.py --index 0 --rows 7 --cols 7 --square-size 22.19
 
 Prerequis :
-    Imprimer un damier (checkerboard) de calibration.
-    Par defaut : 9x6 coins internes, carres de 25mm.
-    Tu peux en generer un avec : python scripts/calibrate_intrinsic.py --generate
+    Imprimer un damier (checkerboard) de calibration. Une image peut etre generee
+    avec l'option --generate.
 
 Procedure :
-    1. Lance le script
-    2. Presente le damier devant la camera sous differents angles
-    3. Appuie sur 'c' pour capturer une pose (15-20 poses recommandees)
-    4. Appuie sur 'q' pour lancer la calibration
-    5. Le resultat est sauvegarde dans configs/calibration_cam_<index>.json
+    1. Lancer le script.
+    2. Presenter le damier devant la camera sous differents angles.
+    3. Toucher 'c' pour capturer une pose (15 a 20 poses recommandees).
+    4. Toucher 'q' pour lancer la calibration.
+
+Sortie :
+    Fichier JSON de calibration (par defaut configs/calibration_cam_<index>.json)
+    contenant la matrice camera, les coefficients de distorsion et l'erreur de
+    reprojection.
 """
 
 import argparse
@@ -47,8 +50,8 @@ def generate_checkerboard(rows, cols, square_size_px=80, output_path="configs/ch
 
     cv2.imwrite(output_path, img)
     print(f"Damier ({cols + 1}x{rows + 1} cases, {cols}x{rows} coins internes) sauvegarde: {output_path}")
-    print(f"Imprime-le a l'echelle reelle sur une feuille A4.")
-    print(f"Mesure la taille reelle d'un carre en mm et utilise --square-size lors de la calibration.")
+    print("Imprimer a l'echelle reelle sur une feuille A4.")
+    print("Mesurer la taille reelle d'un carre en mm et la fournir via --square-size lors de la calibration.")
 
 
 def calibrate(camera_index, rows, cols, square_size_mm, width, height, save_images=True):

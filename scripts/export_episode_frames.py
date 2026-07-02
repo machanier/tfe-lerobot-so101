@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-export_episode_frames.py – Exporter des images d'un episode LeRobot en PNG
+export_episode_frames.py -- Exporte les images d'un episode LeRobot au format PNG.
 
-Utile pour choisir une frame a mettre dans le memoire (ex. prise TPU).
+Extrait des frames echantillonnees regulierement sur toute la duree d'un
+episode, par exemple pour illustrer une sequence dans un document.
 
-Usage:
+Usage :
     python scripts/export_episode_frames.py --episode 16
     python scripts/export_episode_frames.py --episode 16 --camera wrist --num 20
     python scripts/export_episode_frames.py --episode 7 --repo-id maxence/so101_test
 
-Les PNG sont ecrits dans outputs/il_frames/ep<NN>/ (front + wrist par defaut),
-echantillonnes regulierement sur toute la duree de l'episode.
+Entree  : dataset LeRobot identifie par --repo-id (cache Hugging Face local).
+Sortie  : fichiers PNG ecrits dans outputs/il_frames/ep<NN>/ (cameras front et
+          wrist par defaut).
 """
 
 import argparse
@@ -35,18 +37,21 @@ def _dataset_root(repo_id):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Exporter des frames d'un episode LeRobot")
-    parser.add_argument("--episode", type=int, required=True, help="Index de l'episode")
-    parser.add_argument("--repo-id", type=str, default=IL_REPO_ID)
+    parser = argparse.ArgumentParser(description="Exporte les frames d'un episode LeRobot au format PNG.")
+    parser.add_argument("--episode", type=int, required=True,
+                        help="Index de l'episode a exporter.")
+    parser.add_argument("--repo-id", type=str, default=IL_REPO_ID,
+                        help="Identifiant du dataset LeRobot (defaut : valeur IL_REPO_ID de la configuration).")
     parser.add_argument("--camera", type=str, default="both",
-                        choices=["front", "wrist", "both"])
+                        choices=["front", "wrist", "both"],
+                        help="Camera(s) a exporter (defaut : both).")
     parser.add_argument("--num", type=int, default=12,
-                        help="Nombre de frames echantillonnees (defaut: 12)")
+                        help="Nombre de frames echantillonnees (defaut : 12).")
     parser.add_argument("--out", type=str, default=None,
-                        help="Dossier de sortie (defaut: outputs/il_frames/ep<NN>)")
+                        help="Dossier de sortie (defaut : outputs/il_frames/ep<NN>).")
     args = parser.parse_args()
 
-    # Bornes globales de l'episode (depuis meta/episodes)
+    # Bornes globales de l'episode, lues depuis meta/episodes.
     root = _dataset_root(args.repo_id)
     files = sorted(glob.glob(str(root / "meta" / "episodes" / "**" / "*.parquet"), recursive=True))
     ep_meta = pd.concat([pd.read_parquet(f) for f in files]).set_index("episode_index").sort_index()
@@ -63,7 +68,7 @@ def main():
     out_dir = pathlib.Path(args.out) if args.out else pathlib.Path("outputs/il_frames") / f"ep{args.episode:02d}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Import lourd (lerobot/torch) seulement maintenant
+    # Import differe des dependances lourdes (lerobot, torch).
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     ds = LeRobotDataset(args.repo_id)
 
