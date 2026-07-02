@@ -1,0 +1,11 @@
+policy,probe,timestamp,objet,position,trial,success,stade_atteint,score_partiel,n_reapproches,duration_s,n_frames,loop_hz_moyen,cam2_fail_count,cam2_frozen,error,mode_echec,notes
+colab_model_lowres,0,2026-06-27T19:02:22,orange_cube,loin,1,0,grasp,0.5,7,81.7,1793,24.1,0,0,,,"I8 sur le 1e saisi, puis I2 - perdue ensuite"
+colab_model_lowres,0,2026-06-27T19:05:34,orange_cube,loin,2,0,grasp,0.5,8,81.2,1793,24.4,0,0,,I8,"I8 sur 1e tentative, puis I2 - perdue ensuite"
+colab_model_lowres,0,2026-06-27T19:44:10,orange_cube,loin,3,1,place,1.0,0,39.7,590,22.7,0,0,,,
+colab_model_lowres,0,2026-06-27T19:45:07,orange_cube,loin,4,0,transport,0.5,0,81.3,1793,24.0,0,0,,I5,revient à home après avoir saisi l'objet
+colab_model_lowres,0,2026-06-27T19:47:13,orange_cube,loin,5,1,place,1.0,0,42.0,690,23.7,0,0,,,
+colab_model_lowres,0,2026-06-27T19:49:25,orange_cube,loin,6,1,place,1.0,0,44.4,755,23.5,0,0,,,
+colab_model_lowres,0,2026-06-27T19:16:52,orange_cube,loin,7,1,place,1.0,0,37.5,557,22.6,0,0,,,
+colab_model_lowres,0,2026-06-27T19:17:46,orange_cube,loin,8,0,contact,0.0,3,81.1,1794,24.9,0,0,,I8,"après ces tentatives est revenue à home direct"
+colab_model_lowres,0,2026-06-27T19:20:01,orange_cube,loin,9,1,place,1.0,2,55.5,1069,24.3,0,0,,,
+colab_model_lowres,0,2026-06-27T19:21:26,orange_cube,loin,10,1,place,1.0,0,42.7,705,23.4,0,0,,,

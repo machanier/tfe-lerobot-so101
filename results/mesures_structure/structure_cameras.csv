@@ -1,0 +1,9 @@
+Camera,Role,fx (px),fy (px),HFOV (deg),VFOV (deg),Erreur (px),Captures
+cam_0,stereo gauche,1225.9,1225.1,76.1,47.6,0.1947,41
+cam_1,stereo droite,1212.9,1212.7,76.7,48,0.1669,41
+cam_2,eye-in-hand,1203.1,1203.8,77.2,48.3,0.1377,43
+Parametres stereo (moyenne cam_0 + cam_1) :,,,,,,,
+  fx moyen = 1219.4 px,,,,,,,
+  fy moyen = 1218.9 px,,,,,,,
+  HFOV = 76.4 deg,,,,,,,
+  VFOV = 47.8 deg,,,,,,,

@@ -1,0 +1,11 @@
+policy,probe,timestamp,objet,position,trial,success,stade_atteint,score_partiel,n_reapproches,duration_s,n_frames,loop_hz_moyen,cam2_fail_count,cam2_frozen,error,mode_echec,notes
+colab_model_lowres,0,2026-06-27T18:04:31,orange_cube,proche,1,0,grasp,0.5,10,81.5,1793,24.6,0,0,,I2,grasp raté juste devant l'objet
+colab_model_lowres,0,2026-06-27T18:07:35,orange_cube,proche,2,1,place,1.0,0,40.1,628,23.0,0,0,,,
+colab_model_lowres,0,2026-06-27T18:09:10,orange_cube,proche,3,1,place,1.0,0,81.7,1792,24.3,0,0,,,"oubli de faire flèche de droite"
+colab_model_lowres,0,2026-06-27T18:11:36,orange_cube,proche,4,1,place,1.0,0,38.4,586,23.0,0,0,,,
+colab_model_lowres,0,2026-06-27T18:12:39,orange_cube,proche,5,1,place,1.0,2,59.2,1173,24.5,0,0,,,
+colab_model_lowres,0,2026-06-27T18:14:01,orange_cube,proche,6,0,grasp,0.5,0,40.6,646,22.8,0,0,,I8,"saisi sur tranche, envoyé hors de portée lors ddu grasping"
+colab_model_lowres,0,2026-06-27T18:17:11,orange_cube,proche,7,0,contact,0.0,10,81.2,1794,24.5,0,0,,I2,"mal placé, manqué 2 fois car objet à glisser"
+colab_model_lowres,0,2026-06-27T18:19:33,orange_cube,proche,8,1,place,1.0,2,49.4,897,23.1,0,0,,,
+colab_model_lowres,0,2026-06-27T18:20:32,orange_cube,proche,9,1,place,1.0,0,36.5,532,23.1,0,0,,,
+colab_model_lowres,0,2026-06-27T18:21:18,orange_cube,proche,10,0,grasp,0.5,9,81.2,1794,24.3,0,0,,I8,"grasp mais échappé, puis I1 et I2 sur les autres tentatives"

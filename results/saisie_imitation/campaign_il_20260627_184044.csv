@@ -1,0 +1,11 @@
+policy,probe,timestamp,objet,position,trial,success,stade_atteint,score_partiel,n_reapproches,duration_s,n_frames,loop_hz_moyen,cam2_fail_count,cam2_frozen,error,mode_echec,notes
+colab_model_lowres,0,2026-06-27T18:40:44,orange_cube,mi,1,1,place,1.0,0,65.0,1335,24.7,0,0,,,"saisi sur un bord, plutôt chanceux"
+colab_model_lowres,0,2026-06-27T18:43:38,orange_cube,mi,2,1,place,1.0,0,36.4,528,21.9,0,0,,,
+colab_model_lowres,0,2026-06-27T18:44:29,orange_cube,mi,3,1,place,1.0,0,37.6,563,22.1,0,0,,,
+colab_model_lowres,0,2026-06-27T18:45:36,orange_cube,mi,4,1,place,1.0,0,38.7,595,22.6,0,0,,,
+colab_model_lowres,0,2026-06-27T18:46:28,orange_cube,mi,5,0,grasp,0.5,7,81.5,1794,24.8,0,0,,I8,
+colab_model_lowres,0,2026-06-27T18:48:46,orange_cube,mi,6,1,place,1.0,3,65.6,1354,24.5,0,0,,I8,"oubli de faire flèche de droite"
+colab_model_lowres,0,2026-06-27T18:50:28,orange_cube,mi,7,1,place,1.0,1,53.0,1002,24.2,0,0,,I8,
+colab_model_lowres,0,2026-06-27T18:51:30,orange_cube,mi,8,1,place,1.0,0,40.5,644,23.1,0,0,,,
+colab_model_lowres,0,2026-06-27T18:52:18,orange_cube,mi,9,1,place,1.0,0,36.3,523,22.7,0,0,,,
+colab_model_lowres,0,2026-06-27T18:53:05,orange_cube,mi,10,1,place,1.0,0,37.6,562,22.1,0,0,,,

@@ -1,0 +1,6 @@
+policy,probe,timestamp,objet,position,trial,success,stade_atteint,score_partiel,n_reapproches,duration_s,n_frames,loop_hz_moyen,cam2_fail_count,cam2_frozen,error,mode_echec,notes
+colab_model_lowres,1,2026-06-28T11:37:35,purple_cylinder,proche,1,0,aucun,0.0,0,81.6,1794,25.0,0,0,,I7,"objet autre que cube orange, tente de se levé mais c'est tout, oscille et mouvement ambiguë, ce sait pas quoi faire"
+colab_model_lowres,1,2026-06-28T11:54:11,purple_cylinder,proche,2,0,aucun,0.0,0,81.4,1793,23.9,0,0,,I7,"a peine bougé de sa position home"
+colab_model_lowres,1,2026-06-28T11:57:57,purple_cylinder,proche,3,0,aucun,0.0,0,81.0,1794,24.5,0,0,,I7,"tente de se lever, mais reste sur home"
+colab_model_lowres,1,2026-06-28T12:00:30,purple_cylinder,proche,4,0,aucun,0.0,0,81.3,1793,24.2,0,0,,I7,"reste sur home"
+colab_model_lowres,1,2026-06-28T12:02:10,purple_cylinder,proche,5,0,aucun,0.0,0,81.4,1793,24.6,0,0,,I7,"tente se lever mais reste sur home"
