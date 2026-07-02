@@ -1,4 +1,3 @@
-REMPLI AUTOMATIQUEMENT par le script (donnees auto + tes reponses aux questions de fin d'essai). Garde l'Excel FERME pendant un run. Tu peux corriger une cellule JAUNE a la main. La Synthese se met a jour seule.,,,,,,,,,,,,,,,,
 objet,detecteur,timestamp,position,trial,success,n_attempts,duration_s,grasp_pose_error_mm,cam2_correction_mm,last_gripper_pct,last_margin_pct,error,orientation,depose_boite,mode_echec,notes
 orange_cube,hsv,2026-06-27T11:27:00,proche,1,1,1,49.03,0.1284722805578787,1.72901474034204,10.79622132253711,5.796221322537113,,,oui,,
 orange_cube,hsv,2026-06-27T12:25:45,proche,1,1,1,47.72,0.2113945600863577,8.708076397024547,11.53846153846154,6.538461538461538,,,oui,,
