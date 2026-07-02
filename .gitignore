@@ -52,6 +52,14 @@ outputs/
 *.backup
 *_TEST.json
 
+# ============================================
+# Exceptions : dossiers d'artefacts PUBLIES (versionnes malgre les regles ci-dessus)
+# ============================================
+!results/
+!results/**
+!hardware/
+!hardware/**
+
 # PDF d'articles exportes par Zotero (lourds, sous copyright).
 # Le fichier .bib lui-meme est versionne.
 docs/references/*/files/
