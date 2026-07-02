@@ -129,8 +129,11 @@ Le projet compare deux façons de résoudre la même tâche :
   Procédure détaillée dans [`docs/IL_ACT_RUNBOOK.md`](docs/IL_ACT_RUNBOOK.md) et,
   pour l'entraînement sur GPU cloud, [`docs/IL_COLAB.md`](docs/IL_COLAB.md).
 
-<!-- HF : ajouter ici les liens vers le dataset et le modèle publiés sur le Hub -->
-_Datasets et modèles entraînés : liens Hugging Face à venir._
+Datasets et modèles entraînés, publics sur le Hugging Face Hub :
+- Dataset : [`Machanier/so101_orange_cube`](https://huggingface.co/datasets/Machanier/so101_orange_cube)
+  (variante basse résolution : [`_lowres`](https://huggingface.co/datasets/Machanier/so101_orange_cube_lowres))
+- Modèle ACT : [`Machanier/act_so101_orange_cube`](https://huggingface.co/Machanier/act_so101_orange_cube)
+  (variante basse résolution : [`_lowres`](https://huggingface.co/Machanier/act_so101_orange_cube_lowres))
 
 ## Structure du dépôt
 
