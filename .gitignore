@@ -28,6 +28,30 @@ outputs/
 *.pth
 *.ckpt
 
+# ============================================
+# Images / videos — bloques POUR LE MOMENT.
+# Les medias curated (schemas, demos, logos) seront ajoutes a la fin,
+# une fois le depot stabilise (via `git add -f` au cas par cas).
+# ============================================
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.webp
+*.svg
+*.mov
+*.mkv
+*.webm
+
+# ============================================
+# Fichiers de travail a ne pas publier
+# ============================================
+*.xlsx
+*.xls
+*.backup
+*_TEST.json
+
 # PDF d'articles exportes par Zotero (lourds, sous copyright).
 # Le fichier .bib lui-meme est versionne.
 docs/references/*/files/

@@ -1,7 +1,7 @@
 # Saisie d'objets assistée par vision — SO-101
 
-Ce dépôt regroupe le code que j'ai développé pour mon **travail de fin d'études** :
-une **surcouche logicielle de perception → planification → contrôle** au-dessus de
+Ce dépôt regroupe le code que j'ai développé pour mon **travail de fin d'études
+(TFE)** : une **surcouche logicielle de perception → planification → contrôle** au-dessus de
 [LeRobot](https://github.com/huggingface/lerobot), pour faire **saisir des objets**
 à un bras robotisé SO-101.
 
@@ -16,7 +16,8 @@ et ajoute par-dessus la couche « **voir → décider où saisir → exécuter**
 |---|---|
 | **Étudiant** | Maxence Chanier |
 | **Encadrant** | Guido Bologna |
-| **Formation** | Bachelor en informatique — Université de Genève (2025-2026) |
+| **Cours** | Travail de fin d'études — 1MEMINFO1 (Université de Genève) |
+| **Année académique** | 2025-2026 |
 | **Robot** | SO-101 (servos Feetech STS3215, 6 DOF) |
 | **Caméras** | 3 × USB 1920×1080 — `cam_0`/`cam_1` en stéréo *eye-to-hand* + `cam_2` *eye-in-hand* |
 | **Machine** | MacBook Pro M4 (Apple Silicon, macOS) |
@@ -32,27 +33,23 @@ _Démonstration visuelle à venir._
 choisit un point et un angle de prise adaptés à sa géométrie, puis exécute la saisie
 et la dépose — avec un recalage en boucle fermée juste avant de refermer la pince.
 
-- **Perception stéréo multi-caméras** — détection 2D par couleur (HSV) ou par
-  détecteur *open-vocabulary* Hugging Face, puis triangulation stéréo pour la
-  position 3D dans le repère base du robot.
-- **Planification de prise adaptative** — plusieurs angles d'attaque candidats
-  (top-down, diagonale, face avant) proposés selon la **zone** (distance + hauteur
-  de l'objet) ; on garde le premier **atteignable** par la cinématique inverse.
-  Pour un objet allongé, l'approche s'aligne sur le grand axe.
-- **Raffinement en boucle fermée** — juste au-dessus de l'objet, la caméra
-  *eye-in-hand* (`cam_2`) recale la position et réaligne les mâchoires, sous
-  garde-fous.
-- **Saisie asservie au couple** — fermeture jusqu'à un seuil de couple,
-  vérification après la levée, et nouvel essai si la pince s'est refermée à vide.
-- **Deuxième méthode — imitation learning** — apprentissage de la saisie par
-  *policy* ACT via l'écosystème LeRobot, en parallèle de la pipeline géométrique
-  (voir [Deux approches](#deux-approches)).
+- Localisation 3D par **vision stéréo multi-caméras** (couleur HSV ou détecteur
+  *open-vocabulary* Hugging Face).
+- Choix **automatique du point et de l'angle de prise** selon la géométrie de
+  l'objet et son accessibilité par le bras.
+- **Recalage en boucle fermée** avec la caméra embarquée avant de refermer la
+  pince, puis **saisie asservie au couple** (nouvel essai si la pince se ferme à vide).
+- **Deux méthodes comparées** : pipeline géométrique et *imitation learning* (ACT) —
+  voir [Deux approches](#deux-approches).
+
+Le détail pas à pas de la chaîne est décrit dans
+[Comment marche la saisie](#comment-marche-la-saisie).
 
 ## État et limites connues
 
-La saisie est **fiable sur un objet isolé** : un cube et un cylindre (debout ou
-couché dans les deux orientations) sont saisis et déposés de façon répétée,
-souvent du premier coup. Restent ouverts :
+La saisie est **fiable sur un objet isolé** de géométrie simple. La campagne de
+mesures a porté sur un cube et un cylindre (dans différentes orientations), saisis
+et déposés de façon répétée, souvent du premier coup. Restent ouverts :
 
 - les **scènes encombrées et l'occlusion** (sélection active de point de vue,
   évitement d'obstacles) — c'est la direction encore en cours ;
@@ -76,25 +73,26 @@ source venv/bin/activate
 ```bash
 source venv/bin/activate
 
-# Vérifier la calibration et les modules de perception
+# Vérifier toute la calibration (moteurs, caméras, hand-eye) + self-tests cinématiques
 python scripts/check_calibration.py
 
 # Téléopérer / prévisualiser une caméra
 python scripts/teleoperate.py
 python scripts/preview_camera.py --camera 0
 
-# Perception : calibrer les couleurs (une fois, sous l'éclairage final) puis lancer
+# Perception seule : calibrer les couleurs (une fois, sous l'éclairage final) puis lancer
 python scripts/calibrate_hsv.py
-python scripts/run_perception.py
+python scripts/run_perception.py                                  # live, 3 caméras
+python scripts/run_perception.py --mode replay --replay <dataset>  # sans robot, sur données enregistrées
 
 # Pick-and-place complet (perception → saisie → dépose)
-python scripts/pick_and_place.py --target orange_cube
+python scripts/pick_and_place.py --target orange_cube --detector hsv
+python scripts/pick_and_place.py --target orange_cube --detector hf   # détecteur open-vocabulary
 ```
 
 Par défaut, `pick_and_place.py` enregistre des **snapshots de diagnostic** (vues des
 caméras au moment de la prise) dans `outputs/perception/`. L'option `--display` ouvre
-en plus une fenêtre temps réel, mais elle sollicite le hub USB en continu et peut
-faire **décrocher `cam_2`** ; `--no-snapshots` coupe la sauvegarde.
+en plus une fenêtre de suivi en temps réel ; `--no-snapshots` coupe la sauvegarde.
 
 ## Comment marche la saisie
 
@@ -167,6 +165,12 @@ _Le PDF sera ajouté ici une fois le mémoire finalisé._
 - [Documentation LeRobot SO-101](https://huggingface.co/docs/lerobot/so101)
 - [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) — dépôt matériel
   officiel du bras (source de l'URDF).
+
+## Assistance au développement
+
+Le code et la documentation ont été élaborés avec l'aide d'un assistant IA
+(**Claude**, via Claude Code). La conception, les choix techniques, la mise au
+point sur le robot et l'ensemble des décisions relèvent de l'auteur.
 
 ## Licence
 
