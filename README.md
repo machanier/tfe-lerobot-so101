@@ -16,7 +16,7 @@ et ajoute par-dessus la couche « **voir → décider où saisir → exécuter**
 |---|---|
 | **Étudiant** | Maxence Chanier |
 | **Encadrant** | Guido Bologna |
-| **Cours** | Travail de fin d'études — 1MEMINFO1 (Université de Genève) |
+| **Cours** | Travail de fin d'études en informatique (Université de Genève) |
 | **Année académique** | 2025-2026 |
 | **Robot** | SO-101 (servos Feetech STS3215, 6 DOF) |
 | **Caméras** | 3 × USB 1920×1080 — `cam_0`/`cam_1` en stéréo *eye-to-hand* + `cam_2` *eye-in-hand* |
@@ -47,9 +47,11 @@ Le détail pas à pas de la chaîne est décrit dans
 
 ## État et limites connues
 
-La saisie est **fiable sur un objet isolé** de géométrie simple. La campagne de
-mesures a porté sur un cube et un cylindre (dans différentes orientations), saisis
-et déposés de façon répétée, souvent du premier coup. Restent ouverts :
+La saisie est **fiable sur un objet isolé** de géométrie simple. Elle a été testée sur
+plusieurs formes — cube, cylindre, pavé rectangulaire, prisme triangulaire, balle et
+Rubik's Cube — saisies et déposées de façon répétée, souvent du premier coup (les
+mesures chiffrées portent sur le cube et le cylindre ; le Rubik's Cube, multicolore,
+n'est détecté qu'avec le détecteur *open-vocabulary* HF). Restent ouverts :
 
 - les **scènes encombrées et l'occlusion** (sélection active de point de vue,
   évitement d'obstacles) — c'est la direction encore en cours ;
@@ -157,6 +159,9 @@ Repère de base et procédure de mesure : [`docs/REPERE_BASE.md`](docs/REPERE_BA
 Ce dépôt accompagne mon mémoire de TFE, qui détaille la démarche, les choix de
 conception et l'évaluation. <!-- MÉMOIRE : ajouter le PDF final dans docs/ et le lier ici -->
 _Le PDF sera ajouté ici une fois le mémoire finalisé._
+
+Le **cahier des charges** (sujet et objectifs officiels du TFE) :
+[docs/cahier_des_charges.pdf](docs/cahier_des_charges.pdf).
 
 ## Ressources
 
