@@ -1,16 +1,16 @@
 # Saisie d'objets assistée par vision — SO-101
 
 Ce dépôt regroupe le code que j'ai développé pour mon **travail de fin d'études
-(TFE)** : une **surcouche logicielle de perception → planification → contrôle** au-dessus de
-[LeRobot](https://github.com/huggingface/lerobot), pour faire **saisir des objets**
-à un bras robotisé SO-101.
+(TFE)** : une **pipeline modulaire complète de perception → planification → contrôle**,
+« du pixel à la prise », qui fait **saisir des objets** à un bras robotisé SO-101,
+bâtie au-dessus de [LeRobot](https://github.com/huggingface/lerobot).
 
 Il ne remplace pas les ressources officielles. Pour **construire et câbler le robot**
 (pièces, impression 3D, montage, téléopération de base), voir
 [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) et la
 [documentation LeRobot SO-101](https://huggingface.co/docs/lerobot/so101). Ce dépôt
 part du principe que l'on dispose **déjà d'un SO-101 fonctionnel et téléopérable**,
-et ajoute par-dessus la couche « **voir → décider où saisir → exécuter** ».
+et met en œuvre par-dessus toute la chaîne « **voir → décider où saisir → exécuter** ».
 
 | | |
 |---|---|
@@ -18,7 +18,7 @@ et ajoute par-dessus la couche « **voir → décider où saisir → exécuter**
 | **Encadrant** | Guido Bologna |
 | **Cours** | Travail de fin d'études en informatique (Université de Genève) |
 | **Année académique** | 2025-2026 |
-| **Robot** | SO-101 (servos Feetech STS3215, 6 DOF) |
+| **Robot** | SO-101 — 6 servomoteurs Feetech STS3215 (5 articulations + pince), **sous-actionné à 5 DDL** |
 | **Caméras** | 3 × USB 1920×1080 — `cam_0`/`cam_1` en stéréo *eye-to-hand* + `cam_2` *eye-in-hand* |
 | **Machine** | MacBook Pro M4 (Apple Silicon, macOS) |
 
@@ -39,7 +39,7 @@ et la dépose — avec un recalage en boucle fermée juste avant de refermer la 
   l'objet et son accessibilité par le bras.
 - **Recalage en boucle fermée** avec la caméra embarquée avant de refermer la
   pince, puis **saisie asservie au couple** (nouvel essai si la pince se ferme à vide).
-- **Deux méthodes comparées** : pipeline géométrique et *imitation learning* (ACT) —
+- **Deux méthodes comparées** : pipeline modulaire et *imitation learning* (ACT) —
   voir [Deux approches](#deux-approches).
 
 Le détail pas à pas de la chaîne est décrit dans
@@ -121,9 +121,9 @@ La chaîne est orchestrée par [`src/pipeline.py`](src/pipeline.py) :
 
 Le projet compare deux façons de résoudre la même tâche :
 
-- **Pipeline géométrique** *(cœur de `src/`)* — perception explicite, planification
-  par règles, cinématique inverse, boucle fermée. Interprétable et sans données
-  d'entraînement.
+- **Pipeline modulaire** *(cœur de `src/`)* — perception explicite, planification
+  géométrique par règles, cinématique inverse, boucle fermée. Interprétable et sans
+  données d'entraînement.
 - **Imitation learning (ACT)** — la saisie est apprise à partir de démonstrations
   téléopérées, via la stack officielle LeRobot (`LeRobotDataset` + policy ACT).
   Procédure détaillée dans [`docs/IL_ACT_RUNBOOK.md`](docs/IL_ACT_RUNBOOK.md) et,
