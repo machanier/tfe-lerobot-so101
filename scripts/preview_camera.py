@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-preview_camera.py – Apercu temps reel d'une camera pour regler le cadrage
+preview_camera.py — aperçu temps réel d'une caméra pour régler le cadrage.
 
-Usage:
+Usage :
     python scripts/preview_camera.py
     python scripts/preview_camera.py --camera 1
     python scripts/preview_camera.py --width 1280 --height 720
 
-Touches (dans la fenetre video) :
+Touches (dans la fenêtre vidéo) :
     q : quitter
     s : sauvegarder l'image courante dans outputs/captured_images/
 """
@@ -22,14 +22,14 @@ from config import CAMERA_FPS, CAMERA_HEIGHT, CAMERA_INDEX, CAMERA_WIDTH
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Apercu temps reel d'une camera.")
-    parser.add_argument("--camera", type=int, default=CAMERA_INDEX, help="Index de la camera.")
-    parser.add_argument("--width", type=int, default=CAMERA_WIDTH, help="Largeur demandee.")
-    parser.add_argument("--height", type=int, default=CAMERA_HEIGHT, help="Hauteur demandee.")
-    parser.add_argument("--fps", type=int, default=CAMERA_FPS, help="FPS demandes.")
+    parser = argparse.ArgumentParser(description="Aperçu temps réel d'une caméra.")
+    parser.add_argument("--camera", type=int, default=CAMERA_INDEX, help="Index de la caméra.")
+    parser.add_argument("--width", type=int, default=CAMERA_WIDTH, help="Largeur demandée.")
+    parser.add_argument("--height", type=int, default=CAMERA_HEIGHT, help="Hauteur demandée.")
+    parser.add_argument("--fps", type=int, default=CAMERA_FPS, help="FPS demandés.")
     parser.add_argument(
         "--output-dir", type=str, default="outputs/captured_images",
-        help="Dossier ou sauvegarder une capture avec la touche 's'.",
+        help="Dossier où sauvegarder une capture avec la touche 's'.",
     )
     args = parser.parse_args()
 
@@ -37,8 +37,8 @@ def main():
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
-        print(f"Impossible d'ouvrir la camera {args.camera}.")
-        print("  Verifie l'autorisation camera dans macOS, ou essaie --camera 1 / --camera 2.")
+        print(f"Impossible d'ouvrir la caméra {args.camera}.")
+        print("  Vérifier l'autorisation caméra dans macOS, ou essayer --camera 1 / --camera 2.")
         return
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(args.width))
@@ -50,15 +50,15 @@ def main():
     actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
     window_name = f"Preview Camera {args.camera}"
-    print(f"Apercu camera {args.camera} demarre.")
-    print(f"  Resolution: {actual_w}x{actual_h} @ {actual_fps:.0f} FPS")
-    print("  Touches: 'q' pour quitter, 's' pour sauvegarder une image")
+    print(f"Aperçu caméra {args.camera} démarré.")
+    print(f"  Résolution : {actual_w}x{actual_h} @ {actual_fps:.0f} FPS")
+    print("  Touches : 'q' pour quitter, 's' pour sauvegarder une image")
 
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
-                print("Lecture de frame impossible, arret.")
+                print("Lecture de frame impossible, arrêt.")
                 break
 
             cv2.imshow(window_name, frame)
@@ -70,12 +70,12 @@ def main():
                 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                 path = os.path.join(args.output_dir, f"preview_cam_{args.camera}_{timestamp}.png")
                 cv2.imwrite(path, frame)
-                print(f"  Image sauvegardee: {path}")
+                print(f"  Image sauvegardée : {path}")
     finally:
         cap.release()
         cv2.destroyAllWindows()
 
-    print("Apercu camera arrete.")
+    print("Aperçu caméra arrêté.")
 
 
 if __name__ == "__main__":

@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """
-teleoperate.py – Teleoperation du SO-101 (leader -> follower)
+teleoperate.py — téléopération du SO-101 (le bras leader pilote le follower).
 
-Usage:
-    python scripts/teleoperate.py
+Usage :
+    python scripts/teleoperate.py     # arrêter avec Ctrl+C
 
-    Arreter avec Ctrl+C.
+Sert à vérifier que le leader, le follower et les deux caméras d'imitation
+(frontale + poignet) fonctionnent avant d'enregistrer un dataset. Le décor
+visible ici doit être celui de l'enregistrement (mêmes caméras, même cadrage).
 
-But : verifier que leader, follower ET les 2 cameras IL (front + wrist)
-fonctionnent, AVANT d'enregistrer un dataset. Le decor que tu vois ici doit
-etre celui de l'enregistrement (memes cameras, meme cadrage).
-
-Note:
-    Les ports USB changent a chaque branchement sur macOS !
-    Si ca ne marche pas : `lerobot-find-port`, puis corrige scripts/config.py.
+Note : sur macOS, les ports USB changent à chaque branchement. En cas de
+problème, lancer `lerobot-find-port` puis corriger scripts/config.py.
 """
 
 import subprocess
@@ -32,7 +29,7 @@ def main():
 
     if not follower_port or not leader_port:
         print("Ports USB introuvables (follower et/ou leader).")
-        print("  Le robot est-il branche en USB ET alimente sur secteur ?")
+        print("  Le robot est-il branché en USB et alimenté sur secteur ?")
         print("  Liste : ls /dev/tty.usbmodem*   ou   lerobot-find-port")
         sys.exit(1)
 
@@ -48,19 +45,19 @@ def main():
         "--display_data=true",
     ]
 
-    print("Lancement de la teleoperation SO-101 (2 cameras IL)...")
-    print(f"  Follower: {follower_port}")
-    print(f"  Leader:   {leader_port}")
-    print(f"  Cameras:  {il_cameras_flag()}")
-    print("  Arreter avec Ctrl+C\n")
+    print("Lancement de la téléopération SO-101 (2 caméras).")
+    print(f"  Follower : {follower_port}")
+    print(f"  Leader   : {leader_port}")
+    print(f"  Caméras  : {il_cameras_flag()}")
+    print("  Arrêter avec Ctrl+C\n")
 
     try:
         subprocess.run(cmd, check=True)
     except KeyboardInterrupt:
-        print("\nTeleoperation arretee.")
+        print("\nTéléopération arrêtée.")
     except FileNotFoundError:
-        print("Commande 'lerobot-teleoperate' non trouvee.")
-        print("  Verifie que le venv est active : source venv/bin/activate")
+        print("Commande 'lerobot-teleoperate' introuvable.")
+        print("  Vérifier que le venv est activé : source venv/bin/activate")
         sys.exit(1)
 
 
