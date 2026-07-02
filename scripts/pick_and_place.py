@@ -1,33 +1,33 @@
 #!/usr/bin/env python3
 """
-pick_and_place.py - Script CLI : le robot saisit un objet et le pose dans la boite.
+pick_and_place.py — saisie complète : le robot localise un objet, le saisit et le dépose.
 
-Usage :
+Point d'entrée en ligne de commande de la pipeline perception → planification →
+contrôle (implémentée dans src/pipeline.py).
+
+Exemples :
     python scripts/pick_and_place.py --target orange_cube
     python scripts/pick_and_place.py --target orange_cube --detector hf
-    python scripts/pick_and_place.py --target orange_cube --dry-run    # test sans envoyer aux moteurs
+    python scripts/pick_and_place.py --target orange_cube --dry-run   # calcul seul, sans bouger le robot
 
-Sequence executee :
-    1. Capture les 3 cameras (multi-camera synchronisee).
-    2. Detecte l'objet cible (HSV ou OWL-ViTv2).
-    3. Triangule sa position 3D dans le repere base du robot.
-    4. Planifie une saisie top-down (approche / saisie / retrait).
-    5. Resout l'IK pour les 3 poses + drop.
-    6. Genere une trajectoire articulaire lisse (quintique).
-    7. L'execute sur le bras follower via le bus Feetech.
+Étapes exécutées :
+    1. Capture synchronisée des trois caméras.
+    2. Détection 2D de l'objet cible (HSV ou détecteur open-vocabulary Hugging Face).
+    3. Triangulation stéréo de sa position 3D dans le repère base du robot.
+    4. Choix d'un angle de prise adapté à la géométrie et à l'accessibilité
+       (--top-down pour forcer une prise verticale).
+    5. Cinématique inverse des poses (approche, prise, retrait, dépose) et
+       génération d'une trajectoire articulaire lisse.
+    6. Exécution sur le bras, avec raffinement en boucle fermée par la caméra
+       embarquée juste avant la fermeture de la pince.
 
-PRECAUTIONS :
-    - Verifie que la BOITE DE DEPOSE est a sa position declaree dans
-      configs/scene.json (center_base_m).
-    - Verifie que la TABLE est degagee autour de la cible (V1 ne gere
-      pas l'evitement d'obstacles, viendra au Sprint 4).
-    - Premier essai : utilise --dry-run pour valider la chaine logique
-      sans bouger le robot.
+Avant un essai réel :
+    - vérifier que la boîte de dépose est à la position déclarée dans configs/scene.json ;
+    - dégager la table autour de la cible (l'évitement d'obstacles n'est pas géré) ;
+    - valider d'abord la chaîne avec --dry-run.
 """
 
 import argparse
-import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -39,215 +39,107 @@ from config import FOLLOWER_PORT  # noqa: E402
 from src.pipeline import PickAndPlacePipeline, PipelineConfig  # noqa: E402
 
 
-def apply_calib_profile(profile: str):
-    """USAGE EXCEPTIONNEL : ressort une calibration de backup/souvenir.
-
-    Le flux NORMAL n'utilise PAS ce flag : la calibration attitree est
-    directement dans configs/handeye_cam_*.json (= s1, la stereo conjointe B3b).
-    Ce flag sert seulement a re-tester ponctuellement une ancienne calibration
-    archivee dans configs/calibration_backups/<profile>/ (s2, legacy_separate).
-
-    ATTENTION : ce flag ECRASE configs/handeye_cam_*.json avec le backup choisi.
-    Pour revenir a la calibration attitree, relance avec --calib-profile s1.
-    """
-    backups = REPO / "configs" / "calibration_backups"
-    prof_dir = backups / profile
-    if not prof_dir.exists():
-        avail = [p.name for p in backups.glob("*") if p.is_dir()]
-        print(f"!! Backup de calibration '{profile}' introuvable dans {backups}")
-        print(f"   Backups disponibles : {avail}")
-        sys.exit(1)
-
-    cfg = REPO / "configs"
-    for fname in ("handeye_cam_0.json", "handeye_cam_1.json"):
-        src = prof_dir / fname
-        if src.exists():
-            shutil.copy(src, cfg / fname)
-
-    # Affiche les metriques du backup charge
-    meta_path = backups / "profiles_metadata.json"
-    info = ""
-    if meta_path.exists():
-        meta = json.load(open(meta_path)).get("profils", {}).get(profile, {})
-        if meta:
-            info = (f" (cam0={meta.get('cam0_residual_mm')}mm, "
-                    f"cam1={meta.get('cam1_residual_mm')}mm, "
-                    f"coherence={meta.get('coherence_stereo_mean_mm')}mm)")
-    print(f">> [BACKUP] calibration '{profile}' chargee dans configs/{info}")
-    print(f">> (flux normal = pas de flag, configs/ contient deja la calib attitree s1)")
-    print()
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Pick-and-place : le robot saisit un objet et le pose dans la boite.",
+        description="Saisie d'un objet et dépose dans la boîte.",
     )
     parser.add_argument("--target", type=str, default="orange_cube",
-                        help="Label de l'objet a saisir (doit etre dans hsv_specs.json ou hf_specs.json)")
+                        help="Label de l'objet à saisir (défini dans hsv_specs.json ou hf_specs.json).")
     parser.add_argument("--detector", choices=["hsv", "hf"], default="hsv",
-                        help="Detecteur. hsv = rapide deterministe. hf = OWL-ViTv2 robuste.")
+                        help="Détecteur 2D : hsv (rapide, déterministe) ou hf "
+                             "(open-vocabulary, plus robuste). Défaut : hsv.")
     parser.add_argument("--port", type=str, default=FOLLOWER_PORT,
-                        help="Port USB du follower")
+                        help="Port USB du bras follower.")
     parser.add_argument("--max-velocity", type=float, default=0.5,
-                        help="Vitesse articulaire max (rad/s). 0.5 = prudent.")
+                        help="Vitesse articulaire maximale (rad/s). Défaut : 0.5.")
     parser.add_argument("--grip-close", type=float, default=5.0,
-                        help="Fermeture pince pour grasper (0-100, 5 = presque ferme)")
+                        help="Consigne de fermeture de la pince pour la saisie (0-100). Défaut : 5.")
     parser.add_argument("--grasp-threshold", type=float, default=None,
-                        help="Seuil de detection saisie (marge %% au-dessus de grip-close). "
-                             "Defaut PipelineConfig=8. Baisse si faux negatifs, monte si "
-                             "faux positifs. Maxence a calibre ~8-9 pour le cube 30mm.")
+                        help="Seuil de détection de saisie (marge en %% au-dessus de "
+                             "--grip-close). Défaut : 8. À baisser en cas de faux négatifs, "
+                             "à monter en cas de faux positifs.")
     parser.add_argument("--grasp-lateral-offset", type=float, default=None,
-                        help="OVERRIDE MANUEL de l'offset lateral de prise (mm). Par "
-                             "DEFAUT l'offset est ADAPTATIF (= ½ largeur de l'objet + "
-                             "marge, voir --lateral-offset-margin) pour amener le doigt "
-                             "FIXE a fleur de l'arete QUELLE QUE SOIT LA TAILLE -- pas de "
-                             "valeur codee par objet. Passer ce flag FIGE l'offset a la "
-                             "valeur donnee et coupe l'auto. Repere IMAGE cam_2, le long "
-                             "des machoires (suit la pince si l'objet tourne ; n'affecte "
-                             "pas le wrist) ; +N = gauche image, NEGATIF = inverse le cote, "
-                             "0 = centre. Utile si la stereo sur-lit la largeur (cylindre "
-                             "rond) ou pour tester un cote.")
+                        help="Fixe manuellement l'offset latéral de prise (mm, repère image "
+                             "cam_2, le long des mâchoires) et désactive le calcul adaptatif "
+                             "(½ largeur + marge). Utile si la stéréo surestime la largeur "
+                             "(objet rond) ; une valeur négative inverse le côté.")
     parser.add_argument("--lateral-offset-margin", type=float, default=None,
-                        help="Marge constante (mm) ajoutee a la ½ largeur dans l'offset "
-                             "lateral ADAPTATIF (le \"au cas ou la largeur est mal lue\"). "
-                             "Defaut PipelineConfig=5. Sans effet si --grasp-lateral-offset "
-                             "(override manuel) est fourni.")
+                        help="Marge (mm) ajoutée à la ½ largeur dans l'offset latéral "
+                             "adaptatif. Défaut : 5. Sans effet avec --grasp-lateral-offset.")
     parser.add_argument("--grasp-forward-offset", type=float, default=None,
-                        help="OFFSET DE PROFONDEUR (mm) -- repere IMAGE cam_2, vers le BAS "
-                             "de l'image (= cote base). Corrige le defaut vu sur les "
-                             "snapshots PRISE : l'objet finit TROP HAUT dans l'image, les "
-                             "machoires ferment dans le vide AU-DESSUS de lui (les doigts, "
-                             "rigides a cam_2, ferment plus bas que l'axe optique). "
-                             "CALIBRATION GEOMETRIQUE du montage, CONSTANTE pour tout objet. "
-                             "Defaut PipelineConfig=15 (estimation). A AFFINER en regardant "
-                             "les snapshots PRISE : monte si encore en arriere, baisse si "
-                             "passe devant. NEGATIF = recule, 0 = desactive.")
+                        help="Offset de profondeur de prise (mm, repère image cam_2). Compense "
+                             "le décalage entre l'axe du poignet et le point de fermeture des "
+                             "doigts. Constante géométrique du montage. Défaut : 15.")
     parser.add_argument("--grasp-load-threshold", type=float, default=None,
-                        help="Seuil de COUPLE pince (Present_Load, 0-1023). Quand fourni, "
-                             "c'est le couple SEUL qui juge la saisie (fermeture ET verif "
-                             "post-levee) ; il sert aussi de seuil de CONTACT pour la "
-                             "fermeture asservie. Reference : vide ~200-230, tenu ~350+. "
-                             "Conseille : 300.")
+                        help="Seuil de couple de la pince (Present_Load, 0-1023) pour juger la "
+                             "saisie et détecter le contact en fermeture asservie. Repères : "
+                             "pince vide ~200-230, objet tenu ~350+. Conseillé : 300.")
     parser.add_argument("--grasp-close-mode", choices=["servo", "static"],
                         default="servo",
-                        help="servo (defaut) = fermeture ASSERVIE au couple : la pince "
-                             "descend par pas et S'ARRETE AU CONTACT de l'objet "
-                             "(+ --grasp-squeeze de maintien). static = consigne aveugle "
-                             "a --grip-close (comportement historique).")
+                        help="servo (défaut) = fermeture asservie au couple, arrêt au contact "
+                             "(+ --grasp-squeeze) ; static = consigne fixe à --grip-close.")
     parser.add_argument("--grasp-squeeze", type=float, default=3.0,
-                        help="Mode servo : serrage de maintien (%% de course) ajoute "
-                             "apres le contact. Defaut 3.")
+                        help="Mode servo : serrage de maintien (%% de course) ajouté après le "
+                             "contact. Défaut : 3.")
     parser.add_argument("--gripper-max-opening", type=float, default=None,
-                        help="Ouverture MAX REELLE de la pince en mm (mesure terrain, "
-                             "150 sur le poste de Maxence). Sert a calculer l'ouverture "
-                             "adaptative : pince_%% = (largeur_objet + 2*marge) / ce max. "
-                             "Si la pince ouvre trop/pas assez, ajuste ici.")
+                        help="Ouverture maximale réelle de la pince (mm), pour calculer "
+                             "l'ouverture adaptative. Défaut : 150.")
     parser.add_argument("--gripper-open-margin", type=float, default=None,
-                        help="Marge d'ouverture de CHAQUE cote de l'objet (mm). Defaut 10. "
-                             "Plus petit = pince plus juste (mais moins de tolerance a "
-                             "l'erreur de visee).")
+                        help="Marge d'ouverture de chaque côté de l'objet (mm). Défaut : 10.")
     parser.add_argument("--grasp-yaw-offset", type=float, default=None,
-                        help="Correction de convention pince (deg). DEFAUT 90 (cale pour ce "
-                             "montage : la pince ferme a 90deg de la convention nominale). "
-                             "Passe 0 pour revenir au comportement nominal, ou une autre valeur "
-                             "si la pince est remontee differemment.")
+                        help="Correction d'orientation de la pince (deg). Défaut : 90 (calé "
+                             "pour ce montage). Mettre 0 pour la convention nominale.")
     parser.add_argument("--grab-offset", type=float, default=None,
-                        help="Offset de serrage pince en mm (Z, le long de l'axe d'approche) : "
-                             "distance entre le point vise par l'IK et la hauteur ou les machoires "
-                             "serrent. DEFAUT 14mm (mesure : machoires au centre de l'objet). "
-                             "Passe 0 pour tester sans compensation (saisie plus basse).")
+                        help="Offset de serrage le long de l'axe d'approche (mm) : écart entre "
+                             "le point visé par l'IK et la hauteur où les mâchoires serrent. "
+                             "Défaut : 14.")
     parser.add_argument("--closed-loop-max-correction", type=float, default=None,
-                        help="Plafond (mm) de la correction cam_2 : au-dela, on garde la "
-                             "stereo (cam_2 jugee suspecte). DEFAUT 80. cam_2 etant le "
-                             "raffinement fiable, ce plafond ne sert qu'au cas rarissime ou "
-                             "cam_2 voit un faux objet a l'autre bout de la plaque. Mettre "
-                             "tres grand (ex 200) = faire TOUJOURS confiance a cam_2.")
+                        help="Plafond (mm) de la correction apportée par la caméra embarquée ; "
+                             "au-delà, la position stéréo est conservée. Défaut : 80.")
     parser.add_argument("--cam2-observe-height", type=float, default=None,
-                        help="HAUTEUR D'OBSERVATION cam_2 en mm, AU-DESSUS DE L'OBJET = "
-                             "reference de detection. La capture cam_2 se fait a cette "
-                             "hauteur (120mm=12cm par defaut) pour eloigner l'objet des "
-                             "doigts dans l'image (ils occupent le bas du cadre) -> "
-                             "centroide non biaise, quel que soit l'angle de prise. "
-                             "Defaut PipelineConfig=120. La descente reste monotone "
-                             "(observation 12cm -> approche corrigee 8cm -> grasp). "
-                             "Trop haut -> blob trop petit (gating -> stereo).")
+                        help="Hauteur d'observation de la caméra embarquée au-dessus de l'objet "
+                             "(mm) pour la détection de raffinement. Défaut : 120.")
     parser.add_argument("--zone-topdown", type=float, default=None,
-                        help="Distance (mm) jusqu'a laquelle un objet BAS est pris en "
-                             "TOP-DOWN ; au-dela -> diagonale 45. Defaut 320 (=32cm). "
-                             "Regle la frontiere top-down/45 sans recompiler (utile pour "
-                             "mesurer le domaine en campagne).")
+                        help="Distance (mm) jusqu'à laquelle un objet bas est saisi par le "
+                             "haut ; au-delà, prise inclinée. Défaut : 320.")
     parser.add_argument("--top-down", action="store_true",
-                        help="Revient a la saisie VERTICALE PAR LE HAUT uniquement "
-                             "(comportement de reference eprouve). Par defaut (sans "
-                             "ce flag) le robot est ADAPTATIF : il choisit l'angle "
-                             "d'attaque sur le balayage du plan sagittal (top-down / "
-                             "diagonale / frontal) en gardant la 1ere prise atteignable. "
-                             "Utile pour re-tester l'ancien comportement ou comparer.")
+                        help="Force une prise verticale par le haut. Par défaut, l'angle de "
+                             "prise est choisi automatiquement selon la géométrie et "
+                             "l'accessibilité.")
     parser.add_argument("--tilt-roll-offset", type=float, default=None,
-                        help="Saisie adaptative : roll (deg) des prises INCLINEES "
-                             "autour de l'axe d'approche (convention pince). Defaut = "
-                             "--grasp-yaw-offset (90, cale en top-down). Si au 1er essai "
-                             "incline les machoires ferment de travers, essaie 0, -90, etc.")
+                        help="Roll (deg) des prises inclinées autour de l'axe d'approche. "
+                             "Défaut : valeur de --grasp-yaw-offset.")
     parser.add_argument("--side-grasp-min-height", type=float, default=None,
-                        help="Saisie adaptative : hauteur de prise mini (m) pour une "
-                             "prise inclinee (degagement table). Defaut 0.020 (PROVISOIRE, "
-                             "a mesurer). Plus petit = autorise des prises inclinees plus basses.")
+                        help="Hauteur de prise minimale (m) pour une prise inclinée "
+                             "(dégagement de la table). Défaut : 0.020.")
     parser.add_argument("--ik-tol-trans", type=float, default=None,
-                        help="Saisie adaptative : tolerance de position IK (mm) pour "
-                             "juger un angle ATTEIGNABLE. Defaut 8.")
+                        help="Tolérance de position de l'IK (mm) pour juger un angle "
+                             "atteignable. Défaut : 8.")
     parser.add_argument("--ik-tol-rot", type=float, default=None,
-                        help="Saisie adaptative : tolerance d'orientation IK (deg) pour "
-                             "juger un angle atteignable. Defaut 15.")
+                        help="Tolérance d'orientation de l'IK (deg) pour juger un angle "
+                             "atteignable. Défaut : 15.")
     parser.add_argument("--max-top-down-height", type=float, default=None,
-                        help="Hauteur d'objet (m) au-dela de laquelle le TOP-DOWN est "
-                             "refuse (l'adaptatif bascule alors en incline). Defaut 0.12. "
-                             "Augmente un peu (ex 0.14) si la hauteur mesuree depasse 12cm "
-                             "par bruit alors que le top-down passerait.")
+                        help="Hauteur d'objet (m) au-delà de laquelle la prise par le haut est "
+                             "refusée au profit d'une prise inclinée. Défaut : 0.12.")
     parser.add_argument("--wrist-flip-max-deg", type=float, default=None,
-                        help="SECURITE : saut max de wrist_roll (deg) tolere depuis la "
-                             "pose courante. Au-dela = demi-tour de poignet (pince a "
-                             "l'envers, plonge vers la table) -> la prise est REFUSEE "
-                             "(echec propre). Defaut 120. Baisse-le si tu vois encore un "
-                             "retournement ; monte-le pour autoriser de plus grands "
-                             "re-orientations (a tes risques).")
+                        help="Sécurité : saut maximal de wrist_roll (deg) toléré ; au-delà, la "
+                             "prise est refusée (évite un retournement du poignet vers la "
+                             "table). Défaut : 120.")
     parser.add_argument("--no-lift-check", action="store_true",
-                        help="Desactive la VERIF POST-LEVEE (P1'). Par defaut, apres une "
-                             "fermeture jugee OK le bras remonte a retract et RE-LIT "
-                             "position+couple pour attraper les faux positifs "
-                             "(effleurement du sommet, morsure de bord, appui table).")
+                        help="Désactive la vérification après la levée (relecture "
+                             "position + couple pour détecter les faux positifs).")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Pas d'envoi moteur, juste log les angles calcules")
+                        help="Calcule et journalise les angles sans les envoyer aux moteurs.")
     parser.add_argument("--no-closed-loop", action="store_true",
-                        help="Desactive le raffinement Sprint 4 par cam_2 "
-                             "(stereo seule, moins precis ~30mm). Defaut : actif.")
+                        help="Désactive le raffinement par la caméra embarquée (stéréo seule, "
+                             "moins précise).")
     parser.add_argument("--display", action="store_true",
-                        help="FENETRE LIVE cv2.imshow : grab continu des 3 cams "
-                             "pendant le mouvement -> sature le bus USB, cam_2 "
-                             "DECROCHE souvent. N'est PLUS necessaire pour avoir les "
-                             "snapshots : ceux-ci sont sauves par defaut (voir "
-                             "--no-snapshots). N'active --display que si tu veux la "
-                             "fenetre temps reel ET que le hub tient.")
+                        help="Ouvre une fenêtre de suivi en temps réel. Les snapshots de "
+                             "diagnostic sont sauvegardés indépendamment de cette option.")
     parser.add_argument("--no-snapshots", action="store_true",
-                        help="Desactive la SAUVEGARDE des snapshots .png dans "
-                             "outputs/perception/ (snapshot perception, vues cam_2 du "
-                             "raffinement, et snapshots PRISE verite-terrain). Par "
-                             "defaut ils sont TOUJOURS sauves -- y compris sans "
-                             "--display, car la sauvegarde ne fait qu'ecrire une frame "
-                             "deja capturee (aucun grab continu, donc cam_2 reste "
-                             "stable). C'est l'aide diagnostique principale avec les "
-                             "logs.")
-    parser.add_argument("--calib-profile", type=str, default=None,
-                        help="EXCEPTIONNEL : ressort une calibration de backup depuis "
-                             "configs/calibration_backups/<nom>/ (s2, legacy_separate). "
-                             "Le flux NORMAL n'a pas besoin de ce flag : la calibration "
-                             "attitree (s1) est deja dans configs/. Pour revenir a s1 "
-                             "apres un test : --calib-profile s1.")
+                        help="Désactive la sauvegarde des snapshots de diagnostic dans "
+                             "outputs/perception/ (sauvegardés par défaut).")
     args = parser.parse_args()
-
-    # Charge le profil de calibration demande (avant d'instancier le pipeline,
-    # qui lit configs/handeye_cam_*.json au demarrage)
-    if args.calib_profile:
-        apply_calib_profile(args.calib_profile)
 
     config = PipelineConfig(
         target_label=args.target,
@@ -266,10 +158,7 @@ def main():
     if args.grab_offset is not None:
         config.grasp_gripper_grab_offset_m = args.grab_offset / 1000.0
     if args.grasp_lateral_offset is not None:
-        # --grasp-lateral-offset = OVERRIDE MANUEL : fige l'offset lateral a cette
-        # valeur (mm, repere IMAGE cam_2, le long des machoires) et DESACTIVE l'auto
-        # (½ largeur + marge). A utiliser pour les objets dont la stereo sur-lit la
-        # largeur (cylindre rond) ou pour inverser le cote (valeur negative).
+        # Offset latéral fixé manuellement : on désactive le calcul adaptatif.
         config.grasp_lateral_tool_offset_mm = args.grasp_lateral_offset
         config.grasp_lateral_offset_auto = False
     if args.lateral_offset_margin is not None:
