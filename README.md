@@ -2,6 +2,8 @@
 
 # Saisie d'objets assistée par vision — SO-101
 
+![Licence : MIT](https://img.shields.io/badge/licence-MIT-green) ![Python 3.12](https://img.shields.io/badge/python-3.12-blue) ![Construit avec LeRobot](https://img.shields.io/badge/construit%20avec-LeRobot-ff9800)
+
 Ce dépôt regroupe le code que j'ai développé pour mon **travail de fin d'études
 (TFE)** : une **pipeline modulaire complète de perception → planification → contrôle**,
 « du pixel à la prise », qui fait **saisir des objets** à un bras robotisé SO-101,
@@ -137,6 +139,21 @@ Datasets et modèles entraînés, publics sur le Hugging Face Hub :
 - Modèle ACT : [`Machanier/act_so101_orange_cube`](https://huggingface.co/Machanier/act_so101_orange_cube)
   (variante basse résolution : [`_lowres`](https://huggingface.co/Machanier/act_so101_orange_cube_lowres))
 
+## Résultats
+
+Campagne d'évaluation du pick-and-place (taux de réussite, intervalle de confiance
+Wilson 95 %). Données brutes dans [`results/`](results/), analyse détaillée dans le mémoire.
+
+| Objet | Pipeline — HF | Pipeline — HSV | Imitation (ACT) |
+|---|---|---|---|
+| Cube *(30 essais/détecteur)* | **77 %** | 67 % | 70 % |
+| Cylindre *(9 essais/détecteur)* | **78 %** | 67 % | 0/5 *(sonde de généralisation)* |
+
+Les deux approches sont **à égalité sur le cube** (intervalles de confiance qui se
+recouvrent) ; le départage se fait sur la **généralisation**, où la pipeline garde
+l'avantage (cylindre, objets désignés par le langage) tandis que la politique apprise
+reste sur sa distribution d'entraînement.
+
 ## Structure du dépôt
 
 ```
@@ -176,6 +193,18 @@ Le **cahier des charges** (sujet et objectifs officiels du TFE) :
 - [Documentation LeRobot SO-101](https://huggingface.co/docs/lerobot/so101)
 - [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) — dépôt matériel
   officiel du bras (source de l'URDF).
+
+## Comment citer
+
+```bibtex
+@mastersthesis{chanier2026saisie,
+  author = {Chanier, Maxence},
+  title  = {Saisie d'objets en environnement pour un bras robotique assisté par vision},
+  school = {Université de Genève, Faculté des sciences},
+  year   = {2026},
+  type   = {Travail de fin d'études}
+}
+```
 
 ## Assistance au développement
 
