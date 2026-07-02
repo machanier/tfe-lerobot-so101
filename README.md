@@ -1,3 +1,5 @@
+<img src="docs/media/logo_unige.png" alt="Université de Genève — Faculté des sciences, Département d'informatique" width="360">
+
 # Saisie d'objets assistée par vision — SO-101
 
 Ce dépôt regroupe le code que j'ai développé pour mon **travail de fin d'études
@@ -139,7 +141,7 @@ Datasets et modèles entraînés, publics sur le Hugging Face Hub :
 
 ```
 tfe-lerobot-so101/
-├── src/                  # la surcouche perception → planification → contrôle
+├── src/                  # la pipeline perception → planification → contrôle
 │   ├── perception/       # détection 2D + reconstruction 3D (stéréo, PnP)
 │   ├── planning/         # sélection du point et de l'angle de prise (adaptatif)
 │   ├── control/          # IK 5-DOF, trajectoires, boucle fermée cam_2, moteurs
@@ -149,7 +151,8 @@ tfe-lerobot-so101/
 ├── scripts/              # CLI : calibration, perception, pick-and-place, IL (train/éval)
 ├── configs/              # calibrations de mon setup + modèle URDF du robot
 ├── tests/                # tests d'intégration synthétiques + sélection de prise
-├── notebooks/            # dérivations (des moteurs à la pose)
+├── hardware/             # modèles 3D imprimés (structure, boîte, pince, objets)
+├── results/              # CSV des campagnes (saisie pipeline & IL, structure, éclairage)
 ├── docs/                 # repère base, runbook imitation learning, mémoire (PDF)
 ├── requirements.txt · setup_env.sh
 └── LICENSE
