@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
 """
-calibrate_hsv.py - Genere les plages HSV de chaque primitive coloree par
-echantillonnage de pixels.
+calibrate_hsv.py — génère les plages HSV de chaque primitive colorée par
+échantillonnage de pixels.
 
-Procedure :
-    1. Lance le script en pointant la camera principale (cam_0 par defaut).
-    2. Pose chaque objet primitif (cube rouge, cylindre vert, ...) bien en
-       evidence sous l'eclairage definitif du poste.
+Procédure :
+    1. Lancer le script en pointant la caméra principale (cam_0 par défaut).
+    2. Poser chaque objet primitif (cube rouge, cylindre vert, ...) bien en
+       évidence sous l'éclairage définitif du poste.
     3. Pour chaque objet :
-        - tape le nom (label) dans le terminal (ex: red_cube).
-        - clique sur la fenetre video pour echantillonner des pixels DE
-          L'OBJET. Aux endroits de couleur la plus pure. ~20 clics suffisent.
-        - touche 'n' pour passer a l'objet suivant.
-    4. Touche 's' a la fin pour sauvegarder.
+        - taper le nom (label) dans le terminal (ex : red_cube) ;
+        - cliquer sur la fenêtre vidéo pour échantillonner des pixels de
+          l'objet, aux endroits de couleur la plus pure (~20 clics suffisent) ;
+        - touche 'n' pour passer à l'objet suivant.
+    4. Touche 's' à la fin pour sauvegarder.
 
 Sortie :
     configs/perception/hsv_specs.json
-        Liste d'ObjectSpec avec plages HSV (h_lo, h_hi, s_lo, ...) calculees
-        comme [mean - 2.5*std, mean + 2.5*std] sur les pixels echantillonnes.
-        Le rouge est detecte automatiquement (cluster autour de H~0/179) et
-        on emet `hue_extra_lo/hi`.
+        Liste d'ObjectSpec avec plages HSV (h_lo, h_hi, s_lo, ...) calculées
+        comme [moyenne - 2.5·écart-type, moyenne + 2.5·écart-type] sur les pixels
+        échantillonnés. Le rouge est détecté automatiquement (cluster autour de
+        H~0/179), avec émission de `hue_extra_lo/hi`.
 
-Pas de hardware necessaire (juste la camera). On utilise la calibration
-intrinseque pour eventuellement debruiter, mais HSV est lui-meme robuste.
+Pas de matériel nécessaire (juste la caméra) ; HSV est robuste par lui-même.
 
-Reference : OpenCV doc, cv2.cvtColor + COLOR_BGR2HSV. H in [0,179], S/V in [0,255].
+Référence : OpenCV, cv2.cvtColor + COLOR_BGR2HSV. H dans [0,179], S/V dans [0,255].
 """
 
 import argparse
@@ -76,8 +75,6 @@ def _detect_color_mode(samples: np.ndarray) -> str:
       - S_median bas + V_median tres haut -> white (pas de saturation, lumineux)
       - S_median bas + V_median intermediaire -> gray
       - sinon -> chromatic (teinte significative)
-
-    Voir docs/PROJECT_STATUS.md decision D8 pour la justification.
     """
     H = samples[:, 0].astype(np.int32)
     S = samples[:, 1].astype(np.int32)
@@ -199,9 +196,9 @@ def _build_spec(label: str, samples: np.ndarray) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Echantillonneur de couleurs HSV pour les primitives. "
-                    "Par defaut : AJOUTE les nouvelles specs aux existantes "
-                    "(remplace si meme label). --overwrite pour repartir de zero.",
+        description="Échantillonneur de couleurs HSV pour les primitives colorées. "
+                    "Par défaut, ajoute les nouvelles spécifications aux existantes "
+                    "(remplace si même label). --overwrite pour repartir de zéro.",
     )
     parser.add_argument("--camera", type=int, default=CAMERAS["cam_0"]["index"],
                         help="Index de la camera a utiliser.")
@@ -315,9 +312,9 @@ def main():
             print(f"  AVERTISSEMENT : {label} a {samples.shape[0]} pixels (< 20 recommandes)")
         new_specs.append(_build_spec(label, samples))
 
-    # MERGE : on garde les anciennes specs, on remplace celles dont le label
-    # vient d'etre recalibre. C'est ce qui evite que recalibrer UN objet
-    # efface les autres (bug observe le 2026-05-16).
+    # Fusion : on conserve les anciennes spécifications et on remplace celles
+    # dont le label vient d'être recalibré ; cela évite que recalibrer un seul
+    # objet efface les autres.
     new_labels = {s["label"] for s in new_specs}
     merged = [s for s in existing_specs if s["label"] not in new_labels] + new_specs
     if existing_specs and not args.overwrite:
