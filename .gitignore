@@ -29,9 +29,8 @@ outputs/
 *.ckpt
 
 # ============================================
-# Images / videos — bloques POUR LE MOMENT.
-# Les medias curated (schemas, demos, logos) seront ajoutes a la fin,
-# une fois le depot stabilise (via `git add -f` au cas par cas).
+# Images / videos — bloques par defaut ; exceptions ciblees plus bas
+# (medias curated de docs/media/, source LaTeX du memoire).
 # ============================================
 *.png
 *.jpg
@@ -59,6 +58,15 @@ outputs/
 !results/**
 !hardware/
 !hardware/**
+
+# Medias curated : demos (GIF), schemas, logo, snapshots masques.
+# (Les videos brutes docs/media/video/*.mov restent ignorees.)
+!docs/media/*.png
+!docs/media/*.jpg
+!docs/media/*.gif
+# Source LaTeX du memoire : images et logos (pour compiler le PDF).
+!docs/memoire/images/**
+!docs/memoire/figures/**
 
 # PDF d'articles exportes par Zotero (lourds, sous copyright).
 # Le fichier .bib lui-meme est versionne.
