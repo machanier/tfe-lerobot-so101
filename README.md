@@ -180,8 +180,8 @@ Repère de base et procédure de mesure : [`docs/REPERE_BASE.md`](docs/REPERE_BA
 ## Mémoire
 
 Ce dépôt accompagne mon mémoire de TFE, qui détaille la démarche, les choix de
-conception et l'évaluation. <!-- MÉMOIRE : ajouter le PDF final dans docs/ et le lier ici -->
-_Le PDF sera ajouté ici une fois le mémoire finalisé._
+conception et l'évaluation :
+**[Mémoire — PDF](docs/memoire/Memoire_Bachelor_Chanier_Maxence.pdf)**.
 
 Le **cahier des charges** (sujet et objectifs officiels du TFE) :
 [docs/cahier_des_charges.pdf](docs/cahier_des_charges.pdf).
