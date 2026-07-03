@@ -1,0 +1,208 @@
+\chapter{Détails techniques et reproductibilité}
+\label{ann:repro}
+
+Cette annexe rassemble les informations pratiques que le corps du mémoire ne détaille pas, mais dont un lecteur a besoin pour reproduire le travail : l'organisation du code, la mesure du repère de base, la procédure de calibration, la campagne de dimensionnement de la scène, puis les paramètres et les fichiers des campagnes d'évaluation. Le code, les configurations et les modèles imprimés en 3D sont regroupés dans un unique dépôt, \texttt{github.com/machanier/tfe-lerobot-so101}, qui constitue la référence exécutable de ce qui est décrit ici.
+
+\section{Structure du code}
+\label{sec:ann-code}
+
+Le dépôt sépare quatre rôles. Une bibliothèque \texttt{src/} contient le cœur réutilisable ; des points d'entrée \texttt{scripts/} l'assemblent en ligne de commande pour une tâche précise ; des fichiers \texttt{configs/} conservent les calibrations et les paramètres ; enfin \texttt{tests/} regroupe les tests automatiques. Cette découpe reflète l'architecture du chapitre~\ref{ch:architecture} : chaque module de \texttt{src/} correspond à une brique du pipeline perception~$\rightarrow$~planification~$\rightarrow$~contrôle, et les scripts ne font que les orchestrer. Le tableau~\ref{tab:code-structure} associe chaque module de la bibliothèque à son rôle et au chapitre qui le décrit.
+
+\begin{table}[ht]
+  \centering\small
+  \begin{tabularx}{\linewidth}{l X}
+    \toprule
+    Fichier & Rôle \\
+    \midrule
+    \texttt{pipeline.py} & Orchestration d'un cycle de saisie complet : capture, détection, reconstruction 3D, planification, contrôle et boucle fermée (chapitres~\ref{ch:architecture} et~\ref{ch:controle}). \\
+    \addlinespace
+    \multicolumn{2}{@{}l}{\emph{\texttt{perception/} --- chapitre~\ref{ch:perception}}} \\
+    \texttt{camera\_io.py} & Capture synchronisée des trois caméras USB ; chargement des paramètres intrinsèques. \\
+    \texttt{detector.py} & Détection 2D : interface \texttt{ObjectDetector} et ses deux implémentations, \texttt{HSVDetector} (seuillage couleur) et \texttt{HFDetector} (détecteur appris OWL-ViTv2). \\
+    \texttt{pose\_estimator.py} & Reconstruction 3D des détections dans le repère de base (triangulation stéréo, repli PnP monoculaire). \\
+    \texttt{robot\_state.py} & Lecture des moteurs et calcul de la pose de l'effecteur par cinématique directe. \\
+    \texttt{scene.py} & Types de données échangés dans le pipeline (\texttt{Frame}, \texttt{Detection2D}, \texttt{ObjectInstance}). \\
+    \addlinespace
+    \multicolumn{2}{@{}l}{\emph{\texttt{planning/} --- chapitre~\ref{ch:planification}}} \\
+    \texttt{grasp.py} & Stratégies de saisie : interface \texttt{GraspStrategy}, cas de base \texttt{TopDownGrasp} et stratégie géométrique \texttt{AdaptiveGrasp} (choix de l'angle d'attaque, de l'ouverture et de l'orientation). \\
+    \addlinespace
+    \multicolumn{2}{@{}l}{\emph{\texttt{control/} --- chapitre~\ref{ch:controle}}} \\
+    \texttt{ik.py} & Cinématique inverse (Gauss--Newton / Levenberg--Marquardt, jacobienne numérique, redémarrages déterministes). \\
+    \texttt{trajectory.py} & Génération de trajectoires articulaires quintiques. \\
+    \texttt{motor\_controller.py} & Interface haut niveau du bus Feetech (consigne de position, lecture de couple, sécurités). \\
+    \texttt{closed\_loop.py} & Raffinement de la pose de saisie par la caméra de poignet cam\_2. \\
+    \addlinespace
+    \multicolumn{2}{@{}l}{\emph{\texttt{calibration/} --- soubassement des chapitres~\ref{ch:perception} et~\ref{ch:controle}}} \\
+    \texttt{forward\_kinematics.py} & Cinématique directe à partir de la chaîne décrite dans le fichier URDF. \\
+    \texttt{handeye.py} & Calibration \emph{hand-eye} via \texttt{cv2.calibrateHandEye}. \\
+    \texttt{motor\_to\_angle.py} & Conversion entre valeur d'encodeur (12 bits, circulaire) et angle articulaire. \\
+    \addlinespace
+    \multicolumn{2}{@{}l}{\emph{\texttt{utils/}}} \\
+    \texttt{transforms.py} & Opérations sur les transformations rigides SE(3), représentées par des matrices $4\times4$ homogènes. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Modules de la bibliothèque \texttt{src/}, leur rôle et le chapitre qui les décrit.}
+  \label{tab:code-structure}
+\end{table}
+
+\paragraph{Points d'entrée (\texttt{scripts/}).} Les scripts se répartissent en quatre familles. La \emph{calibration} regroupe \texttt{calibrate\_intrinsic.py} (paramètres intrinsèques par caméra), \texttt{recalibrate\_handeye.py} et \texttt{recalibrate\_handeye\_\allowbreak stereo.py} (\emph{hand-eye}), ainsi que \texttt{calibrate\_hsv.py} et \texttt{calibrate\_grasp\_\allowbreak threshold.py} (réglage des seuils couleur et de fermeture). L'\emph{exécution} se fait par \texttt{pick\_and\_place.py} (la tâche complète décrite au chapitre~\ref{ch:controle}) et \texttt{run\_perception.py} (perception seule, sans mouvement). Les \emph{campagnes} d'évaluation sont pilotées par \texttt{experiment\_campaign.py} (pipeline modulaire) et \texttt{experiment\_campaign\_il.py} (imitation), ce dernier s'appuyant sur \texttt{record\_dataset.py}, \texttt{train.py} et \texttt{eval\_policy.py} pour la collecte, l'entraînement et l'évaluation de la politique. Enfin, une famille de \emph{vérification} (\texttt{check\_perception.py}, \texttt{check\_calibration.py}, \texttt{compare\_detectors.py}) sert à contrôler la chaîne sans lancer de saisie.
+
+\paragraph{Configurations (\texttt{configs/}).} Toutes les grandeurs mesurées ou réglées sont externalisées dans ce dossier, jamais codées en dur : les intrinsèques (\texttt{calibration\_cam\_0/1/2.json}), les \emph{hand-eye} (\texttt{handeye\_cam\_*.json}), le modèle cinématique (\texttt{so101\_new\_calib.urdf}), la géométrie de la scène (\texttt{scene.json}), et les paramètres de perception (\texttt{perception/hsv\_specs.json}, \texttt{perception/hf\_specs.json}, \texttt{perception/bias\_correction*.json}). Cette centralisation est ce qui rend l'exécution reproductible : rejouer le système sur un autre montage revient à remplacer ces fichiers, sans toucher au code.
+
+\paragraph{Tests (\texttt{tests/}).} Le dossier contient les tests automatiques cités dans le corps du mémoire, notamment la validation du pipeline de perception (\texttt{perception/test\_pipeline.py}) et de la sélection de saisie (\texttt{planning/test\_adaptive\_grasp\_selection.py}). Ce sont ces tests, exécutés sur graine fixe, qui produisent les grandeurs déterministes rapportées aux chapitres~\ref{ch:perception} et~\ref{ch:controle}.
+
+\section{Repère de base : mesure expérimentale}
+\label{sec:ann-repere}
+
+Toutes les positions du pipeline sont exprimées dans le repère de base \texttt{base\_link}, dont les axes sont : $X$ vers l'avant du robot, $Y$ vers la gauche (positif ; droite négative), $Z$ vers le haut. Par convention, la plaque sur laquelle reposent les objets définit $z=0$ (paramètre \texttt{table\_z\_m}) : un objet de hauteur $H$ posé sur la table a donc son centre à $z=H/2$ (un cube de 30~mm~$\rightarrow +15$~mm).
+
+\paragraph{Localisation de l'origine.} L'origine $(0,0,0)$ n'est pas un point matériel évident : elle ne coïncide pas avec le centre du moteur de lacet (\texttt{shoulder\_pan}), mais s'en trouve décalée de quelques centimètres --- en retrait selon $X$, en dessous selon $Z$, et vers la droite selon $Y$. Faute de repère physique où poser un instrument, la vérification des mesures s'est appuyée surtout sur $X$, clairement lisible sur le bâti du robot : on mesure au mètre la distance de l'origine à l'objet posé, puis on la compare à la position reconstruite. Les axes $Y$ et $Z$, plus difficiles à rattacher à un point tangible, n'ont pas servi de contrôle direct.
+
+\paragraph{Hauteur de la table.} La stéréo \emph{sous-estime} légèrement la hauteur : un cube de 30~mm posé sur la plaque, dont le centre est donc à $+15$~mm, se reconstruit à un $z$ légèrement \emph{négatif} (autour de $-5$~mm). Le $Z$ reconstruit étant trop bruité pour qu'on cherche à le corriger directement, deux dispositions suffisent. D'une part, on fixe $z=0$ au niveau de la plaque (paramètre \texttt{table\_z\_m}) et l'on abaisse la borne basse de l'espace de travail à $z_{\min}=-20$~mm : un simple seuil d'\emph{acceptation}, pour qu'un objet réellement posé --- donc reconstruit un peu bas --- ne soit pas rejeté comme aberrant. D'autre part, la hauteur de prise n'est pas lue sur ce $z$, mais \emph{ancrée} sur l'objet reposant sur la plaque : le plan $z=0$ plus la demi-hauteur connue de l'objet.
+
+\paragraph{Biais systématique de la stéréo.} Indépendamment de la hauteur, la reconstruction stéréo présente un biais systématique, caractérisé par une procédure simple (fichier \texttt{configs/perception/\allowbreak bias\_correction.json}) : on pose l'objet à des distances \emph{mesurées au mètre} depuis l'origine, on lit la position reconstruite (\texttt{check\_perception.py}), et l'on prend, pour chaque axe, l'écart signé $\text{biais}=\text{reconstruit}-\text{réel}$, moyenné sur plusieurs positions (tableau~\ref{tab:biais}) --- l'erreur \emph{globale} de position étant, elle, la norme euclidienne de cet écart, comme la précision rapportée au chapitre~\ref{ch:evaluation}. Ce biais est celui de la \emph{stéréo} (caméras fixes) : la caméra de poignet cam\_2 est, elle, précise en $X$, si bien que la correction en profondeur n'est appliquée qu'aux caméras fixes. Le biais en $X$ vaut $-33$~mm à 300~mm et $-31$~mm à 350~mm : \emph{le même} aux deux distances, donc indépendant de l'éloignement --- un décalage \emph{fixe} que l'on annule en le soustrayant tel quel. Le biais en $Y$ est plus erratique (détection de petits amas de pixels, sensible au bruit) : on le laisse à zéro en perception et l'on corrige l'écart latéral une seule fois, plus tard, à la saisie, pour que deux corrections ne se cumulent pas. Enfin cam\_2, sur sa \emph{propre} calibration, porte son propre biais latéral, distinct de celui de la stéréo ($\Delta y=-7$~mm, fichier \texttt{bias\_correction\_cam2.json}).
+
+\medskip
+\begin{center}
+  \small
+  \begin{tabularx}{\linewidth}{l X X}
+    \toprule
+    Axe & Biais mesuré & Traitement \\
+    \midrule
+    $X$ (profondeur) & $\approx -32$~mm, constant & soustrait (stéréo, caméras fixes) ; cam\_2 précise en $X$ \\
+    $Y$ (latéral) & $+16$ à $+24$~mm, variable & laissé à 0 ; corrigé à la saisie \\
+    $Z$ (hauteur) & sous-lecture $\approx 20$~mm & non corrigé ; borne basse $-20$~mm, prise ancrée sur la plaque \\
+    \bottomrule
+  \end{tabularx}
+  \captionof{table}{Biais systématique de la reconstruction stéréo, mesuré sur le montage, et son traitement.}
+  \label{tab:biais}
+\end{center}
+\medskip
+
+\section{Procédure de calibration}
+\label{sec:ann-calib}
+
+Deux calibrations s'enchaînent pour placer une détection 2D dans le repère de base : le modèle \emph{intrinsèque} de chaque caméra, puis la transformation \emph{hand-eye} qui relie la caméra au robot. Leurs fondements mathématiques (méthode de Zhang, équation $AX=XB$ de Horaud) sont exposés au chapitre~\ref{ch:perception} ; on ne donne ici que la procédure pratique et les décomptes. Les deux étapes reposent sur un damier imprimé (\texttt{generate\_chessboard.py}), et le corps du mémoire en illustre le déroulement (figures~\ref{fig:calib-intrinseque} et~\ref{fig:calib-extrinseque}).
+
+\paragraph{Deux damiers.} La calibration \emph{intrinsèque} utilise un damier de $7\times7$ coins internes (carrés de $22{,}2$~mm). Ce damier est \emph{symétrique}, ce qui ne gêne pas l'intrinsèque, mais introduit pour le \emph{hand-eye} une ambiguïté d'orientation à $180^\circ$ (la pose du damier vue par la caméra peut être confondue avec sa version retournée). Après plusieurs essais infructueux d'extrinsèque, nous sommes donc passés, pour cette étape, à un damier \emph{asymétrique} de $9\times6$ coins internes (carrés de $22$~mm) : le nombre pair de coins dans un sens et impair dans l'autre lève l'ambiguïté et fiabilise l'estimation de pose.
+
+\paragraph{Intrinsèque.} Pour chaque caméra, on présente le damier sous des angles et des distances variés et l'on capture les poses au clavier (\texttt{calibrate\_intrinsic.py}) ; OpenCV en déduit la matrice $K$ (focales $f_x,f_y$, point principal $c_x,c_y$) et les coefficients de distorsion ($k_1,k_2,p_1,p_2,k_3$), enregistrés dans \texttt{calibration\_cam\_<i>.json}. La littérature recommande un minimum d'une quinzaine de poses ; nous en avons capturé davantage --- une quarantaine par caméra, dont 41, 41 et 43 retenues --- pour une erreur moyenne de reprojection sous-pixellique de 0,19 / 0,17 / 0,14~px respectivement.
+
+\paragraph{Hand-eye.} La transformation caméra$\leftrightarrow$robot est estimée par \texttt{cv2.calibrateHandEye} (méthode de Horaud), via \texttt{recalibrate\_handeye\_stereo.py}. Pour la paire fixe (\emph{eye-to-hand}), le damier est tenu par la pince à travers de nombreuses poses du bras ; pour la caméra de poignet (\emph{eye-in-hand}), le damier est fixe et c'est le bras qui bouge. Jusqu'à 71 poses sont capturées, dont une partie seulement est retenue après rejet automatique des prises mal détectées : 23/71 (cam\_0, sous-ensemble robuste), 71/71 (cam\_1, déduite de cam\_0) et 20/41 (cam\_2). Une prise est écartée lorsque sa pose s'éloigne trop de la solution consensuelle : après un premier calcul, on mesure pour chaque prise son résidu --- l'écart de sa transformation à la solution commune --- et l'on retire celles dont le résidu dépasse une tolérance de quelques millimètres et degrés, avant de recalculer sur les prises restantes ; une détection floue ou trop oblique du damier y ressort en résidu élevé. La paire fixe donne une base stéréo de 103,35~mm, ses centres optiques se situant à $(654, 92, 235)$~mm et $(655, -11, 229)$~mm dans le repère de base.
+
+\paragraph{Seuils couleur (HSV) et éclairage.} Le détecteur couleur demande une calibration d'une autre nature que les précédentes : les seuils HSV ne dépendent pas de la géométrie mais de l'\emph{éclairage}, dont la teinte et l'intensité déplacent les valeurs mesurées. Or le travail s'est étalé sur plusieurs mois --- de mars à juin ---, pendant lesquels la lumière naturelle a changé ; il a donc fallu \emph{fixer} un éclairage reproductible et re-calibrer les seuils juste avant la campagne finale, pour que tous les essais partagent la même lumière. Nous avons pour cela mené une courte étude (\texttt{outputs/lighting\_study}) : la scène est figée --- mêmes objets, mêmes cadrages ---, et l'on ne fait varier que la lumière d'une condition à l'autre (jour seul, jour + lampes, lampes seules, en plusieurs réglages). Pour chaque condition, on capture trois vues par caméra (l'objet à gauche, au centre, à droite de l'axe) et l'on mesure, avec le détecteur du pipeline lui-même, l'exposition \emph{par caméra} et la couleur de l'objet.
+
+La caméra la plus sensible est celle de \emph{poignet} : proche de l'objet, elle sature vite. Avec le jour combiné à des lampes trop fortes, plus de 60~\% de ses pixels ressortaient « cramés » --- alors que les caméras fixes restaient quasi épargnées ---, ce qui explique sa réponse plus délavée et sa plage HSV propre. En ajustant l'éclairage, cette surexposition retombe à quelques pour-cent. La configuration retenue est \emph{la lumière du jour complétée par la lampe du plafond} : c'est celle qui, dans nos comparaisons, ressortait la mieux exposée et la plus lisible en couleur sur les trois caméras. Les seuils ont alors été calibrés sous cette condition (\texttt{calibrate\_hsv.py}, caméra par caméra), puis \emph{gardés inchangés} pour toute la perception, les tests de saisie et la campagne. Un éclairage stable n'est donc pas un détail : c'est une condition du bon fonctionnement du seuillage couleur (chapitres~\ref{ch:perception} et~\ref{ch:discussion}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.55\linewidth]{IMG_6794.jpg}
+  \caption{Montage \emph{eye-to-hand} : le damier est fixé sur une planche de carton à l'aide de scotch, le tout fixé perpendiculairement sur le bout des pinces, que le bras promène devant les caméras fixes (visibles au fond, sur leurs montants). Cette vue extérieure complète les vues caméras du chapitre~\ref{ch:perception} (figure~\ref{fig:calib-extrinseque}).}
+  \label{fig:calib-eth-setup}
+\end{figure}
+
+\section{Campagne de mesure de la structure d'environnement}
+\label{sec:ann-enclos}
+
+La scène n'a pas été improvisée : la structure qui porte les caméras a été dimensionnée par un modèle géométrique explicite (feuille de calcul \texttt{outputs/enclosure\_design.xlsx}) \emph{avant} l'impression, pour que la paire stéréo voie l'ensemble de l'espace de travail avec une précision de profondeur suffisante. Le modèle repose sur quatre paramètres de conception et sur quelques grandeurs optiques dérivées des intrinsèques calibrées, définis au tableau~\ref{tab:enclos-symboles}.
+
+\begin{table}[ht]
+  \centering\small
+  \begin{tabularx}{\linewidth}{c X l}
+    \toprule
+    Symbole & Signification & Plage ou expression \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Paramètres de conception (balayés)}} \\
+    $D$ & distance des caméras au centre de l'espace de travail & 55--65~cm \\
+    $B$ & base stéréo (écart entre les deux caméras fixes) & 8--15~cm \\
+    $h$ & hauteur des caméras au-dessus de la table & 28--40~cm \\
+    $\theta$ & inclinaison des caméras vers le bas & 36--50$^\circ$ \\
+    \addlinespace
+    \multicolumn{3}{@{}l}{\emph{Grandeurs optiques (issues de la calibration)}} \\
+    $f$ & distance focale moyenne de la paire & $\approx 1219$~px \\
+    HFOV, VFOV & champs de vue horizontal et vertical & $76^\circ$, $48^\circ$ \\
+    $Z$ & distance caméra--objet le long de l'axe optique & (variable) \\
+    $L$ & largeur de scène couverte à la distance $Z$ & $2Z\tan(\text{HFOV}/2)$ \\
+    $\Delta Z$ & incertitude de profondeur de la stéréo à la distance $Z$ & $Z^{2}/(fB)$ \\
+    $x_{\text{near}},x_{\text{far}}$ & bords proche et lointain du champ au sol & fonction de $h,\theta,\text{VFOV}$ \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Paramètres et grandeurs du modèle de dimensionnement de la structure (feuille \texttt{enclosure\_design.xlsx}).}
+  \label{tab:enclos-symboles}
+\end{table}
+
+Trois relations, dont les expressions figurent au tableau~\ref{tab:enclos-symboles}, imposent chacune une contrainte. La \emph{couverture} $L$ doit englober tout l'espace de travail atteignable --- un disque de 43~cm de rayon, soit 86~cm de diamètre. La \emph{précision de profondeur} de la stéréo $\Delta Z$ doit rester de l'ordre de 2~mm à la distance de travail, ce qui pousse la base $B$ vers le haut et rapproche les caméras. Enfin la \emph{visibilité verticale} (bords $x_{\text{near}}$, $x_{\text{far}}$) doit contenir à la fois la base du bras et l'ensemble de l'espace de travail. Un candidat $(D,B,h,\theta)$ n'est retenu que s'il satisfait les trois \emph{simultanément} ; le balayage des plages du tableau~\ref{tab:enclos-symboles} produit 636 combinaisons faisables, la région faisable s'élargissant quand $D$ croît (davantage d'inclinaisons rentrent dans le champ vertical).
+
+Le montage finalement construit se situe dans cette région : une base stéréo de 10~cm (confirmée par la calibration, 103~mm, section~\ref{sec:ann-calib}), des caméras à environ 65~cm devant la base et 23~cm au-dessus de la table (centres optiques mesurés, section~\ref{sec:ann-calib}), inclinées d'environ $33^\circ$ vers le bas (valeur déduite de la calibration \emph{hand-eye}). La structure a été imprimée en 3D --- en PLA+, comme les pièces du robot --- en quatre pièces distinctes, en six impressions (deux pièces tirées en double) : deux montants verticaux qui portent les caméras fixes, deux rails, une base côté caméras et une base côté robot, assemblés par vis et boulons. L'ensemble est maintenu fermement sur la table par des serre-joints prenant appui sur la base côté robot --- conçue et imprimée sur mesure ---, le robot y étant lui-même vissé et boulonné ; le bras \emph{leader} servant aux démonstrations d'imitation (chapitre~\ref{ch:evaluation}) est fixé de la même façon. Par-dessus vient se poser la plaque de la scène ($60\times90$~cm), maintenue par des aimants --- cinq côté caméras, trois côté robot. La boîte de dépôt, également imprimée, est garnie d'un matelas en TPU (le rembourrage bleu visible sur les photos) qui amortit la chute de l'objet (figure~\ref{fig:scene}). Les modèles STL sont fournis dans le dépôt ; le balayage complet des combinaisons reste consultable dans la feuille de calcul.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.32\linewidth}
+    \centering\includegraphics[width=\linewidth]{IMG_7017.jpg}
+    \caption{Structure porte-caméras.}
+  \end{subfigure}\hfill
+  \begin{subfigure}{0.32\linewidth}
+    \centering\includegraphics[width=\linewidth]{IMG_7014.jpg}
+    \caption{Boîte de dépôt.}
+  \end{subfigure}\hfill
+  \begin{subfigure}{0.32\linewidth}
+    \centering\includegraphics[width=\linewidth]{IMG_7022.jpg}
+    \caption{Plaque de travail.}
+  \end{subfigure}
+  \caption{La scène assemblée. (a)~Les deux montants portent la paire stéréo fixe (\emph{eye-to-hand}), assemblés aux rails et aux bases par vis et boulons, et les rails indépendants au sol sont des chutes d'impression servant de cales. (b)~La boîte de dépôt, garnie du matelas en TPU bleu. (c)~La plaque de travail ($60\times90$~cm), maintenue par des aimants.}
+  \label{fig:scene}
+\end{figure}
+
+\section{Capture des données et paramètres}
+\label{sec:ann-donnees}
+
+Cette dernière section liste les fichiers de résultats bruts derrière les chiffres du chapitre~\ref{ch:evaluation} (tableau~\ref{tab:manifeste}) et les paramètres d'exécution qui fixent le comportement du système (tableau~\ref{tab:parametres}). Les deux campagnes sont journalisées automatiquement, un essai par ligne, au format CSV ; pour le pipeline, il s'agit de la feuille de suivi des essais, exportée depuis le classeur de travail.
+
+\begin{table}[ht]
+  \centering\small
+  \begin{tabularx}{\linewidth}{l l X}
+    \toprule
+    Campagne & Fichier(s) & Contenu \\
+    \midrule
+    Pipeline & \texttt{docs/campagne\_suivi.csv} & 78 essais (cube et cylindre, détecteurs HSV et OWL-ViTv2, trois distances) \\
+    IL cube & \texttt{campaign\_il\_20260627\_180418 / \_184044 / \_190220} & 30 essais (proche / moyen / loin) \\
+    IL cylindre (sonde) & \texttt{campaign\_il\_20260628\_113734} & 5 essais (généralisation géométrique) \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Manifeste des fichiers de campagne (dossier \texttt{outputs/experiments/} pour l'imitation).}
+  \label{tab:manifeste}
+\end{table}
+
+\begin{table}[ht]
+  \centering\small
+  \begin{tabularx}{\linewidth}{l X}
+    \toprule
+    Paramètre & Valeur \\
+    \midrule
+    \multicolumn{2}{@{}l}{\emph{Détection}} \\
+    Détecteur appris & OWL-ViTv2 (\texttt{google/owlv2-base-patch16-ensemble}), seuil de confiance $0{,}25$ \\
+    Détecteur couleur & seuils HSV par caméra (\texttt{hsv\_specs.json}) \\
+    \addlinespace
+    \multicolumn{2}{@{}l}{\emph{Politique d'angle d'attaque (\texttt{grasp.py})}} \\
+    Top-down ($0^\circ$) & sommet $<12$~cm \emph{et} distance $\le 32$~cm \\
+    Diagonale ($45^\circ$) & sommet 12--18~cm, ou distance $>32$~cm \\
+    Frontal ($90^\circ$) & sommet $\ge 18$~cm (hors campagne) \\
+    Rejet en top-down pur & sommet $>12$~cm \\
+    \addlinespace
+    \multicolumn{2}{@{}l}{\emph{Saisie et boucle fermée}} \\
+    Ouverture de la pince & $(\text{largeur}+2\times10\,\text{mm})/150\,\text{mm}$, bornée à [20, 100]\,\% \\
+    Décalage latéral des mâchoires & automatique $=\tfrac12\,\text{largeur}+5$~mm \\
+    Décalage de convention (lacet) & $+90^\circ$ (mesuré sur le montage) \\
+    Observation / raffinement cam\_2 & 12~cm au-dessus de l'objet \\
+    Point de passage d'approche & 8~cm \\
+    Biais soustraits & stéréo $\Delta x=-32$~mm ; cam\_2 $\Delta y=-7$~mm \\
+    \addlinespace
+    \multicolumn{2}{@{}l}{\emph{Imitation (ACT)}} \\
+    Entraînement final & 200 démonstrations, 50\,000 pas (Colab, GPU A100) \\
+    Entraînement local & 50 démonstrations, 30\,000 pas (Mac, MPS) \\
+    Point de reprise évalué & version basse résolution, $\sim 25$~images/s \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Principaux paramètres d'exécution du pipeline et de l'imitation.}
+  \label{tab:parametres}
+\end{table}

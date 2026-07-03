@@ -1,0 +1,209 @@
+\chapter{Contrôle}
+\label{ch:controle}
+
+La planification a produit une \emph{intention} : une \texttt{GraspPose}, trois poses cartésiennes de la pince exprimées dans le repère de base (chapitre~\ref{ch:planification}). Le contrôle est l'étage qui la \emph{réalise} --- qui traduit ces poses en angles articulaires, puis en mouvements de moteurs, jusqu'à refermer la pince sur l'objet. C'est le maillon qui relie enfin le monde géométrique de la perception au monde physique du bras.
+
+Ce chapitre suit le fil conducteur de tout le travail : les transformations rigides $T$, les changements de repère (chapitre~\ref{ch:architecture}) dont dépendait déjà la perception (chapitre~\ref{ch:perception}). Ici, ces mêmes matrices décrivent la géométrie du bras lui-même. Nous commençons par la \emph{cinématique directe} --- où se trouve la pince quand on connaît les angles (section~\ref{sec:fk}) ---, puis par son inverse, autrement plus délicate --- quels angles atteignent une pose voulue (section~\ref{sec:ik}). Vient ensuite la \emph{génération de trajectoire}, qui enchaîne ces configurations sans à-coups (section~\ref{sec:trajectoire}), puis le \emph{contrôle moteur} qui les envoie au bras et lit son état (section~\ref{sec:moteur}). La dernière section rassemble le tout dans la boucle fermée du \emph{pick-and-place} (section~\ref{sec:boucle-fermee}).
+
+\paragraph{Un contrôle en position, non en effort.} Un choix cadre tout le chapitre : nous pilotons le bras \emph{en position}. À chaque instant, nous commandons aux servomoteurs un \emph{angle} à atteindre, et leur électronique interne s'en charge. Nous ne modélisons ni les forces, ni les couples, ni la dynamique --- masses et inerties --- du bras. Ce parti pris se justifie par le matériel : les servomoteurs du SO-101 ont un fort rapport de réduction et un asservissement en position intégré ; aux vitesses lentes que nous employons, ils tiennent leur consigne et supportent le poids du bras sans que nous ayons à calculer le moindre couple. La cinématique --- la géométrie du mouvement --- suffit donc ; la \emph{dynamique} ne deviendrait nécessaire que pour des mouvements rapides ou une commande en effort, hors de notre cadre. La seule grandeur d'effort que nous lisons est la \emph{charge} du moteur de pince, et uniquement comme un \emph{signal} de contact (section~\ref{sec:moteur}), jamais comme une consigne.
+
+\section{Cinématique directe}
+\label{sec:fk}
+
+La \emph{cinématique directe} (\emph{forward kinematics}) répond à une question simple : le bras étant dans une configuration articulaire donnée --- les cinq angles connus ---, où se trouve la pince, et comment est-elle orientée, dans le repère de base ? Elle calcule la pose $T_{\text{base}\leftarrow\text{pince}}$ à partir du vecteur d'angles $q = (q_1, \dots, q_5)$ --- où « pince » désigne le \emph{point de préhension} entre les mâchoires (et non le bout des doigts), fixé rigidement à la main à une dizaine de centimètres au-delà du poignet, que la planification vient poser sur le centre de l'objet à saisir (chapitre~\ref{ch:planification}). C'est la brique la plus fondamentale du contrôle : la cinématique \emph{inverse} l'appellera des centaines de fois (section~\ref{sec:ik}), et la boucle fermée s'en servira pour savoir où pointe la caméra de poignet (section~\ref{sec:boucle-fermee}).
+
+\paragraph{Le bras comme une chaîne de repères.} Le SO-101 est une succession de segments rigides reliés par des articulations rotoïdes. À chaque articulation est attaché un repère ; passer de la base à la pince revient à \emph{composer}, de proche en proche, les transformations rigides qui relient chaque repère au suivant --- exactement les matrices homogènes $T_{A\leftarrow B}$ du chapitre~\ref{ch:architecture}. Une transformation par articulation, mises bout à bout : leur produit donne la pose de la pince. Chaque articulation apporte deux choses --- un \emph{montage} fixe, la position et l'orientation de son repère par rapport au précédent, indépendantes de l'angle, et une \emph{rotation} d'un angle $q_i$ autour de son axe propre.
+
+\paragraph{La source du modèle : l'URDF.} Cette géométrie --- où siège chaque articulation, autour de quel axe elle tourne --- n'est pas codée en dur. Elle est lue depuis un fichier \emph{URDF} (\emph{Unified Robot Description Format}), \texttt{so101\_new\_calib.urdf}, généré par TheRobotStudio à partir de la CAO Onshape du bras SO-ARM100. L'URDF est la \emph{seule} source de vérité pour la géométrie : corriger ou changer le modèle, c'est remplacer ce fichier, jamais le code. Chaque articulation y déclare son montage fixe (balise \texttt{<origin xyz rpy>} : une translation \texttt{xyz} et trois angles \texttt{rpy}) et son axe de rotation (\texttt{<axis>}).
+
+\paragraph{La transformation d'une articulation.} Traduisons cela en matrices. Le montage fixe se lit directement dans l'URDF : la translation $\mathbf{t}$ donnée par \texttt{xyz}, et l'orientation par les trois angles \emph{roulis-tangage-lacet} $(r,p,y)$ de \texttt{rpy}, selon la convention URDF --- rotations successives autour des axes \emph{fixes} $X$, $Y$, $Z$ :
+\[
+  R_{\text{rpy}} = R_z(y)\,R_y(p)\,R_x(r),
+  \qquad
+  T_{\text{montage}} = \begin{bmatrix} R_{\text{rpy}} & \mathbf{t} \\ \mathbf{0}^{\top} & 1 \end{bmatrix}.
+\]
+À ce montage s'ajoute la rotation de l'articulation elle-même : une rotation d'angle $q_i$ autour de son axe $\mathbf{k}$ (un vecteur unitaire, exprimé dans le repère de l'articulation). La \emph{formule de Rodrigues} en donne la matrice :
+\[
+  R(\mathbf{k}, q_i) = I + \sin q_i \,[\mathbf{k}]_\times + (1 - \cos q_i)\,[\mathbf{k}]_\times^{2} ,
+\]
+où $[\mathbf{k}]_\times$ est la matrice antisymétrique du produit vectoriel par $\mathbf{k}$ --- celle qui vérifie $[\mathbf{k}]_\times \mathbf{v} = \mathbf{k}\times\mathbf{v}$ pour tout vecteur $\mathbf{v}$. C'est exactement ce que calcule la routine \texttt{cv2.Rodrigues} employée dans le code. La transformation complète d'une articulation motorisée est donc son montage suivi de cette rotation, $T_{\text{montage}}\,R(\mathbf{k}, q_i)$ ; une articulation \emph{fixe}, sans moteur, se réduit à son seul montage.
+
+\paragraph{La composition : de la base à l'effecteur.} La cinématique directe d'un bras série est le produit \emph{ordonné} de ces transformations, de la base vers la pince~\cite{siciliano_robotics_2009} :
+\[
+  T_{\text{base}\leftarrow\text{pince}}(q)
+  = \prod_{i=1}^{n} T_{\text{montage},\,i}\; R(\mathbf{k}_i, q_i) ,
+\]
+le produit courant le long de la chaîne, chaque articulation motorisée contribuant son montage \emph{et} sa rotation, chaque articulation fixe son seul montage. Concrètement, on part du repère de base (la matrice identité), on multiplie par la transformation de la première articulation, puis de la deuxième, et ainsi de suite jusqu'à la pince (figure~\ref{fig:chaine-cinematique}). Les cinq angles déterminent entièrement et sans ambiguïté la pose résultante : la cinématique directe admet toujours une solution unique, et son calcul est immédiat. C'est son \emph{inverse} qui posera problème (section~\ref{sec:ik}).
+
+\begin{figure}[t]
+  \centering
+  \resizebox{\linewidth}{!}{%
+  \begin{tikzpicture}[>={Stealth[round]}, font=\small,
+      jt/.style={circle, fill=black, inner sep=1.7pt},
+      fr/.style={circle, draw, fill=blue!8, inner sep=2.4pt},
+      mlbl/.style={font=\scriptsize\ttfamily, align=center},
+      qlbl/.style={font=\scriptsize}]
+    \node[fr, label={below:base}] (n0) at (0,0)   {};
+    \node[jt]                     (n1) at (2.0,0) {};
+    \node[jt]                     (n2) at (4.0,0) {};
+    \node[jt]                     (n3) at (6.0,0) {};
+    \node[jt]                     (n4) at (8.0,0) {};
+    \node[jt]                     (n5) at (10.0,0){};
+    \node[fr, label={below:pince}](n6) at (12.0,0){};
+    \draw[->] (n0)--(n1) node[mlbl,above,midway]{shoulder\_pan}  node[qlbl,below,midway]{$q_1$};
+    \draw[->] (n1)--(n2) node[mlbl,above,midway]{shoulder\_lift} node[qlbl,below,midway]{$q_2$};
+    \draw[->] (n2)--(n3) node[mlbl,above,midway]{elbow\_flex}    node[qlbl,below,midway]{$q_3$};
+    \draw[->] (n3)--(n4) node[mlbl,above,midway]{wrist\_flex}    node[qlbl,below,midway]{$q_4$};
+    \draw[->] (n4)--(n5) node[mlbl,above,midway]{wrist\_roll}    node[qlbl,below,midway]{$q_5$};
+    \draw[->] (n5)--(n6) node[mlbl,above,midway]{(articulation}  node[qlbl,below,midway]{fixe)};
+    \node[align=center, font=\footnotesize] at (6,-1.7)
+      {chaque flèche $i$ : montage fixe $T_{\text{montage},i}$ (lu dans l'URDF) puis rotation $R(\mathbf{k}_i,q_i)$ autour de l'axe $\mathbf{k}_i$\\[2pt]
+       $\Longrightarrow\quad T_{\text{base}\leftarrow\text{pince}}(q) \;=\; \prod_{i} T_{\text{montage},i}\,R(\mathbf{k}_i,q_i)$};
+  \end{tikzpicture}%
+  }
+  \caption{La chaîne cinématique du bras, vue comme une composition de transformations rigides. Chaque articulation ajoute un montage fixe (lu dans l'URDF) et une rotation autour de son axe ; leur produit, de la base à la pince, donne la cinématique directe.}
+  \label{fig:chaine-cinematique}
+\end{figure}
+
+\dansLeProjet{Dans ce travail, la chaîne compte cinq articulations rotoïdes --- \texttt{shoulder\_pan}, \texttt{shoulder\_lift}, \texttt{elbow\_flex}, \texttt{wrist\_flex}, \texttt{wrist\_roll} --- suivies d'une articulation \emph{fixe} qui porte le repère de la pince. Le moteur de la \emph{mâchoire} n'entre pas dans la chaîne : il ouvre et referme les doigts sans déplacer le repère de la pince, c'est une branche latérale. La configuration \emph{zéro} correspond, par convention de calibration, au milieu de course de chaque articulation (chapitre~\ref{ch:perception}) ; à cette configuration, la cinématique directe place l'effecteur à environ $(391,\,0,\,226)$ mm du repère de base --- bras tendu vers l'avant, à quelque $45$ cm de la base. Ce calcul se \emph{vérifie} au passage, par un \emph{test automatique du code}. Comme la cinématique directe enchaîne un long produit de matrices, la moindre erreur de composition --- un axe ou un \texttt{rpy} mal repris --- ou une dérive numérique se trahirait par une « rotation » qui n'en serait plus une. Nous testons donc, sur vingt configurations tirées \emph{au hasard} (et non sur le seul cas favorable de la configuration zéro), que le bloc rotation de la pose reste \emph{orthonormal} et de \emph{déterminant} $+1$ à la précision numérique --- les deux conditions d'une vraie rotation. Le vérifier pour des configurations quelconques est un indice solide que la chaîne est correctement montée.}
+
+\section{Cinématique inverse}
+\label{sec:ik}
+
+La cinématique directe se parcourt dans un sens ; la saisie demande l'autre. Une \texttt{GraspPose} fixe \emph{où} la pince doit se trouver --- une pose $T_{\text{base}\leftarrow\text{pince}}$ voulue --- et il faut en déduire les cinq angles qui l'y amènent. C'est la \emph{cinématique inverse} (\emph{inverse kinematics}) : passer de la pose aux angles. Autant la directe était immédiate, autant son inverse est délicate, pour deux raisons.
+
+\paragraph{Pourquoi c'est difficile.} D'abord, il n'existe pas, pour cette géométrie, de formule explicite donnant les angles à partir de la pose : les rotations s'y composent de façon trop enchevêtrée pour s'inverser à la main. Ensuite --- et surtout ---, le bras a \emph{cinq} degrés de liberté pour une pose qui en compte \emph{six} (chapitre~\ref{ch:planification}) : la plupart des poses ne sont donc \emph{pas} exactement atteignables. Nous ne chercherons pas la solution exacte --- elle n'existe en général pas ---, mais la configuration qui \emph{approche au mieux} la pose voulue. Cela transforme l'inversion en un problème d'\emph{optimisation} : minimiser l'écart entre la pose atteinte et la pose visée.
+
+\paragraph{Mesurer l'écart : le résidu.} Pour minimiser un écart, il faut d'abord le chiffrer. À une configuration $q$, la cinématique directe donne une pose de position $\mathbf{t}(q)$ et de rotation $R(q)$ ; on la compare à la cible $(\mathbf{t}_{\text{cible}}, R_{\text{cible}})$ par un \emph{résidu} à six composantes :
+\[
+  \mathbf{r}(q) =
+  \begin{bmatrix} \mathbf{t}(q) - \mathbf{t}_{\text{cible}} \\[3pt]
+  \alpha\,\operatorname{vec}\!\big(R(q)^{\top} R_{\text{cible}}\big) \end{bmatrix} .
+\]
+Ce résidu \emph{empile} deux vecteurs de trois nombres chacun --- six en tout. Le bloc du haut, $\mathbf{t}(q) - \mathbf{t}_{\text{cible}}$, est l'erreur de \emph{position} : trois nombres, en mètres. Le bloc du bas est l'erreur d'\emph{orientation} : le produit $R(q)^{\top} R_{\text{cible}}$ est la rotation qui \emph{reste} à faire pour aligner la pince sur la cible, et $\operatorname{vec}(\cdot)$ l'exprime en \emph{vecteur de rotation} (axe $\times$ angle, par la formule de Rodrigues de la section~\ref{sec:fk}), dont la norme vaut l'angle de désalignement --- trois nombres de plus, cette fois en radians. Position et orientation cohabitent ainsi dans un \emph{seul} vecteur, ce qui pose un problème d'unités : on ne peut pas additionner des mètres et des radians dans une norme. C'est le rôle du facteur $\alpha$, exprimé en \emph{mètres par radian} : il \emph{convertit} l'erreur angulaire en son équivalent en mètres, pour que les six composantes se comptent dans la même unité. Nous prenons $\alpha = 0{,}1$ m/rad --- un radian de désalignement « pèse » alors autant que $0{,}1$ m ($10$ cm) d'erreur de position ---, échelle cohérente avec la taille du bras (quelques décimètres). Résoudre l'IK, c'est alors trouver le $q$ qui minimise $\lVert \mathbf{r}(q) \rVert^2$.
+
+\paragraph{Descendre vers la solution : Gauss-Newton et Levenberg-Marquardt.} On procède par \emph{itérations}, en partant d'une configuration et en l'améliorant pas à pas. Autour de la configuration courante $q$, on \emph{linéarise} le résidu : $\mathbf{r}(q + \Delta q) \approx \mathbf{r}(q) + J\,\Delta q$, où $J = \partial \mathbf{r}/\partial q$ est la matrice \emph{jacobienne} ($6 \times 5$) des dérivées du résidu par rapport aux angles. Chercher le pas $\Delta q$ qui annulerait au mieux ce résidu linéarisé conduit aux \emph{équations normales} de Gauss-Newton, $J^{\top} J\,\Delta q = -\,J^{\top}\mathbf{r}$. Mais près des configurations \emph{singulières} --- fréquentes sur un bras à cinq axes ---, la matrice $J^{\top} J$ est mal conditionnée et le pas calculé explose. On la \emph{stabilise} par l'astuce de \emph{Levenberg-Marquardt}~\cite{marquardt_algorithm_1963}, qui ajoute un terme d'amortissement $\lambda$ :
+\[
+  \big(J^{\top} J + \lambda I\big)\,\Delta q = -\,J^{\top}\mathbf{r} .
+\]
+Le paramètre $\lambda$ interpole entre deux comportements : \emph{petit}, il redonne Gauss-Newton (grands pas, convergence rapide près de la solution) ; \emph{grand}, il donne un petit pas prudent dans la direction de plus forte descente. Il s'\emph{ajuste} tout seul : après chaque pas, si le résidu a diminué, on accepte le pas et l'on \emph{réduit} $\lambda$ (on fait davantage confiance au modèle linéaire) ; s'il a augmenté, on \emph{augmente} $\lambda$ et l'on retente plus prudemment. Deux garde-fous complètent la descente : le pas est \emph{plafonné} (au plus $0{,}5$ rad, pour éviter un bond incontrôlé) et chaque nouvelle configuration est \emph{ramenée dans les plages articulaires} --- le solveur ne propose jamais un angle que le servomoteur ne pourrait tenir. On s'arrête quand le résidu passe sous un seuil serré ($\lVert\mathbf{r}\rVert < 10^{-3}$) ou au bout de cent itérations.
+
+\paragraph{La jacobienne, par différences finies.} Reste à obtenir $J$. Plutôt que de la dériver analytiquement pour cette géométrie particulière, nous l'estimons \emph{numériquement} : la cinématique directe étant immédiate, il suffit de la « sonder ». Pour chaque articulation $k$, on décale son angle d'un infime $\varepsilon$ dans les deux sens et l'on mesure comment le résidu varie --- une \emph{différence finie centrée} :
+\[
+  J_{:,\,k} = \frac{\mathbf{r}(q + \varepsilon\,e_k) - \mathbf{r}(q - \varepsilon\,e_k)}{2\,\varepsilon} ,
+\]
+où $e_k$ ne déplace que l'articulation $k$ et $\varepsilon = 10^{-4}$ rad. La variante \emph{centrée} --- deux évaluations, en $+\varepsilon$ et $-\varepsilon$ --- est plus précise que la version à un seul côté (son erreur décroît comme $\varepsilon^2$ au lieu de $\varepsilon$), pour le coût d'une évaluation de plus par articulation. Chaque jacobienne demande ainsi dix appels à la cinématique directe (deux par axe), négligeables vu leur rapidité.
+
+\paragraph{Éviter les mauvais minima : des redémarrages déterministes.} La fonction à minimiser n'est pas convexe : partie d'un mauvais endroit, la descente peut se figer dans un minimum \emph{local} sans atteindre la pose. Nous lançons donc la recherche depuis \emph{plusieurs} points de départ : la configuration courante fournie (ou zéro à défaut) ; une amorce heuristique --- orienter l'épaule vers la cible, replier grossièrement le bras selon la distance ---; et six configurations \emph{aléatoires} tirées dans les plages articulaires. Point important : le générateur aléatoire est \emph{réinitialisé à l'identique} à chaque appel, si bien qu'une même pose engendre toujours les mêmes redémarrages --- donc le \emph{même} mouvement d'une exécution à l'autre. Cette reproductibilité (« même situation, même comportement ») est délibérée : elle évite les mouvements surprises et rejoint les modes d'exécution du chapitre~\ref{ch:architecture}.
+
+\paragraph{Choisir parmi les solutions : la continuité.} Ces recherches produisent plusieurs solutions convergées. Nous ne retenons ni la première trouvée, ni celle de plus petit résidu, mais celle \emph{la plus proche} de la configuration de départ (au sens de $\lVert q - q_{\text{init}} \rVert$). La raison est physique : deux configurations très différentes peuvent atteindre presque la même pose --- coude en haut ou en bas, poignet tourné d'un demi-tour ---, et choisir celle qui bouge le \emph{moins} donne un mouvement court et lisse, sans reconfiguration brutale entre deux poses successives. Et si \emph{aucune} recherche ne converge, le solveur renvoie tout de même sa meilleure approximation : l'appelant reçoit la pose atteignable la plus proche, plutôt qu'une erreur. C'est exactement le \emph{filtre d'atteignabilité} du chapitre~\ref{ch:planification} : la planification interroge l'IK pour chaque angle d'attaque candidat et retient le premier réellement atteignable.
+
+\paragraph{La symétrie à demi-tour de la pince.} Un dernier raffinement, propre à la saisie. Une pince à mâchoires parallèles referme sur la même ligne, que sa tête soit tournée d'un côté ou de l'autre : la prise à l'orientation $R$ et celle à $R$ \emph{retournée de $180^{\circ}$} autour de l'axe d'approche sont \emph{identiques} pour l'objet. Le solveur essaie donc les \emph{deux} et garde la plus \emph{naturelle} --- celle dont le roulis de poignet reste le plus proche de la posture courante ---, ce qui empêche la tête de se retrouver à l'envers, plongeant vers la table. C'est la réalisation concrète du garde-fou annoncé au chapitre~\ref{ch:planification} : une prise qui exigerait un demi-tour du poignet est écartée. Une fenêtre de course \emph{asymétrique} sur le roulis (issue de la calibration) verrouille d'ailleurs structurellement la variante retournée.
+
+\dansLeProjet{Dans ce travail, le solveur emploie une pondération $\alpha = 0{,}1$, un amortissement initial $\lambda = 10^{-3}$, un pas de différences finies $\varepsilon = 10^{-4}$ rad, six redémarrages aléatoires, et s'arrête à $\lVert\mathbf{r}\rVert < 10^{-3}$ ou cent itérations. Quand la pose est réellement atteignable, il est précis : sur un aller-retour cinématique directe $\to$ inverse --- un \emph{test automatique du solveur}, à graine fixe donc reproductible, où l'on part d'angles connus, on en calcule la pose, puis on ré-inverse celle-ci ---, l'erreur maximale reste de l'ordre de $0{,}5$ mm en position et $0{,}4^{\circ}$ en orientation. Le sous-actionnement, lui, se lit sur les cas limites du même test : une prise verticale à $20$ cm devant le robot et $10$ cm de haut laisse déjà un résidu de l'ordre du centimètre --- le bras ne peut satisfaire \emph{exactement} position \emph{et} orientation ---; et pour un objet de $18$ cm de haut à $20$ cm, l'attaque à $45^{\circ}$ converge (résidu $< 1$ mm) là où celle \emph{de face} à $90^{\circ}$ échoue (résidu $\sim 3$ cm), précisément le couplage angle $\times$ distance qu'exploite la planification (chapitre~\ref{ch:planification}). Enfin, parce que ce seuil de convergence strict ($10^{-3}$, combinant millimètres et radians pondérés) est très exigeant, le pipeline juge en pratique l'atteignabilité sur une tolérance \emph{physique} plus large --- une erreur de position sous $8$ mm à la pose de saisie, $15$ mm à la pose d'approche ---: une pose « non convergée » au sens strict reste souvent parfaitement exploitable.}
+
+\section{Génération de trajectoire}
+\label{sec:trajectoire}
+
+La cinématique inverse fournit des \emph{configurations} cibles --- les étapes de la prise : configuration courante, approche, saisie, retrait, dépose. Mais connaître les étapes ne dit pas encore \emph{comment} passer de l'une à l'autre : à quelle vitesse, selon quel profil. Envoyer d'un coup la configuration cible, ou s'y rendre à vitesse constante, secouerait le bras --- et brouillerait l'image de la caméra de poignet à l'instant précis où l'on en a besoin. La \emph{génération de trajectoire} calcule un chemin \emph{lisse} entre deux configurations.
+
+\paragraph{Relier deux configurations sans à-coups.} Entre une configuration de départ $q_0$ et une cible $q_f$, il faut définir $q(t)$ pour $t \in [0, T]$. Trois exigences : partir de $q_0$ et finir en $q_f$ (les extrémités) ; une \emph{vitesse nulle} aux deux bouts (le bras est au repos avant et après) ; et, idéalement, une \emph{accélération nulle} aux deux bouts également --- car une accélération qui saute brutalement, c'est une secousse (un \emph{à-coup}). Une simple interpolation \emph{linéaire}, $q(t) = (1 - \tfrac{t}{T})\,q_0 + \tfrac{t}{T}\,q_f$, respecte les extrémités mais file à vitesse \emph{constante} : la vitesse bondit de $0$ à sa valeur au départ, et retombe d'un coup à l'arrivée --- accélération infinie, deux à-coups. Acceptable pour un mouvement très lent, mais non lisse.
+
+\paragraph{Le polynôme quintique.} On confie plutôt le profil temporel à un polynôme de degré cinq~\cite{siciliano_robotics_2009}. Pour chaque articulation,
+\[
+  q(t) = q_0 + s(\tau)\,(q_f - q_0), \qquad \tau = \frac{t}{T} \in [0, 1],
+\]
+où $s(\tau)$ est une fonction de \emph{cadence} qui va de $0$ à $1$. On lui impose \emph{six} conditions --- position, vitesse et accélération, à chaque extrémité :
+\[
+  s(0) = 0,\quad s(1) = 1, \qquad s'(0) = s'(1) = 0, \qquad s''(0) = s''(1) = 0 .
+\]
+Six conditions déterminent exactement les six coefficients d'un polynôme de degré cinq. Leur résolution donne
+\[
+  s(\tau) = 10\,\tau^3 - 15\,\tau^4 + 6\,\tau^5 .
+\]
+On le vérifie d'un coup d'œil : $s(0) = 0$ et $s(1) = 10 - 15 + 6 = 1$ ; la dérivée $s'(\tau) = 30\,\tau^2 - 60\,\tau^3 + 30\,\tau^4$ s'annule en $0$ et en $1$ (où $30 - 60 + 30 = 0$) ; et l'accélération $s''(\tau) = 60\,\tau - 180\,\tau^2 + 120\,\tau^3$ s'annule elle aussi aux deux bouts. Vitesse et accélération montent donc \emph{en douceur} depuis zéro, puis y reviennent : aucun à-coup au démarrage ni à l'arrêt (figure~\ref{fig:quintique}).
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[x=5.4cm, y=1.5cm, >=Latex]
+    \draw[->] (-0.02,0) -- (1.18,0) node[below right] {$\tau = t/T$};
+    \draw[->] (0,-0.05) -- (0,2.18);
+    \draw[dotted] (0.5,0) -- (0.5,1.875);
+    \draw[dotted] (0,1.875) -- (0.5,1.875);
+    \node[below] at (0.5,0) {$\tfrac{1}{2}$};
+    \node[below] at (1,0) {$1$};
+    \node[left] at (0,1) {$1$};
+    \node[left] at (0,1.875) {$\tfrac{15}{8}$};
+    \draw[thick, blue] plot[domain=0:1, samples=80] (\x, {10*\x*\x*\x - 15*\x*\x*\x*\x + 6*\x*\x*\x*\x*\x});
+    \draw[thick, red]  plot[domain=0:1, samples=80] (\x, {30*\x*\x - 60*\x*\x*\x + 30*\x*\x*\x*\x});
+    \node[blue] at (0.85, 0.68) {$s(\tau)$};
+    \node[red]  at (0.28, 1.58) {$s'(\tau)$};
+  \end{tikzpicture}
+  \caption{Le profil quintique $s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5$ (en bleu) et sa dérivée $s'(\tau)$ (en rouge, la vitesse normalisée). La position monte de $0$ à $1$ ; la vitesse part de zéro, culmine à $\tfrac{15}{8}$ de la moyenne au milieu du mouvement, puis revient à zéro --- d'où l'absence d'à-coups au départ et à l'arrêt.}
+  \label{fig:quintique}
+\end{figure}
+
+\paragraph{Une vitesse en cloche.} La vitesse articulaire $\dot{q} = \tfrac{1}{T}\,s'(\tau)\,(q_f - q_0)$ suit la courbe en cloche de $s'$ : nulle aux extrémités, maximale au milieu. Ce pic vaut $s'(\tfrac{1}{2}) = \tfrac{15}{8}$, soit environ $1{,}9$ fois la vitesse \emph{moyenne} $(q_f - q_0)/T$. Autrement dit, pour rester sous une vitesse maximale donnée, il faut accorder au mouvement une durée un peu plus grande que le simple rapport déplacement / vitesse.
+
+\paragraph{Dimensionner la durée.} Reste à choisir $T$. On le dimensionne à partir du plus grand déplacement : $T = 1{,}5 \times \Delta_{\max} / v_{\max}$, où $\Delta_{\max}$ est le plus grand déplacement angulaire parmi les articulations et $v_{\max}$ une vitesse maximale \emph{nominale}. Comme le profil quintique culmine à $15/8$ de sa moyenne, cette marge de $1{,}5$ ne fait que \emph{réduire} le dépassement sans l'annuler : la vitesse de pointe atteint en réalité environ $1{,}25\,v_{\max}$. Cela reste prudent vu la faible valeur de $v_{\max}$ retenue. Toutes les articulations partagent le \emph{même} $T$ : elles démarrent et s'arrêtent ensemble (mouvement \emph{synchronisé}), ce qui donne un chemin propre dans l'espace articulaire.
+
+\paragraph{Échantillonner et enchaîner.} La courbe continue $q(t)$ est enfin \emph{échantillonnée} à cadence fixe en une suite d'instants et de configurations --- une \texttt{JointTrajectory} --- que le contrôleur rejouera en respectant les horodatages (section~\ref{sec:moteur}). Une prise complète \emph{enchaîne} plusieurs segments quintiques bout à bout (courant $\to$ approche $\to$ saisie $\to$ retrait $\to$ dépose), chacun à vitesse nulle à ses jonctions : le bras marque donc un bref arrêt à chaque étape --- ce qui tombe bien, puisque c'est lors d'un tel arrêt, \emph{au-dessus} de l'objet, qu'il l'observe pour raffiner la prise (section~\ref{sec:boucle-fermee}). L'ouverture de la pince est interpolée le long du même $s(\tau)$, de sorte qu'elle se referme au rythme du bras.
+
+\dansLeProjet{Dans ce travail, les trajectoires sont échantillonnées à $30$ Hz et la vitesse maximale nominale est fixée à $0{,}5$ rad/s (environ $30^{\circ}$/s), prudente pour le SO-101. Une interpolation \emph{linéaire} est aussi disponible, mais c'est le profil \emph{quintique} qui est employé, pour sa douceur ; sa vitesse de pointe, calculée sur le générateur de trajectoire, vaut bien $15/8$ de la moyenne.}
+
+\section{Contrôle moteur}
+\label{sec:moteur}
+
+La trajectoire est une suite de configurations articulaires horodatées ; reste à les faire exécuter par le bras. Cette section est le pont entre l'\emph{angle} et le \emph{servomoteur} : comment un angle devient une commande d'encodeur, comment la trajectoire est jouée, et comment se lit le seul retour d'effort que nous utilisons --- la charge de la pince.
+
+\paragraph{Du radian à l'encodeur.} Le bras est mû par six servomoteurs \emph{Feetech STS3215} (cinq pour le bras, un pour la pince), pilotés par le bus série de LeRobot. Chacun porte un encodeur magnétique absolu de $12$ bits, soit environ $4096$ positions par tour : on lui commande une position-cible en \emph{pas} d'encodeur (registre \texttt{Goal\_Position}). La conversion d'un angle en pas est l'inverse exact de la calibration qui sert déjà à la perception et à la cinématique directe (chapitre~\ref{ch:perception}) :
+\[
+  \text{pas} = \text{centre} + \frac{\theta_{\deg}}{360}\, N_{\text{tour}} , \qquad N_{\text{tour}} \approx 4096 ,
+\]
+où \emph{centre} est le pas correspondant à l'angle nul --- le milieu de course calibré. Un pas vaut donc environ $360/4096 \approx 0{,}088^{\circ}$. Certaines articulations tournent en sens inverse (un indicateur de calibration inverse alors le signe), et la valeur obtenue est \emph{bornée} aux plages articulaires, avec une petite tolérance pour qu'un simple arrondi ne déclenche pas une erreur de butée.
+
+\paragraph{Envoyer et suivre la trajectoire.} Une fois le \emph{couple activé} --- les servomoteurs tiennent alors leur position et obéissent aux consignes ---, commander une pose consiste à écrire les positions-cibles des six moteurs \emph{en une seule fois} (écriture synchrone), pour qu'ils démarrent ensemble plutôt que l'un après l'autre. Suivre une trajectoire, c'est répéter cette commande pour chaque échantillon en respectant les horodatages : on envoie la configuration, puis on attend l'instant du point suivant, à la cadence de $30$ Hz de la section précédente. Deux précautions encadrent le tout : le couple est \emph{coupé} à la déconnexion et sur interruption (le bras peut alors se manipuler à la main et n'est jamais laissé sous tension inutilement), et la connexion au bus est retentée en cas de paquet corrompu au démarrage.
+
+\paragraph{Le seul retour d'effort : la charge de la pince.} Le SO-101 n'a ni capteur de force ni capteur tactile. Mais le servomoteur de pince expose un registre \texttt{Present\_Load} --- son estimation interne de couple, une magnitude sur $10$ bits ($0$ à $1023$) accompagnée d'un bit de signe, dont nous ne gardons que la magnitude. C'est une valeur \emph{brute}, sans unité physique --- un simple entier sur l'échelle $0$--$1023$. À vide, mâchoires refermées sur rien, cette charge reste basse --- de l'ordre de $20$ à $30$ ; dès que les mâchoires pressent un objet, elle monte. C'est notre unique signal de contact, et il a un avantage sur une vérification par vision : il n'est pas sujet à l'occlusion.
+
+\paragraph{Fermer au contact, sans écraser.} Comment la pince sait-elle quand cesser de se refermer ? Pas par une consigne fixe --- qui écraserait un objet mou ou raterait un objet fin. Nous refermons \emph{par petits pas} en surveillant la charge : il y a \emph{contact} dès qu'elle dépasse un seuil \emph{adaptatif}, égal à une \emph{référence} plus une marge. La référence est mesurée sur les premières lectures, mâchoires encore libres (le couple à vide) ; la marge vaut $130$ unités de charge (sur cette même échelle brute). Le seuil s'établit ainsi vers $150$ à $180$, ce qui sépare nettement « mâchoires libres » de « mâchoires sur l'objet » --- bien mieux qu'une valeur absolue figée. Deux raisons à ce choix : d'une part, un critère fondé sur l'\emph{immobilité} des mâchoires déclenchait de faux contacts au démarrage (le servomoteur ne suit pas sa consigne instantanément) ; d'autre part, les mâchoires en \emph{TPU compliant} épousent l'objet et le tiennent à un couple \emph{faible}, très en dessous du pic transitoire du contact --- une valeur absolue unique déclarait alors ratées des prises pourtant correctes. Au contact, la consigne est \emph{gelée} puis resserrée d'un cran : la pression est maintenue, tout en gardant un écart consigne\,$\leftrightarrow$\,objet qui permettra de détecter une chute à la levée (section~\ref{sec:boucle-fermee}).
+
+\dansLeProjet{Dans ce travail, les six moteurs sont des Feetech STS3215 (identifiants $1$ à $6$, la pince étant le sixième), et la charge à vide relevée sur le bus est de l'ordre de $20$ à $30$. La fermeture asservie referme par pas de $2\,\%$ d'ouverture, détecte le contact à \emph{référence} $+\,130$, puis resserre de $4\,\%$ pour maintenir la prise. Ces valeurs, calées expérimentalement, sont autant de paramètres réglables.}
+
+\section{Pipeline intégré et boucle fermée}
+\label{sec:boucle-fermee}
+
+Les sections précédentes ont livré les ingrédients ; il reste à les assembler en une prise complète. Le point clé est que l'exécution n'est pas \emph{en boucle ouverte} --- planifier une fois, puis exécuter aveuglément. Entre la planification et la descente finale, la caméra de poignet regarde l'objet de près et \emph{corrige} ; et la prise est \emph{vérifiée} par une levée. Deux boucles fermées se referment ainsi : l'une sur la \emph{position} (avant de saisir), l'autre sur la \emph{tenue} (après avoir saisi). Ce sont les deux garde-fous annoncés au chapitre~\ref{ch:planification}, réalisés ici (figure~\ref{fig:boucle-fermee}).
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+      node distance=4.5mm and 8mm,
+      box/.style={draw, rounded corners, align=center, text width=7.4cm, inner sep=4pt, font=\small},
+      >=Latex]
+    \node[box] (plan) {\textbf{Planification} --- \texttt{GraspPose} (chapitre~\ref{ch:planification})};
+    \node[box, below=of plan] (p1) {\textbf{Phase 1} --- montée directe à $12$ cm au-dessus de l'objet (pose d'observation)};
+    \node[box, below=of p1] (cam2) {\textbf{Raffinement \texttt{cam\_2}} --- détecter, projeter (rayon--plan), corriger la position $(x,y)$};
+    \node[box, below=of cam2] (reik) {\textbf{Ré-résoudre l'IK} (orientation verrouillée)};
+    \node[box, below=of reik] (p2) {\textbf{Phase 2} --- descendre, puis fermer au couple};
+    \node[box, below=of p2] (lift) {\textbf{Lever et vérifier la tenue} (\texttt{Present\_Load})};
+    \node[box, below=of lift] (drop) {\textbf{Déposer} et revenir à la pose de repos};
+    \foreach \a/\b in {plan/p1, p1/cam2, cam2/reik, reik/p2, p2/lift} {\draw[->] (\a) -- (\b);}
+    \draw[->] (lift) -- node[right, font=\small] {tenu} (drop);
+    \draw[->] (lift.east) -- ++(0.7,0) |- node[right, font=\small, pos=0.25] {échec : retenter} (p2.east);
+  \end{tikzpicture}
+  \caption{La boucle fermée du \emph{pick-and-place}. La position est corrigée par la caméra de poignet avant la saisie (boucle de \emph{position}), et la prise est confirmée par une levée avant la dépose (boucle de \emph{tenue}) ; un échec de tenue relance une tentative.}
+  \label{fig:boucle-fermee}
+\end{figure}
+
+\paragraph{Phase 1 : monter observer.} Depuis sa configuration courante, le bras monte à une pose d'\emph{observation}, à $12$ cm \emph{au-dessus} de la position estimée par la stéréo (chapitre~\ref{ch:perception}) --- une hauteur choisie pour que l'objet soit dans le champ de \texttt{cam\_2} \emph{et} dégagé des mâchoires, qui occupent le bas de l'image. On y monte par une trajectoire quintique (section~\ref{sec:trajectoire}), et seulement si la cinématique inverse atteint cette pose dans la tolérance pratique (section~\ref{sec:ik}).
+
+\paragraph{Le raffinement cam\_2 : un asservissement visuel.} À la pose d'observation, la caméra de poignet voit l'objet \emph{de près} --- bien plus précisément que la stéréo oblique. On l'y détecte (le détecteur de la perception, chapitre~\ref{ch:perception}), puis on convertit le pixel détecté en une position 3D par \emph{intersection rayon--plan} : le pixel (corrigé de la distorsion) définit un rayon dans le repère de base --- via la matrice intrinsèque et la pose $T_{\text{base}\leftarrow\texttt{cam\_2}}$, elle-même donnée par la cinématique \emph{directe} (section~\ref{sec:fk}) --- que l'on intersecte avec le plan horizontal à la hauteur de l'objet. On compare cette position à celle que la prise planifiée visait, et l'on en tire une correction $(x, y)$ que l'on applique à la \texttt{GraspPose} (la hauteur $z$, elle, reste celle de la stéréo). C'est une correction \emph{ponctuelle} de type \emph{look-and-move} --- on regarde une fois, on reconstruit la position 3D, on corrige la pose \emph{cartésienne}, puis on descend ---, apparentée à l'asservissement visuel~\cite{chaumette_visual_2006, flandin_eye--handeye--hand_2000} sans en être la variante \emph{référencée image}, qui asservirait en boucle continue sur l'erreur en pixels. Trois garde-fous : la correction n'est appliquée que si la détection est fiable (tache assez grande dans l'image), sous un plafond de sécurité, et si la boîte n'est pas tronquée par un bord disqualifiant. Elle est en outre d'autant plus sûre que \texttt{cam\_2} regarde l'objet \emph{de haut}. La projection rayon--plan intersecte en effet le rayon avec un plan \emph{horizontal} : pour une vue plongeante (prise verticale), l'intersection est bien conditionnée ; à mesure que l'approche s'incline, le rayon rencontre le plan sous un angle de plus en plus rasant, et une petite erreur de pixel s'amplifie en une grande erreur de position --- à la limite frontale ($90^{\circ}$), le rayon \emph{rase} le plan. Une vue oblique, comme la diagonale à $45^{\circ}$, voit de surcroît à la fois le dessus et un côté de l'objet, ce qui biaise le centre détecté. La correction est donc la plus fiable pour la prise \emph{verticale} --- de loin la plus fréquente ---, un plafond d'inclinaison réglable permettant, au besoin, de la désactiver au-delà d'un angle choisi. Au passage, \texttt{cam\_2} mesure aussi le grand axe de l'objet, ce qui permet de réaligner les mâchoires.
+
+\paragraph{Ré-résoudre l'IK.} La \texttt{GraspPose} ayant bougé, on relance la cinématique inverse pour ses trois poses (approche, saisie, retrait), cette fois \emph{orientation verrouillée} : le choix entre les deux symétries de la pince (section~\ref{sec:ik}) est déjà fait, on ne le rejoue pas --- c'est ce qui évite un demi-tour du poignet d'un calcul à l'autre. La continuité avec la configuration courante garde le mouvement lisse.
+
+\paragraph{Phase 2 : saisir, vérifier, recommencer.} La saisie proprement dite est une \emph{boucle de tentatives} (deux au plus). Chaque tentative descend vers la pose de saisie, pince ouverte ; referme la pince \emph{au couple} (section~\ref{sec:moteur}) ; et vérifie le contact. Puis vient la \emph{vérification par levée}, notre boucle de tenue : le bras remonte à la pose de retrait en tenant la pince, et l'on relit charge \emph{et} position. L'objet est jugé \emph{tenu} si la charge reste nettement au-dessus du couple à vide, \emph{ou} si les mâchoires demeurent bloquées au-dessus de la consigne de serrage. Pourquoi vérifier \emph{après} la levée ? Parce que le couple à la fermeture peut \emph{mentir} --- un effleurement du sommet, la morsure d'un bord, un appui sur la table donnent de faux positifs ; mais après une dizaine de centimètres de levée, un objet perdu voit sa charge retomber à la valeur à vide, et le faux positif est démasqué. Si l'objet est tenu, le bras le \emph{dépose} et revient à sa pose de repos ; sinon, une nouvelle tentative est lancée (re-raffinement puis redescente).
+
+\paragraph{Les deux boucles, réunies.} La boucle de \emph{position} rattrape le reliquat d'erreur de la perception avant que la pince ne se referme ; la boucle de \emph{tenue} rattrape les fermetures ratées après coup. Ensemble, elles rendent le pipeline géométrique robuste malgré une perception imparfaite et un bras à cinq degrés de liberté --- sans jamais recourir à l'apprentissage. Leur efficacité chiffrée, et la comparaison avec la politique apprise de bout en bout, font l'objet du chapitre~\ref{ch:evaluation}.
+
+\dansLeProjet{Dans ce travail, la pose d'observation est à $12$ cm au-dessus de l'objet (paramètre réglable), et c'est le \emph{seul} arrêt de raffinement : la descente est ensuite directe. La correction \texttt{cam\_2} ne porte que sur $(x, y)$ et reste plafonnée par sécurité ; elle est la plus fiable en prise verticale, un plafond d'inclinaison réglable pouvant la restreindre aux prises peu inclinées (par défaut, aucune restriction). À la levée, l'objet est déclaré tenu si sa charge dépasse d'au moins $90$ unités la valeur à vide (de l'ordre de $24$ sur l'échelle $0$--$1023$), ou si l'ouverture reste supérieure d'au moins $3\,\%$ à la consigne de serrage. Une seule reprise est autorisée : en cas d'échec, le bras retente une fois puis s'arrête (deux tentatives au plus).}

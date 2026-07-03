@@ -1,0 +1,125 @@
+\chapter{Évaluation expérimentale}
+\label{ch:evaluation}
+
+Les chapitres précédents ont décrit deux manières de résoudre la même tâche : le \emph{pipeline modulaire} --- perception, planification, contrôle (chapitres~\ref{ch:perception} à~\ref{ch:controle}) --- et une \emph{politique apprise} de bout en bout par imitation (ACT, chapitre~\ref{ch:etat}). Ce chapitre les met à l'épreuve sur le \emph{même} banc : d'abord le protocole (section~\ref{sec:eval-protocole}), puis les résultats du pipeline (section~\ref{sec:eval-pipeline}), ceux de la politique apprise (section~\ref{sec:eval-il}), et enfin leur comparaison (section~\ref{sec:eval-comparaison}).
+
+\section{Protocole expérimental}
+\label{sec:eval-protocole}
+
+\paragraph{La tâche et le critère de succès.} La tâche est unique : saisir un objet cible posé sur la table, puis le déposer dans une boîte. Un \emph{essai} est une tentative complète. Le \emph{succès} exige que l'objet soit \emph{saisi} \emph{et} \emph{déposé}. Le pipeline enregistre le succès comme « tenu après la levée » --- la vérification par la charge du chapitre~\ref{ch:controle} ---, et note à part si l'objet a \emph{visuellement} atterri dans la boîte ; les deux peuvent différer de peu (un objet tenu au décollage mais relâché de travers à la dépose). Pour la politique apprise, le succès est jugé à l'œil (saisi et déposé). Les deux campagnes visent \emph{la même issue} --- un \emph{pick-and-place} mené à terme ---, mais ne la mesurent pas tout à fait pareil : le pipeline retient la \emph{tenue} après la levée (un proxy automatique, un peu plus indulgent que le dépôt effectif), la politique apprise le \emph{dépôt} jugé à l'œil. Nous en tenons compte au moment de les comparer (section~\ref{sec:eval-comparaison}).
+
+\paragraph{Les positions.} Nous faisons varier la \emph{distance} de l'objet à la base : \emph{proche}, \emph{moyenne} et \emph{lointaine} --- un rayon d'environ $25$, $35$ et $42$ cm ---, en déplaçant l'objet le long d'un \emph{arc} de ce rayon (et non sur le seul axe avant), à $\pm 2$ cm près. On sonde ainsi l'\emph{espace de travail} --- souvent très fiable de près, se dégradant de loin --- plutôt qu'un unique point favorable.
+
+\paragraph{Les objets.} Le plan initial prévoyait cinq objets ; en pratique, la campagne s'est concentrée sur le \emph{cube orange} --- l'objet principal, testé avec les \emph{deux} détecteurs, $30$ essais chacun --- et, secondairement, sur le \emph{cylindre violet} --- $9$ essais chacun --- pour sonder l'adaptation à une \emph{autre} géométrie. Les trois autres (balle, boîte, prisme) n'ont pas été \emph{retenus dans la campagne} --- pratiqués de façon informelle, mais non mesurés : une réduction de périmètre assumée, faute de temps, rediscutée au chapitre~\ref{ch:discussion}. Tous les essais portent sur un objet \emph{seul} --- aucune scène encombrée : l'évitement d'obstacles (objectif~3 du cahier des charges, écarté au chapitre~\ref{ch:planification}) n'est pas évalué.
+
+\paragraph{Les métriques.} La grandeur de tête est le \emph{taux de réussite} $\hat{p} = k/n$ ($k$ succès sur $n$ essais). Mais sur une trentaine d'essais, ce taux n'est qu'une \emph{estimation} du vrai taux : $21/30$ pourrait, par chance, provenir d'un procédé à $60$ comme à $80\,\%$. On l'assortit donc d'un \emph{intervalle de confiance} à $95\,\%$ --- la fourchette où se situe, très probablement, le vrai taux. Nous employons l'intervalle de \emph{Wilson}~\cite{wilson_probable_1927}, préférable à l'intervalle \emph{naïf} « $\hat{p} \pm \ldots$ » : ce dernier, fondé sur une approximation normale, devient trompeur près de $0$ ou $100\,\%$ (ses bornes peuvent alors sortir de $[0, 1]$), quand celui de Wilson, lui, reste bien conditionné pour de petits échantillons. Avec $z = 1{,}96$ --- le facteur qui englobe $95\,\%$ d'une loi normale ---,
+\[
+  \text{IC}_{95} = \frac{\hat{p} + \dfrac{z^2}{2n} \;\pm\; z\,\sqrt{\dfrac{\hat{p}\,(1-\hat{p})}{n} + \dfrac{z^2}{4n^2}}}{1 + \dfrac{z^2}{n}} ,
+\]
+que nous calculons directement, sans bibliothèque statistique. Au-delà du taux, le pipeline journalise deux grandeurs \emph{automatiques} : le \emph{résidu de cinématique inverse} (l'erreur de pose atteinte, chapitre~\ref{ch:controle}) et l'\emph{amplitude de la correction \texttt{cam\_2}} (la norme de l'écart \emph{horizontal} entre la position d'abord visée par la stéréo et celle re-estimée de près par la caméra de poignet --- la hauteur restant acquise à la stéréo ---, moyennée sur les essais ; chapitre~\ref{ch:controle}) --- soit la précision du contrôle et de la perception. La politique apprise n'expose \emph{aucune} de ces grandeurs --- ni cinématique inverse, ni re-planification : ces cases sont \emph{sans objet}, et ce « sans objet » est lui-même un résultat, une différence de \emph{paradigme} plutôt qu'une lacune.
+
+\paragraph{Stades et modes d'échec.} Pour voir \emph{où} un essai échoue, on relève aussi le \emph{stade atteint} --- approche $\to$ contact $\to$ saisie $\to$ levée $\to$ transport $\to$ dépose --- et, en cas d'échec, un \emph{code de cause}. Les causes du pipeline (notées E1--E7) nomment le \emph{module} fautif : perception, cinématique inverse, fermeture à vide\ldots{} Celles de la politique apprise nomment le \emph{comportement} observé : objet éjecté à la fermeture, bras resté à sa position de repos\ldots{} Ces deux grilles permettent de comparer non seulement \emph{si}, mais \emph{pourquoi} chaque paradigme échoue.
+
+\dansLeProjet{Dans ce travail, le cube est testé sur $30$ essais par détecteur ($10$ à chaque distance), le cylindre sur $9$ ($3$ par distance). La politique apprise est un modèle \emph{ACT} entraîné sur le \emph{seul} cube : le point de contrôle final vient de Google Colab (GPU A100), à partir d'environ $200$ démonstrations et $50\,000$ pas d'entraînement (une version locale antérieure, sur Mac/MPS, utilisait $50$ démonstrations et $30\,000$ pas) ; un \emph{rollout} par essai, sans rattrapage manuel. Les deux campagnes partagent l'opérateur, la session et l'éclairage ; une part du relevé (stade atteint, dépôt visuel, cause d'échec) est \emph{manuelle}.}
+
+\section{Résultats : pipeline modulaire}
+\label{sec:eval-pipeline}
+
+Le pipeline a été évalué sur le cube (objet principal, les \emph{deux} détecteurs) et sur le cylindre (objet secondaire). Les taux de réussite, par distance et globaux, figurent au tableau~\ref{tab:pipeline-results}.
+
+\begin{table}[H]
+  \centering
+  \caption{Taux de réussite du pipeline modulaire (tenue après la levée), par distance et global, avec l'intervalle de Wilson à $95\,\%$. « HF » désigne le détecteur appris OWL-ViTv2 (chapitre~\ref{ch:perception}).}
+  \label{tab:pipeline-results}
+  {\small
+  \begin{tabular}{llcccl}
+    \toprule
+    Objet & Détecteur & Proche & Moyenne & Lointaine & Global \\
+    \midrule
+    Cube     & OWL-ViTv2 (HF) & $10/10$ & $7/10$ & $6/10$ & $23/30 = \mathbf{77\,\%}$ \, [59, 88] \\
+             & HSV          & $9/10$  & $6/10$ & $5/10$ & $20/30 = \mathbf{67\,\%}$ \, [49, 81] \\
+    \midrule
+    Cylindre & OWL-ViTv2 (HF) & $3/3$   & $2/3$  & $2/3$  & $7/9 = \mathbf{78\,\%}$ \, [45, 94] \\
+             & HSV          & $3/3$   & $1/3$  & $2/3$  & $6/9 = \mathbf{67\,\%}$ \, [35, 88] \\
+    \bottomrule
+  \end{tabular}}
+\end{table}
+
+\paragraph{Vue d'ensemble.} Sur le cube, les deux détecteurs réussissent le plus souvent : OWL-ViTv2~\cite{minderer_owlv2_2023} --- le détecteur appris, piloté par le langage (chapitre~\ref{ch:perception}) --- atteint $23/30 = 77\,\%$, le seuillage couleur HSV $20/30 = 67\,\%$. L'écart apparent en faveur d'OWL-ViTv2 ne doit pas être surinterprété : les intervalles de Wilson se \emph{chevauchent} largement ($[59, 88]$ contre $[49, 81]$), si bien que, sur $30$ essais, la différence n'est \emph{pas} significative. On retiendra que les deux détecteurs soutiennent la tâche à un niveau comparable.
+
+\paragraph{La distance dégrade la réussite --- surtout par l'angle.} La réussite baisse nettement avec la distance --- de $90$--$100\,\%$ de près à $50$--$60\,\%$ au loin ---, mais ce n'est pas qu'une affaire de distance. Le cube étant \emph{bas}, la politique d'angle (chapitre~\ref{ch:planification}) bascule à $32$ cm : \emph{en deçà} (position \emph{proche}), l'objet est saisi \emph{à la verticale} (top-down) ; \emph{au-delà} (positions \emph{moyenne} et \emph{lointaine}), la prise passe à $45^{\circ}$. Deux des trois distances relèvent donc de ce régime incliné : le cube a été \emph{majoritairement} testé à $45^{\circ}$ ($20$ essais sur $30$), le top-down ne couvrant que la position \emph{proche}. Or ce régime est intrinsèquement plus délicat : la cinématique inverse y est plus contrainte, et le raffinement \texttt{cam\_2} y perd en fiabilité --- sa projection rayon--plan se dégrade hors de la verticale (chapitre~\ref{ch:controle}). S'y ajoutent deux effets de distance \emph{pure} : la triangulation stéréo, dont l'erreur de profondeur croît avec l'éloignement (chapitre~\ref{ch:perception}), et une cinématique inverse qui peine sur les poses les plus tendues. Ces facteurs se conjuguent au loin --- et cela s'est \emph{observé} : au-delà de la zone top-down, le robot devenait sensiblement plus \emph{irrégulier}, réussissant souvent mais pas toujours. La zone lointaine, en régime incliné, est le maillon faible.
+
+\paragraph{Le cylindre.} Sur le cylindre, la réussite reste du même ordre --- OWL-ViTv2 $7/9$, HSV $6/9$ ---, avec de \emph{larges} intervalles vu le petit nombre d'essais : on ne peut en tirer de chiffre fin. Le constat qualitatif, lui, tient : la saisie \emph{géométrique} s'adapte à une \emph{autre} forme sans réglage dédié, en ouvrant les mâchoires sur la largeur mesurée et en les alignant sur l'axe principal (chapitre~\ref{ch:planification}). C'est une illustration concrète de l'adaptation à la géométrie visée par le cahier des charges.
+
+\paragraph{Pourquoi ça échoue.} Sur les $78$ essais, on compte $22$ échecs ; $21$ ont reçu un code de cause dans le suivi (un essai raté a échappé au relevé), qui se répartissent ainsi : cinématique inverse injoignable (E2) $\times 8$, perception (E1) $\times 6$, fermeture à vide (E3) $\times 5$, perte à la levée (E4) $\times 1$, mauvaise saisie due à l'orientation (E5) $\times 1$. Les deux causes dominantes --- pose hors d'atteinte et objet mal localisé --- sont précisément celles qui se dégradent au loin, en régime incliné. La « fermeture à vide » (E3), elle, trahit une localisation légèrement fausse : la pince se referme à côté de l'objet.
+
+\paragraph{La précision, chiffrée.} Le pipeline journalise deux grandeurs à chaque essai. Le \emph{résidu de cinématique inverse} --- l'écart entre la pose visée et la pose atteinte --- vaut en moyenne $2{,}0$ mm : le bras à cinq degrés de liberté atteint la cible au millimètre près. L'\emph{amplitude de la correction \texttt{cam\_2}} vaut en moyenne $13$ mm : c'est le reliquat d'erreur de la stéréo que la caméra de poignet rattrape \emph{avant} la descente. Autrement dit, la boucle fermée corrige couramment plus d'un centimètre d'erreur de perception --- ce qui justifie son rôle, chiffres à l'appui (chapitre~\ref{ch:controle}).
+
+\paragraph{Tenu n'est pas déposé.} Une nuance de mesure, enfin. Le « succès » compté ici est la \emph{tenue après la levée} (le proxy couple/position du chapitre~\ref{ch:controle}). Le \emph{dépôt visuel} dans la boîte est parfois très légèrement inférieur --- $19$ dépôts pour $20$ tenues sur le cube HSV, par exemple, un objet ayant lâché de travers au-dessus de la boîte. L'écart est mineur, mais réel, et nous rapportons la tenue.
+
+\section{Résultats : apprentissage par imitation (ACT)}
+\label{sec:eval-il}
+
+La politique apprise (ACT) a été évaluée sur le cube --- $30$ essais, aux mêmes positions que le pipeline --- puis \emph{sondée} sur un objet qu'elle n'avait jamais vu. Ses résultats figurent au tableau~\ref{tab:il-results}.
+
+\begin{table}[H]
+  \centering
+  \caption{Résultats de la politique apprise (ACT) sur le cube, par distance : stade de \emph{saisie} atteint, \emph{dépôt} réussi, et taux de réussite avec l'intervalle de Wilson à $95\,\%$.}
+  \label{tab:il-results}
+  {\small
+  \begin{tabular}{lccl}
+    \toprule
+    Position & Saisie ($\geq$ grasp) & Dépôt (succès) & Taux [Wilson] \\
+    \midrule
+    Proche    & $9/10$  & $6/10$ & $60\,\%$ \, [31, 83] \\
+    Moyenne   & $10/10$ & $9/10$ & $90\,\%$ \, [60, 98] \\
+    Lointaine & $9/10$  & $6/10$ & $60\,\%$ \, [31, 83] \\
+    \midrule
+    \textbf{Global} & $\mathbf{28/30}$ & $\mathbf{21/30}$ & $\mathbf{70\,\%}$ \, [52, 83] \\
+    \bottomrule
+  \end{tabular}}
+\end{table}
+
+\paragraph{Vue d'ensemble.} Sur le cube, la politique réussit $21/30 = 70\,\%$ ($[52, 83]$) --- un niveau global comparable à celui du pipeline. Mais le \emph{profil} est tout autre.
+
+\paragraph{Un « point d'excellence » au centre.} Là où le pipeline décroît avec la distance, la politique \emph{culmine au centre} : $90\,\%$ à distance moyenne, mais seulement $60\,\%$ de près \emph{comme} de loin. La raison tient à l'apprentissage : les démonstrations d'entraînement étaient concentrées autour de la distance moyenne, si bien que la politique est la plus fiable \emph{là où elle a le plus vu d'exemples}, et se dégrade aux bords de cette \emph{distribution}. C'est la signature d'une méthode apprise --- forte en distribution, fragile en dehors.
+
+\paragraph{Le goulot n'est pas la perception, mais la fermeture.} Le stade atteint est éclairant : la politique \emph{saisit} dans $28$ essais sur $30$ ($93\,\%$), mais ne \emph{dépose} que dans $21$. Autrement dit, elle approche et attrape presque toujours l'objet --- perception et geste d'approche fonctionnent ---, puis en perd environ un sur cinq \emph{entre} la prise et la boîte. La cause dominante ($\times 7$) est l'\emph{éjection à la fermeture} : la pince se referme \emph{de travers}, souvent sur une arête ou un coin du cube plutôt qu'à plat, d'où une prise mal assurée --- et le serrage fait alors \emph{sauter} le cube hors des mâchoires. Le point faible de la politique est donc l'\emph{exécution} de la prise : elle voit et approche bien l'objet, mais le \emph{referme} mal.
+
+\paragraph{La sonde de généralisation : $0/5$.} Nous avons enfin \emph{sondé} la politique sur un objet \emph{différent} --- le cylindre : $0$ succès sur $5$. À chaque essai, le bras est resté à sa position de repos ou a oscillé sans agir, sans même atteindre le stade de la saisie --- littéralement, « il ne sait pas quoi faire ». Entraînée sur le \emph{seul} cube, la politique n'a aucune prise sur une forme qu'elle n'a jamais rencontrée. C'est la limite \emph{structurelle} de l'imitation de bout en bout : elle ne généralise pas au-delà de ce qu'on lui a montré.
+
+\paragraph{Une remarque sur la cadence.} La politique tournait à environ $24$ images par seconde (le point de contrôle « basse résolution »). Cette cadence conditionne la \emph{réactivité} d'une politique qui agit image après image ; le chemin qui y a mené --- et le compromis résolution contre cadence --- est rediscuté au chapitre~\ref{ch:discussion}.
+
+\section{Comparaison des deux paradigmes}
+\label{sec:eval-comparaison}
+
+Les deux approches ayant été mesurées sur le même banc, on peut enfin les comparer --- sans désigner de « vainqueur », mais en pointant ce qui les sépare vraiment (tableau~\ref{tab:comparaison}).
+
+\begin{table}[H]
+  \centering
+  \caption{Comparaison des deux paradigmes sur la même tâche de \emph{pick-and-place}.}
+  \label{tab:comparaison}
+  {\small
+  \begin{tabularx}{\linewidth}{lXX}
+    \toprule
+     & Pipeline modulaire & Politique apprise (ACT) \\
+    \midrule
+    Réussite (cube)      & $77\,\%$ (OWL-ViTv2) / $67\,\%$ (HSV) & $70\,\%$ \\
+    Profil en distance   & décroît avec la distance & pic au centre (zone d'entraînement) \\
+    Échec dominant       & perception / cinématique inverse (E1, E2) & fermeture, objet éjecté \\
+    Généralisation       & cylindre $67$--$78\,\%$ ; objets désignés par le langage & cylindre $0/5$ \\
+    Grandeurs internes   & résidu IK $\sim\!2$ mm, correction \texttt{cam\_2} $\sim\!13$ mm & sans objet (boîte noire) \\
+    Transparence         & diagnostics par module & aucune \\
+    \bottomrule
+  \end{tabularx}}
+\end{table}
+
+\paragraph{Sur l'objet entraîné : à égalité.} Sur le cube, les trois taux --- pipeline OWL-ViTv2 $77\,\%$, HSV $67\,\%$, politique apprise $70\,\%$ --- ont des intervalles de Wilson qui se \emph{chevauchent} tous largement. À $30$ essais, la différence n'est pas significative : sur l'objet et dans la zone d'entraînement, les deux paradigmes se valent. On ne peut écrire ni « l'apprentissage l'emporte », ni l'inverse. La conclusion résiste même à un critère strictement identique : si l'on exige le \emph{dépôt} des deux côtés (le pipeline étant sinon crédité de la seule \emph{tenue}), HSV redescend à $19/30 = 63\,\%$ tandis qu'OWL-ViTv2 reste à $77\,\%$ --- tous ses objets tenus ayant été déposés --- et l'imitation à $70\,\%$ ; les intervalles se chevauchent encore.
+
+\paragraph{Des signatures d'échec opposées.} Ils échouent pourtant \emph{différemment}. Le pipeline bute sur la \emph{perception} et l'\emph{atteignabilité} --- objet mal localisé, pose hors d'atteinte ---, surtout au loin et en régime incliné. La politique, elle, perçoit et attrape bien (saisie $93\,\%$) mais rate l'\emph{exécution} finale, éjectant le cube à la fermeture. Et leurs profils sont inverses : le pipeline se dégrade \emph{avec la distance} (contrainte géométrique), tandis que la politique culmine au \emph{centre} (sa zone d'entraînement) et faiblit aux bords. L'un est limité par la géométrie, l'autre par ses données.
+
+\paragraph{Le vrai départage : la généralisation.} La différence décisive n'est pas sur le cube, mais \emph{au-delà}. Le pipeline saisit le cylindre ($67$--$78\,\%$) \emph{sans} ré-entraînement --- car il \emph{raisonne} sur la géométrie : mesurer, planifier, saisir --- et, via OWL-ViTv2, peut viser \emph{n'importe quel} objet désigné par le langage. La politique, sondée sur ce même cylindre, obtient $0/5$ : elle n'agit même pas, faute de l'avoir vu à l'entraînement. Le pipeline est \emph{général} là où la politique est \emph{spécialisée}.
+
+\paragraph{Transparence.} Enfin, quand le pipeline échoue, il dit \emph{pourquoi} : résidu de cinématique inverse, amplitude de la correction \texttt{cam\_2}, code de la cause. La politique apprise est une \emph{boîte noire} --- des images entrent, des mouvements sortent, sans explication. Pour le débogage, la vérification et la confiance, cette transparence est un atout réel de l'approche modulaire --- au prix, précisément, de toute l'ingénierie que la politique apprise, elle, s'épargne.
+
+\paragraph{En somme.} Aucun des deux ne \emph{domine} : ils échangent leurs avantages. Le pipeline modulaire \emph{généralise} --- autres formes, objets désignés par le langage --- et se \emph{diagnostique} (il dit \emph{pourquoi} il échoue), mais il a demandé des \emph{semaines} de construction et de réglage, module par module. La politique apprise, elle, a atteint le même niveau en quelques \emph{jours} --- le temps de collecter environ $200$ démonstrations puis d'entraîner le modèle ---, sans le moindre modèle géométrique : elle est \emph{économe}, en données \emph{comme} en temps de mise en place. En revanche, elle reste \emph{confinée} à l'objet qu'on lui a montré et demeure une \emph{boîte noire}. Leurs voies de progression prolongent ce contraste : le pipeline se perfectionne par une ingénierie \emph{ciblée}, module par module, quand la politique s'améliore surtout en lui montrant \emph{plus de données} --- plus rapide, mais borné à ce qu'elle a appris. Les deux occupent, au fond, les extrémités d'un même compromis --- \emph{effort d'ingénierie et généralité} d'un côté, \emph{rapidité de mise en œuvre et spécialisation} de l'autre.

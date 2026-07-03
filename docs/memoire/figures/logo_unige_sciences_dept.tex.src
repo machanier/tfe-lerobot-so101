@@ -1,0 +1,16 @@
+\documentclass[border=1pt]{standalone}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[default]{lato}   % Lato as default; Light = series "l"
+\usepackage{tikz}
+\usepackage{graphicx}
+\begin{document}
+\begin{tikzpicture}
+  \node[anchor=south west,inner sep=0] (logo) at (0,0)
+     {\includegraphics{logo_unige_sciences.pdf}};
+  % "Departement d'informatique": black, Lato Light (series l) ~9pt,
+  % left edge at text column (47pt), baseline ~10pt below faculty baseline
+  \node[anchor=base west,inner sep=0,text=black] at (47.04pt,-5.4pt)
+     {\fontseries{l}\fontsize{9}{11}\selectfont Département d’informatique};
+\end{tikzpicture}
+\end{document}

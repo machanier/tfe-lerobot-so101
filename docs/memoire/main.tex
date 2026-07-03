@@ -1,0 +1,128 @@
+% ================================================================
+% Travail de Fin d'Etudes - Bachelor Informatique UNIGE 2025-2026
+% Saisie d'objets en environnement pour un bras robotique assiste par vision
+%
+% Auteur    : Maxence Chanier
+% Encadrant : Guido Bologna
+%
+% Compilation :  make   (compile main.pdf via latexmk)
+% ================================================================
+
+\documentclass[11pt,a4paper,oneside]{report}
+
+% --- Encodage et langue
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{csquotes}
+
+% --- Mise en page
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{microtype}
+\usepackage{setspace}
+\onehalfspacing
+
+% --- Maths
+\usepackage{amsmath, amssymb, amsthm}
+
+% --- Figures et tableaux
+\usepackage{graphicx}
+\graphicspath{{figures/}{images/}}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{float}
+
+% --- Schemas vectoriels (TikZ)
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta}
+
+% --- Code source
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{framed} % filet vertical des blocs \dansLeProjet
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!70!black},
+  commentstyle=\color{green!50!black}\itshape,
+  stringstyle=\color{orange!80!black},
+  numbers=left, numberstyle=\tiny\color{gray},
+  frame=single, framerule=0.4pt, rulecolor=\color{black!30},
+  showstringspaces=false,
+  breaklines=true, breakatwhitespace=true,
+  tabsize=2,
+  language=Python,
+}
+
+% --- Bibliographie (biblatex moderne, backend biber)
+\usepackage[
+  backend=biber,
+  style=numeric,
+  sorting=none,
+  giveninits=true,
+  maxnames=4, minnames=2,
+]{biblatex}
+\addbibresource{biblio.bib}
+
+% --- TODO : l'option "disable" masque les notes \todo/\todoF dans le PDF.
+\usepackage[disable,colorinlistoftodos,prependcaption,textsize=small]{todonotes}
+
+% --- Liens (a charger en DERNIER)
+\usepackage[
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!70!black,
+  pdftitle={Saisie d'objets en environnement pour un bras robotique assiste par vision},
+  pdfauthor={Maxence Chanier},
+]{hyperref}
+
+% --- Helpers
+\newcommand{\todoF}[1]{\todo[inline,color=red!15]{\textbf{TODO :} #1}}
+\newcommand{\photoplaceholder}[2][0.72\linewidth]{\setlength{\fboxsep}{8pt}\fbox{\parbox[c][3.6cm][c]{#1}{\centering\itshape #2}}}
+% Bloc « Dans ce travail » : filet vertical gris à gauche (callout sobre)
+\definecolor{dlprule}{gray}{0.55}
+\newenvironment{dlpbar}{%
+  \def\FrameCommand{{\color{dlprule}\vrule width 2.2pt}\hspace{10pt}}%
+  \MakeFramed{\advance\hsize-\width \FrameRestore}}%
+ {\endMakeFramed}
+\newcommand{\dansLeProjet}[1]{\begin{dlpbar}\noindent #1\end{dlpbar}}
+
+% ================================================================
+\begin{document}
+
+% Page de titre
+\input{chapters/00_titlepage}
+
+% Resume
+\chapter*{Résumé}
+\input{chapters/00_abstract}
+
+% Remerciements
+\chapter*{Remerciements}
+\input{chapters/00_remerciements}
+
+% Table des matieres
+\tableofcontents
+
+% Chapitres
+\input{chapters/01_introduction}
+\input{chapters/02_etat_de_lart}
+\input{chapters/03_architecture}
+\input{chapters/04_perception}
+\input{chapters/05_planification_saisie}
+\input{chapters/06_controle}
+\input{chapters/07_evaluation}
+\input{chapters/08_discussion}
+\input{chapters/09_conclusion}
+
+% Bibliographie
+\printbibliography[heading=bibintoc]
+
+% Annexes
+\appendix
+\input{chapters/A1_reproductibilite}
+
+\end{document}

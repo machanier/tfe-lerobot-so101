@@ -1,0 +1,103 @@
+\chapter{Planification de saisie}
+\label{ch:planification}
+
+La planification de saisie est la charnière entre la perception et le contrôle : elle transforme un objet \emph{reconstruit} --- une \texttt{ObjectInstance}, avec sa position, son encombrement et, quand elle est fiable, l'orientation de son empreinte (chapitre~\ref{ch:perception}) --- en une \emph{prise} exécutable --- une \texttt{GraspPose}, soit trois poses successives de la pince (approche, saisie, retrait) et ses ouvertures (chapitre~\ref{ch:architecture}). Conformément au cahier des charges, cette planification est \emph{géométrique et heuristique}~\cite{bohg_data-driven_2014} : la prise se dérive directement de la géométrie mesurée, par des règles explicites, sans apprentissage. Ce chapitre en pose le problème, puis détaille la stratégie, sa construction géométrique, son périmètre et son interface avec le contrôle.
+
+\section{Définition du problème et sous-actionnement}
+\label{sec:grasp-probleme}
+
+\paragraph{Ce qu'il faut décider.} Saisir, c'est amener la pince à une configuration --- position, orientation, ouverture --- où elle enserre l'objet de façon stable, en l'atteignant par une \emph{direction d'approche} dégagée. Le planificateur reçoit une \texttt{ObjectInstance} (position 3D dans le repère de base, boîte englobante de dimensions $\ell_x \times \ell_y \times H$, orientation éventuelle) et produit une \texttt{GraspPose} : la pose de \emph{saisie} proprement dite, encadrée d'une pose d'\emph{approche} (en retrait, pince ouverte) et d'une pose de \emph{retrait} (levée, pince fermée), avec les ouvertures associées. Tout est exprimé en mètres dans le repère de base (chapitre~\ref{ch:architecture}).
+
+\paragraph{La contrainte de fond : un bras sous-actionné.} Le bras SO-101 compte \emph{cinq} articulations motorisées, plus la pince. Or amener la pince à une pose \emph{quelconque} --- position \emph{et} orientation libres --- en réclamerait \emph{six} : trois pour la position, trois pour l'orientation. Il en manque une, et l'on peut dire précisément laquelle (figure~\ref{fig:sous-actionnement}). L'orientation de la pince --- la « tête » --- repose sur deux articulations de \emph{poignet} : le \emph{tangage} (\texttt{wrist\_flex}), qui l'incline vers le haut ou le bas, et le \emph{roulis} (\texttt{wrist\_roll}), qui la fait tourner autour de son axe d'approche. Un poignet \emph{complet} en aurait une troisième --- un \emph{lacet} ---, mais celui du SO-101 n'en a pas. Le seul lacet du bras est celui de l'\emph{épaule} (\texttt{shoulder\_pan}) ; or il agit à la \emph{base}, loin de la tête : il fait pivoter le bras \emph{entier} pour l'orienter vers l'objet, sans pouvoir régler à part le \emph{cap} de la pince. Le bras amène donc l'objet en \emph{position} et donne à la tête un tangage et un roulis, mais pas de lacet propre. Voilà le sens du \emph{sous-actionnement} pour la tâche de saisie --- non que des articulations soient passives (elles sont toutes motorisées), mais qu'il en manque une au regard des six degrés de liberté d'une pose. Cette limitation \emph{façonne} toute la stratégie : à une position donnée, on ne choisit pas une orientation \emph{quelconque} de la pince, seulement son \emph{inclinaison} dans le plan vertical que l'épaule oriente vers l'objet. C'est ce degré de liberté restant --- l'\emph{angle d'attaque} --- qu'exploite la stratégie de saisie.
+
+\begin{figure}[t]
+  \centering
+  \definecolor{okgreen}{rgb}{0.13,0.55,0.13}%
+  \resizebox{\linewidth}{!}{%
+  \begin{tikzpicture}[>={Stealth[round]}, font=\small, ok/.style={okgreen, thick}, no/.style={red!80!black, thick, dashed}]
+    % base (gauche) : lacet shoulder_pan
+    \fill[black!12] (-5.3,-0.35) rectangle (-4.7,0.35);
+    \draw[gray, dashed] (-5.0,-0.7) -- (-5.0,1.5);
+    \draw[ok,->] (-5.55,1.15) arc[start angle=180, end angle=-40, x radius=0.55, y radius=0.2];
+    \node[okgreen, align=center, font=\footnotesize] at (-5.0,-1.25)
+       {\texttt{shoulder\_pan}\\lacet, mais \emph{à la base}\\(pivote tout le bras)};
+    % bras stylise
+    \draw[line width=2.2pt, gray!60] (-4.7,0.1) -- (-1.6,0.7) -- (1.6,0.15);
+    % tete / pince (droite)
+    \coordinate (W) at (1.7,0.15);
+    \draw[line width=2.2pt, gray!60] (W) -- (2.5,0.15);
+    \draw[line width=1.6pt] (2.5,-0.28) -- (3.25,-0.28);
+    \draw[line width=1.6pt] (2.5,0.58) -- (3.25,0.58);
+    \draw[line width=1.6pt] (2.5,-0.28) -- (2.5,0.58);
+    \draw[gray, dashed] (2.2,0.15) -- (3.6,0.15);   % axe d'approche
+    % tangage (wrist_flex) : petite double fleche VERTICALE (haut<->bas), a droite
+    \draw[ok,<->] (4.20,-0.28) arc[start angle=-60, end angle=60, radius=0.5];
+    \node[okgreen, align=center, font=\footnotesize] at (4.35,1.05)
+       {\texttt{wrist\_flex}\\\emph{tangage} \checkmark};
+    % roulis (wrist_roll) : rotation autour de l'axe d'approche
+    \draw[ok,->] (3.5,0.62) arc[start angle=90, end angle=-215, x radius=0.17, y radius=0.47];
+    \node[okgreen, align=center, font=\footnotesize] at (3.5,-1.05)
+       {\texttt{wrist\_roll}\\\emph{roulis} \checkmark};
+    % lacet de tete : ABSENT
+    \draw[gray, dashed] (W)++(0,-0.95) -- ++(0,2.1);
+    \draw[no,->] (2.45,-0.55) arc[start angle=-15, end angle=250, x radius=0.75, y radius=0.24];
+    \node[red!80!black] at (1.7,-0.68) {\large$\times$};
+    \node[red!80!black, align=center, font=\footnotesize] at (0.15,-1.15)
+       {\emph{lacet} de la tête :\\\textbf{absent} (le DDL manquant)};
+  \end{tikzpicture}%
+  }
+  \caption{Le sous-actionnement du poignet. La tête dispose du \emph{tangage} (\texttt{wrist\_flex}) et du \emph{roulis} (\texttt{wrist\_roll}), mais d'aucun \emph{lacet} propre ; seule l'épaule fournit un lacet, mais à la base --- d'où l'impossibilité de régler librement le cap de la pince à une position donnée.}
+  \label{fig:sous-actionnement}
+\end{figure}
+
+\section{Stratégie : saisie géométrique par balayage de l'angle d'attaque}
+\label{sec:grasp-strategie}
+
+\paragraph{Une stratégie interchangeable.} La planification est isolée derrière l'interface \texttt{GraspStrategy} (patron \emph{stratégie}, chapitre~\ref{ch:architecture}) : elle prend une \texttt{ObjectInstance} et rend une \texttt{GraspPose}. La stratégie employée est \emph{géométrique} ; la prise verticale (\emph{top-down}) en est un simple cas particulier, obtenu quand l'angle d'attaque est nul.
+
+\paragraph{Ce qui s'adapte --- et ce qui ne s'adapte pas.} Deux choses souvent confondues méritent d'être distinguées. L'\emph{ouverture} et l'\emph{orientation} de la pince s'adaptent bien à la \emph{géométrie} de l'objet : l'ouverture se règle sur sa largeur mesurée, l'orientation des mâchoires sur son axe principal (section~\ref{sec:grasp-construction}). En revanche, l'\emph{angle d'attaque} --- l'inclinaison de l'approche --- n'est \emph{pas} choisi d'après la \emph{forme} de l'objet, mais d'après sa \emph{position} : sa distance au robot et la hauteur de son sommet. C'est une limite que le chapitre~\ref{ch:discussion} rediscute : sur un bras sous-actionné, l'angle réalisable dépend surtout d'\emph{où} se trouve l'objet, non de ce qu'il \emph{est}.
+
+\paragraph{Le balayage.} La stratégie procède par \emph{balayage}. Pour un objet donné, elle engendre une courte liste d'angles d'attaque \emph{candidats} --- $0^{\circ}$ (vertical), $45^{\circ}$ (diagonal), $90^{\circ}$ (de face) ---, \emph{ordonnés par préférence} selon la position de l'objet. Chaque candidat géométriquement valide est ensuite soumis au solveur de cinématique \emph{inverse} (chapitre~\ref{ch:controle}) : on retient le \emph{premier} que le bras peut effectivement atteindre. La position fixe ainsi la \emph{préférence}, l'atteignabilité fixe la \emph{faisabilité}, et le premier compromis réalisable l'emporte. Ce filtrage par \emph{atteignabilité} --- ne retenir que les prises que le bras peut réellement atteindre --- rejoint l'esprit des \emph{cartes d'atteignabilité} et de capacité de la littérature~\cite{zacharias_capturing_2007, vahrenkamp_robot_2013}. Si aucun candidat n'est atteignable, la prise échoue \emph{proprement} --- aucune prise renvoyée --- plutôt que de forcer un mouvement dangereux.
+
+\paragraph{La règle de préférence.} La préférence se lit sur deux grandeurs : la \emph{distance} $d = \sqrt{x^2 + y^2}$ de l'objet au robot, et la \emph{hauteur de son sommet} $h_{\text{top}} = z + H/2$. Pour un objet \emph{bas}, on privilégie la prise verticale tant qu'il est à portée, puis la diagonale au-delà ; un objet \emph{haut}, hors d'atteinte par le dessus, s'attaque de face.
+
+\dansLeProjet{Dans ce travail, l'angle préféré suit la hauteur du sommet et la distance : un objet \emph{bas} (sommet $< 12$ cm) est pris en \emph{top-down} ($0^{\circ}$) tant qu'il est à moins de $32$ cm, en \emph{diagonale} ($45^{\circ}$) au-delà ; un objet de hauteur \emph{intermédiaire} ($12$ à $18$ cm) en diagonale ; un objet \emph{haut} ($\geq 18$ cm) \emph{de face} ($90^{\circ}$). Ces seuils --- notamment la zone top-down de $32$ cm --- sont réglables (option \texttt{-{}-zone-topdown}). La prise \emph{de face} d'un objet \emph{bas} a été \emph{retirée} : la caméra de poignet vient alors buter sur la table avant d'atteindre l'objet, et le couple moteur sature (charge moteur relevée à $1004$ sur le bus Feetech). À l'autre bout, la branche \emph{de face} pour objet \emph{haut} ($90^{\circ}$, sommet $\geq 18$ cm --- un objet posé en hauteur, par exemple) a été vérifiée qualitativement et fonctionne, mais ne figure pas dans les campagnes d'évaluation (chapitre~\ref{ch:evaluation}).}
+
+\section{Construction géométrique de la prise}
+\label{sec:grasp-construction}
+
+\paragraph{L'ouverture, réglée sur la largeur.} Les mâchoires se referment dans le plan horizontal ; on prend donc la \emph{plus petite} des deux \emph{largeurs au sol} de l'objet --- ses deux dimensions horizontales mesurées $\ell_x$ et $\ell_y$, les côtés de son encombrement au sol ---, soit $w = \min(\ell_x, \ell_y)$, et l'on écarte les mâchoires de cette largeur \emph{augmentée d'une marge $m$ de chaque côté} :
+\[
+  \text{ouverture} \;=\; \frac{w + 2\,m}{O_{\max}} \times 100\,\% ,
+\]
+bornée à $[20, 100]\,\%$, où $O_{\max}$ est l'ouverture maximale de la pince. La marge --- de \emph{chaque} côté --- absorbe l'erreur de visée (cinématique inverse et calibration cumulées, de l'ordre du centimètre) : sans elle, le doigt \emph{fixe} de la pince heurterait l'objet à la descente au lieu de l'encadrer.
+
+\dansLeProjet{Dans ce travail, la marge vaut $10$ mm par côté et l'ouverture maximale $150$ mm (mesurée sur la pince). Un objet de $30$ mm de large commande ainsi une ouverture de $30 + 2\times 10 = 50$ mm --- soit $50/150 \approx 33\,\%$ de la course, et $10$ mm de dégagement de \emph{chaque} côté ---, et non le maximum : l'ouverture \emph{distingue} enfin les objets au lieu de s'ouvrir en grand pour tout.}
+
+\paragraph{L'orientation, alignée sur l'axe principal.} Reste à orienter les mâchoires (le \emph{roulis} du poignet). La règle est unique, sans cas particulier par objet : on aligne les mâchoires \emph{en travers} du \emph{petit} axe de l'empreinte, c'est-à-dire perpendiculairement à son \emph{grand} axe. Ce grand axe est estimé à partir des \emph{moments} du contour de l'objet --- une analyse en composantes principales du plan image :
+\[
+  \theta \;=\; \tfrac{1}{2}\,\operatorname{atan2}\!\big(2\,\mu_{11},\ \mu_{20} - \mu_{02}\big) .
+\]
+Quand l'empreinte est nettement \emph{allongée}, cet axe est fiable et fixe l'orientation. Quand elle est \emph{ronde} ou indéterminée --- un cube vu de dessus, un disque ---, le grand axe n'a pas de sens : l'orientation est alors laissée \emph{libre}, et la cinématique inverse choisit l'angle qui fait le \emph{moins} tourner le poignet depuis sa position courante. C'est sans conséquence pour un objet rond (tout angle le saisit pareil) et cela évite d'imposer une rotation inutile.
+
+\paragraph{Les trois poses.} De la pose de \emph{saisie} --- position de l'objet, orientation et ouverture calculées ---, on déduit les deux autres par de simples décalages. La pose d'\emph{approche} recule le long de la \emph{direction d'attaque} (verticale pour un top-down, inclinée sinon), pince ouverte ; la pose de \emph{retrait} lève l'objet à la verticale, pince fermée.
+
+\dansLeProjet{Dans ce travail, la \texttt{GraspPose} encadre la saisie d'une pose d'\emph{approche} ($8$ cm au-dessus, le long de l'axe d'attaque) et d'un \emph{retrait} ($10$ cm de levée verticale), sans décalage ajouté à la pose de saisie elle-même. À l'exécution en \emph{boucle fermée}, toutefois, cette pose d'approche n'est qu'un \emph{point de passage} : le bras s'arrête en réalité plus haut --- à environ $12$ cm au-dessus de l'objet ---, où la caméra de poignet observe et \emph{raffine} la prise avant la descente directe (chapitre~\ref{ch:controle}). Pour les prises \emph{inclinées}, le roulis appliqué autour de l'axe d'approche est fixé à $90^{\circ}$ : un roulis de $45^{\circ}$, essayé, s'est révélé mauvais à $30$--$35$ cm. Ce roulis incliné reste imparfait par nature --- la convention ignore le roulis \emph{réel} de l'objet, d'où une légère asymétrie gauche/droite ---, mais $90^{\circ}$ est le moins pénalisant à l'usage ; la prise verticale n'est pas concernée.}
+
+\section{Périmètre : balayage sagittal et limite de la prise latérale}
+\label{sec:grasp-perimetre}
+
+\paragraph{Un balayage sagittal, non sphérique.} Le balayage n'explore que le \emph{plan sagittal} du bras --- le plan vertical que l'épaule oriente vers l'objet --- et seulement vers l'\emph{avant} : $0^{\circ}$ (par le dessus), $45^{\circ}$ (diagonale) et $90^{\circ}$ (\emph{de face}, l'objet attaqué par sa face avant). Ce sont trois \emph{inclinaisons} d'une même approche frontale, non des directions distinctes. Les angles \emph{arrière} ($-45^{\circ}$, $-90^{\circ}$) --- qui reviendraient à attaquer la \emph{face arrière} de l'objet, pince tournée vers la base --- sont \emph{hors d'atteinte}. Géométriquement, les trois flexions du bras plient dans le même plan : se replier vers l'arrière ne serait envisageable que pour un objet situé \emph{au niveau de la base}, jamais plus haut. Et surtout, un tel retournement ferait \emph{percuter le support de la caméra de poignet}, qu'il endommagerait. Ces poses ne sont donc jamais retenues --- la cinématique inverse y laisse d'ailleurs des résidus importants. Le balayage n'explore pas non plus les côtés \emph{gauche} et \emph{droit} --- c'est l'objet du paragraphe suivant.
+
+\paragraph{La prise latérale : mal conditionnée, non impossible.} À ne pas confondre avec l'approche \emph{de face} à $90^{\circ}$ (frontale, ci-dessus), la prise \emph{latérale} --- le \emph{side grasp} --- saisirait l'objet par le \emph{côté}, en l'abordant perpendiculairement à la ligne robot--objet. Or c'est précisément le \emph{lacet} de la pince qui le permettrait --- le degré de liberté qui manque (section~\ref{sec:grasp-probleme}) : sans lui, on ne peut pas tourner les mâchoires sur le côté sans déplacer tout le bras. Cette prise n'est pas strictement \emph{impossible} : le solveur de cinématique inverse, qui part de la posture \emph{courante} du bras, l'atteint depuis certaines configurations de départ. Mais son succès dépend fortement de ce point de départ --- depuis d'autres postures, la recherche n'aboutit pas ---, ce qui la rend \emph{mal conditionnée} et trop peu fiable pour être retenue. Le balayage reste donc \emph{frontal} : une limite assumée, rediscutée au chapitre~\ref{ch:discussion}.
+
+\paragraph{Ce qui n'est pas traité.} Enfin, la planification décrite ici ne gère \emph{aucun} évitement d'obstacle : elle suppose l'objet cible dégagé. C'est un choix \emph{délibéré} --- l'objectif~3 du cahier des charges ---, dont le chapitre~\ref{ch:discussion} détaille le motif et les implications.
+
+\section{Interface avec le contrôle et validation}
+\label{sec:grasp-interface}
+
+\paragraph{De la prise aux moteurs.} La \texttt{GraspPose} n'est encore qu'une \emph{intention} géométrique ; le contrôle (chapitre~\ref{ch:controle}) la réalise. La cinématique \emph{inverse} traduit chacune des trois poses en angles articulaires, et une trajectoire \emph{quintique} les enchaîne de façon lisse. C'est aussi le contrôle qui \emph{filtre} les candidats de saisie par atteignabilité : un angle d'attaque proposé n'est retenu que si la cinématique inverse converge --- à une tolérance de l'ordre du centimètre en position et de quelques degrés en orientation ---, le premier candidat atteignable dans l'ordre de préférence étant exécuté.
+
+\paragraph{Deux garde-fous.} Deux sécurités encadrent l'exécution. Avant la descente finale, la caméra de \emph{poignet} (\emph{eye-in-hand}, \texttt{cam\_2}) corrige la prise \emph{en boucle fermée} sur la vue rapprochée de l'objet, rattrapant le reliquat d'erreur de la reconstruction stéréo avant que la pince ne se referme (chapitre~\ref{ch:controle}). Et une prise dont la cinématique inverse exigerait un \emph{demi-tour} du roulis de poignet est \emph{refusée} : un tel retournement plongerait la pince vers la table, bras contorsionné. La tenue de l'objet, enfin, est vérifiée à la levée par la \emph{charge} du moteur de pince, faute de capteur d'effort dédié (chapitre~\ref{ch:controle}).
+
+\paragraph{Une planification transparente.} Chaque prise se justifie ici par une règle explicite --- telle largeur commande telle ouverture, telle position tel angle ---, ce qui la rend vérifiable et discutable, à l'inverse d'une prise apprise de bout en bout. Son évaluation chiffrée, et sa comparaison avec la politique apprise, font l'objet du chapitre~\ref{ch:evaluation}.

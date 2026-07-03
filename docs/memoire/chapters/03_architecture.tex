@@ -1,0 +1,166 @@
+\chapter{Architecture}
+\label{ch:architecture}
+\section{Vue d'ensemble}
+\label{sec:vue-ensemble}
+
+Faire saisir un objet à un bras robotique à partir d'images se décompose naturellement en trois étapes : \emph{percevoir} la scène pour y localiser la cible, \emph{planifier} une prise et le mouvement qui y mène, puis \emph{exécuter} ce mouvement sur le bras. Cette décomposition modulaire --- la lignée «~percevoir, planifier, agir~» de la robotique classique --- constitue le premier des deux paradigmes étudiés dans ce mémoire. Le second, l'apprentissage par imitation (chapitre~\ref{ch:evaluation}), remplace ces étapes par une politique unique apprise à partir de démonstrations. Le présent chapitre décrit l'architecture logicielle qui réalise le pipeline modulaire, puis précise comment les deux approches se situent l'une par rapport à l'autre au niveau du système.
+
+Le pipeline modulaire est orchestré par une classe centrale, \texttt{PickAndPlacePipeline}, qui enchaîne les trois étages sur un cycle complet de \emph{pick-and-place}. À chacun correspond un sous-ensemble du code source : la \emph{perception} (\texttt{src/perception}) capture les caméras et reconstruit la position tridimensionnelle de la cible ; la \emph{planification} (\texttt{src/planning}) en déduit une prise, que la \emph{cinématique inverse} traduit en angles articulaires ; le \emph{contrôle} (\texttt{src/control}) engendre la trajectoire et la joue sur les moteurs. Deux modules transverses complètent l'ensemble : la \emph{calibration} (\texttt{src/calibration}), exécutée hors ligne, fournit les paramètres géométriques que le pipeline consomme ; un module d'\emph{utilitaires} (\texttt{src/utils}) regroupe les opérations sur les transformations rigides --- le langage commun des changements de repère, sur lequel repose tout le reste.
+
+\dansLeProjet{Dans ce travail, un cycle complet se déroule ainsi : les trois caméras et l'état articulaire du bras sont capturés de façon synchronisée ; un détecteur 2D (seuillage couleur HSV ou détecteur appris) localise les objets dans chaque image ; leur position 3D est reconstruite par triangulation stéréo dans le repère de base du robot, et la cible désignée est sélectionnée dans la scène. La prise est ensuite planifiée --- ouverture et orientation des mâchoires d'après la géométrie mesurée de l'objet, angle d'attaque d'après sa position --- puis convertie en angles articulaires par cinématique inverse. Le bras rejoint une pose d'approche par une trajectoire \emph{quintique}, après quoi la caméra de poignet (\emph{eye-in-hand}, \texttt{cam\_2}) corrige la prise en boucle fermée avant la descente finale ; la pince se referme sous asservissement du couple, et la tenue est vérifiée à la levée avant la dépose et le retour. Ces étapes sont détaillées aux chapitres~\ref{ch:perception} à~\ref{ch:controle}.}
+
+Ce qui tient l'ensemble n'est pas tant l'orchestrateur que la \emph{frontière de types} entre les étages. Les modules ne communiquent qu'à travers un petit nombre de structures de données explicites : une image calibrée (\texttt{Frame}), une détection dans le plan image (\texttt{Detection2D}), un objet reconstruit en 3D (\texttt{ObjectInstance}), l'état instantané de la scène (\texttt{Scene}) et une prise candidate (\texttt{GraspPose}). Chaque étage ne consomme que les types produits par le précédent, ce qui rend les frontières nettes et le système vérifiable étage par étage. Ces interfaces, et les patrons de conception qui les accompagnent, font l'objet de la section~\ref{sec:interfaces}.
+
+L'apprentissage par imitation réutilise le même matériel --- le même bras, le même bus moteur et les mêmes caméras --- mais court-circuite cette chaîne explicite : une politique \emph{ACT} apprend à produire directement les commandes articulaires à partir des images et de l'état du bras, sans reconstruction 3D ni cinématique inverse. Sa propre chaîne --- téléopération pour enregistrer des démonstrations, entraînement, puis évaluation --- s'appuie sur l'écosystème LeRobot et est décrite au chapitre~\ref{ch:evaluation}. Confronter ces deux architectures sur la même tâche et le même bras est l'un des fils conducteurs du mémoire.
+
+La figure~\ref{fig:architecture} résume ce flux. La suite du chapitre précise les interfaces et patrons de conception (section~\ref{sec:interfaces}), les repères et conventions géométriques qui circulent entre les modules (section~\ref{sec:reperes}), la correspondance entre logiciel et matériel (section~\ref{sec:materiel-logiciel}), et enfin les trois modes d'exécution --- \emph{live}, \emph{dry-run} et \emph{replay} (section~\ref{sec:live-replay}).
+
+\begin{figure}[ht]
+  \centering
+  \resizebox{\linewidth}{!}{%
+  \begin{tikzpicture}[>={Stealth[round]}, font=\small, node distance=27mm,
+      stage/.style={draw, rounded corners, align=center, fill=blue!6, minimum height=15mm, text width=26mm, inner sep=3pt},
+      dtype/.style={font=\scriptsize, align=center},
+      io/.style={font=\footnotesize\itshape},
+      loop/.style={draw, rounded corners, align=center, fill=red!5, font=\footnotesize, text width=52mm, inner sep=4pt}]
+    \node[stage]             (P)  {\textbf{Perception}\\\texttt{src/perception}\\\footnotesize détection + triangulation 3D};
+    \node[stage, right=of P] (PL) {\textbf{Planification}\\\texttt{src/planning}\\\footnotesize saisie + cinématique inverse};
+    \node[stage, right=of PL](C)  {\textbf{Contrôle}\\\texttt{src/control}\\\footnotesize trajectoire + moteurs};
+    \draw[->] ([xshift=-15mm]P.west) -- (P.west);
+    \node[io] at ([xshift=-7.5mm,yshift=3.2mm]P.west) {3 caméras};
+    \draw[->] (C.east) -- ([xshift=15mm]C.east);
+    \node[io] at ([xshift=7.5mm,yshift=3.2mm]C.east) {moteurs};
+    \draw[->] (P)  -- (PL) node[dtype, above=2pt, midway] {\texttt{Scene}\\(position 3D)};
+    \draw[->] (PL) -- (C)  node[dtype, above=2pt, midway] {\texttt{GraspPose}};
+    \node[loop, below=12mm of PL] (r)
+      {Raffinement \texttt{cam\_2} (\emph{eye-in-hand})\\correction $(x,y)$ de la prise avant la descente};
+    \draw[->] (C.south) |- (r.east);
+    \draw[->] (r.north) -- (PL.south) node[dtype, midway, fill=white, inner sep=1pt] {re-IK};
+  \end{tikzpicture}%
+  }
+  \caption{Vue d'ensemble du pipeline modulaire perception--planification--contrôle.}
+  \label{fig:architecture}
+\end{figure}
+
+\section{Interfaces et patrons de conception}
+\label{sec:interfaces}
+
+La séparation nette annoncée à la section précédente ne tient pas d'elle-même : elle repose sur quelques choix de conception délibérés. Quatre méritent d'être explicités --- un modèle de données partagé, des algorithmes interchangeables derrière des interfaces abstraites, un comportement piloté par configuration, et une abstraction de l'état du robot.
+
+\paragraph{Un modèle de données partagé.} Les étages n'échangent qu'un petit vocabulaire de structures de données. Une \texttt{Frame} est une image calibrée : les pixels, accompagnés de la matrice intrinsèque, des coefficients de distorsion et de la pose de la caméra dans le repère de base. Une \texttt{Detection2D} est une détection dans le plan image : un label, un centre, une boîte englobante ou un contour, un score. Une \texttt{ObjectInstance} est l'objet reconstruit en 3D dans le repère de base : sa position, une covariance qui en mesure la fiabilité, son encombrement et, le cas échéant, son orientation. Une \texttt{Scene} rassemble les objets --- et d'éventuels obstacles --- à un instant donné ; une \texttt{GraspPose} décrit une prise : les trois poses successives de la pince (approche, saisie, retrait) et ses ouvertures. Une règle structure ce modèle : une fois l'objet reconstruit en 3D, tout l'aval raisonne en mètres dans le repère de base et ne revient jamais aux pixels. Ces structures portent une convention géométrique commune, détaillée à la section~\ref{sec:reperes}.
+
+\paragraph{Des algorithmes interchangeables (patron \emph{stratégie}).} Deux étapes admettent plusieurs réalisations : la détection d'objets et la planification de la prise. Chacune est isolée derrière une interface abstraite --- \texttt{ObjectDetector}, qui transforme une \texttt{Frame} en détections, et \texttt{GraspStrategy}, qui transforme un objet en prise. Les variantes concrètes en dérivent : le détecteur par seuillage \texttt{HSVDetector} et le détecteur appris \texttt{HFDetector} d'un côté, la stratégie de saisie géométrique de l'autre. C'est le patron de conception dit \emph{stratégie} : l'orchestrateur manipule l'interface, jamais l'implémentation. On peut ainsi substituer un détecteur à l'autre par une simple option de ligne de commande, sans toucher au reste du pipeline --- ce qui rend immédiate la comparaison expérimentale des deux détecteurs (chapitre~\ref{ch:evaluation}) : même pipeline, seule la stratégie change. À l'exécution, ce choix se réduit à une option de ligne de commande :
+\begin{center}\verb|python scripts/pick_and_place.py --target orange_cube --detector hf|\end{center}
+La stratégie de saisie effectivement employée est la stratégie \emph{géométrique}, dont la prise verticale (\emph{top-down}) n'est qu'un cas particulier ; elle est détaillée au chapitre~\ref{ch:planification}.
+
+\paragraph{Un comportement piloté par configuration.} Les réglages du pipeline ne sont pas codés en dur mais rassemblés dans une configuration. Un objet \texttt{PipelineConfig} regroupe les hyperparamètres d'une exécution --- l'objet cible, le détecteur à utiliser, les seuils et marges, les options d'affichage --- tandis que les données issues de la calibration et la description de la scène résident dans des fichiers \texttt{JSON} sous \texttt{configs/} : intrinsèques et calibration œil-main de chaque caméra, géométrie de la scène, spécifications des détecteurs. Changer de cible, de détecteur ou de réglage ne demande donc pas de modifier le code, et les paramètres géométriques produits par la calibration (chapitre~\ref{ch:perception}) sont simplement chargés au démarrage.
+
+\paragraph{Une abstraction de l'état du robot.} Enfin, le pipeline ne lit jamais les moteurs directement : il passe par un \texttt{RobotStateProvider}, qui fournit l'état du bras --- les angles articulaires et la pose de l'\emph{effecteur} (la pince), cette dernière calculée par cinématique directe --- à partir de trois sources interchangeables : la lecture en temps réel du bus moteur Feetech, un jeu d'angles fixes (pour les tests), ou des positions d'encodeur rejouées depuis un enregistrement. Les trois produisent le même type d'objet, si bien que tout l'aval du pipeline est identique, que le robot soit branché ou non. C'est exactement ce qui rend possibles les modes d'exécution \emph{live}, \emph{dry-run} et \emph{replay} décrits à la section~\ref{sec:live-replay}.
+
+\section{Repères et conventions}
+\label{sec:reperes}
+
+Les structures de données de la section précédente transportent toutes des grandeurs géométriques --- positions, orientations, poses --- qui n'ont de sens que rapportées à un \emph{repère}. Cette section fixe les repères du système, la convention qui nomme les transformations entre eux, et la petite boîte à outils qui les manipule. C'est le langage géométrique commun, que l'on retrouve --- cette fois démontré --- dans la perception (chapitre~\ref{ch:perception}) et la cinématique (chapitre~\ref{ch:controle}).
+
+\paragraph{Les repères.} Six repères interviennent : la \emph{base} du robot --- repère fixe, racine de tous les autres ---, les deux caméras fixes \texttt{cam\_0} et \texttt{cam\_1} (\emph{eye-to-hand}), la caméra de poignet \texttt{cam\_2} (\emph{eye-in-hand}), la \emph{pince} et l'\emph{objet} cible. Tout ce que le pipeline calcule est, en définitive, exprimé dans le repère de base.
+
+\paragraph{La convention de nommage.} On note $T_{A\leftarrow B}$ --- dans le code, \texttt{T\_A\_B} --- la pose du repère $B$ exprimée dans le repère $A$ ; c'est aussi la matrice qui convertit les coordonnées d'un point du repère $B$ vers le repère $A$. Cette convention unique est employée à l'identique dans la perception, la planification et la calibration. Elle se compose en enchaînant les repères,
+\[
+  T_{A\leftarrow C} = T_{A\leftarrow B}\,T_{B\leftarrow C},
+\]
+où le repère intermédiaire $B$ « s'annule » visuellement, et s'inverse en échangeant les deux repères : $T_{B\leftarrow A} = T_{A\leftarrow B}^{-1}$.
+
+\paragraph{Représentation : matrices homogènes.} Une pose réunit l'\emph{orientation} et la \emph{position} d'un repère : une rotation $R$ et une translation $t$. La rotation est une matrice $3\times3$ \emph{orthonormale} de déterminant $+1$ --- ses colonnes forment un trièdre direct de vecteurs unitaires, ce qui en fait une rotation \emph{pure}, sans mise à l'échelle ni effet miroir. On regroupe les deux dans une unique matrice $4\times4$ dite \emph{homogène},
+\[
+  T = \begin{bmatrix} R & t \\ \mathbf{0} & 1 \end{bmatrix},
+\]
+obtenue en adjoignant aux points une quatrième coordonnée égale à $1$. L'intérêt est précisément là : sous cette forme, la rotation \emph{et} la translation s'expriment par une \emph{seule} multiplication matricielle (la translation seule serait une addition), si bien qu'enchaîner plusieurs poses revient à multiplier leurs matrices et que déplacer un point se fait par un simple produit. Les positions sont en mètres. La boîte à outils \texttt{src/utils/transforms.py} implémente exactement ces opérations --- composition, et inversion (qui combine la transposée $R^{\top}$ de la rotation et la translation $-R^{\top}t$) --- ainsi que les conversions vers les représentations utilisées aux frontières : le couple axe-angle \texttt{(rvec, tvec)} d'OpenCV pour le code de calibration, et les angles \emph{roll--pitch--yaw} de l'URDF pour le modèle cinématique. Ces fondements --- pourquoi ces matrices, comment elles agissent sur les points --- sont développés au chapitre~\ref{ch:perception}.
+
+\paragraph{Les deux chaînes clés.} Deux transformations reviennent constamment et illustrent la convention. Pour une caméra \emph{fixe} (\emph{eye-to-hand}), la pose dans la base $T_{\text{base}\leftarrow\text{cam}}$ est \emph{constante} : c'est exactement le résultat de la calibration œil-main (chapitre~\ref{ch:perception}). Pour la caméra de \emph{poignet} (\emph{eye-in-hand}), la pose n'est pas constante --- la caméra suit le bras --- et se reconstruit en composant la pose courante de la pince avec la transformation (fixe) de la caméra sur la pince :
+\[
+  T_{\text{base}\leftarrow\text{cam2}} = T_{\text{base}\leftarrow\text{pince}}\;T_{\text{pince}\leftarrow\text{cam2}},
+\]
+où $T_{\text{base}\leftarrow\text{pince}}$ provient elle-même de la \emph{cinématique directe} appliquée aux angles articulaires courants (chapitre~\ref{ch:controle}). La même algèbre traverse tout le système : la triangulation place l'objet dans le repère de base (chapitre~\ref{ch:perception}), la planification y exprime la pose visée de la pince (chapitre~\ref{ch:planification}), et la cinématique inverse retraduit cette pose en angles articulaires (chapitre~\ref{ch:controle}). Ces changements de repère --- les matrices $T$ --- sont le tissu conjonctif du projet ; la figure~\ref{fig:reperes} en donne une vue d'ensemble.
+
+\begin{figure}[ht]
+  \centering
+  \begin{tikzpicture}[>={Stealth[round]}, font=\small,
+      frame/.style={circle, fill=black, inner sep=1.7pt},
+      tlbl/.style={font=\footnotesize, fill=white, inner sep=1pt},
+      note/.style={font=\footnotesize\itshape, gray!60!black}]
+    % repères (noeuds)
+    \node[frame,label={[align=center]above:\texttt{cam\_0}}] (c0)    at (-2.4,2.1) {};
+    \node[frame,label={[align=center]above:\texttt{cam\_1}}] (c1)    at (0.7,2.7)  {};
+    \node[frame,label={below left:base}]                    (base)  at (0,0)      {};
+    \node[frame,label={[align=center]below:pince}]          (pince) at (3.1,0.5)  {};
+    \node[frame,label={right:\texttt{cam\_2}}]              (c2)    at (4.3,1.7)  {};
+    \node[frame,label={below:objet}]                        (obj)   at (2.3,-1.7) {};
+    % notes eye-to-hand / eye-in-hand
+    \node[note] at (-2.4,2.7) {fixes, \emph{eye-to-hand}};
+    \node[note, align=center] at (5.4,1.2) {poignet,\\\emph{eye-in-hand}};
+    % transformations (poses) T_{A<-B}
+    \draw[->] (base) -- (c0)    node[tlbl,pos=0.55]       {$T_{\text{base}\leftarrow\text{cam0}}$};
+    \draw[->] (base) -- (c1)    node[tlbl,pos=0.62]       {$T_{\text{base}\leftarrow\text{cam1}}$};
+    \draw[->] (base) -- (pince) node[tlbl,pos=0.5,below]  {$T_{\text{base}\leftarrow\text{pince}}$};
+    \draw[->] (pince) -- (c2)   node[tlbl,pos=0.5]        {$T_{\text{pince}\leftarrow\text{cam2}}$};
+    \draw[->] (base) -- (obj)   node[tlbl,pos=0.55]       {$T_{\text{base}\leftarrow\text{objet}}$};
+  \end{tikzpicture}
+  \caption{Repères du système et transformations $T_{A\leftarrow B}$ qui les relient. Les poses des caméras fixes (\emph{eye-to-hand}) sont constantes ; celle de la caméra de poignet (\emph{eye-in-hand}) se compose via la pince, $T_{\text{base}\leftarrow\text{cam2}} = T_{\text{base}\leftarrow\text{pince}}\,T_{\text{pince}\leftarrow\text{cam2}}$.}
+  \label{fig:reperes}
+\end{figure}
+
+\section{Lien matériel--logiciel}
+\label{sec:materiel-logiciel}
+
+L'architecture présentée jusqu'ici est \emph{logique} : des modules, des types, des repères. Cette section la rattache aux dispositifs physiques. Le matériel lui-même --- bras, caméras, pince, enceinte --- a été présenté en introduction ; on précise seulement ici comment le logiciel s'y connecte. Deux modules jouent le rôle de \emph{pilotes}, et une couche de calibration fait le pont entre les mesures brutes du matériel et les grandeurs géométriques que le pipeline manipule (table~\ref{tab:materiel-logiciel}).
+
+\paragraph{Deux pilotes.} Le module \texttt{MotorController} commande le bus moteur : il associe les six noms logiques de moteurs (\texttt{shoulder\_pan}, \texttt{shoulder\_lift}, \texttt{elbow\_flex}, \texttt{wrist\_flex}, \texttt{wrist\_roll} et \texttt{gripper}) aux identifiants des servomoteurs Feetech, envoie des consignes d'angles et d'ouverture de la pince, suit une trajectoire en respectant ses horodatages, et lit en retour les positions ainsi que la \emph{charge} du moteur --- une mesure de couple dont on se sert, faute de capteur d'effort dédié, pour détecter qu'un objet est bien tenu (chapitre~\ref{ch:controle}). Il s'appuie sur l'implémentation du protocole Feetech fournie par LeRobot. Le module \texttt{MultiCamera}, lui, pilote les trois caméras USB --- la paire stéréo fixe (\emph{eye-to-hand}) et la caméra de poignet (\emph{eye-in-hand}) --- et restitue les images synchronisées sous forme de \texttt{Frame}.
+
+\paragraph{La calibration comme pont.} C'est le point d'architecture décisif : les mesures brutes du matériel --- des pixels, des comptes d'encodeur --- ne deviennent les grandeurs métriques du pipeline qu'à travers les données de \emph{calibration} rangées dans \texttt{configs/}. Les intrinsèques et la calibration œil-main donnent à chaque \texttt{Frame} sa matrice $K$ et sa pose $T_{\text{base}\leftarrow\text{cam}}$ ; la calibration moteur convertit les comptes d'encodeur en angles articulaires, donc --- par cinématique directe --- en pose de la pince. Ces fichiers sont produits une fois par les procédures de calibration (chapitre~\ref{ch:perception} et annexe~\ref{ann:repro}) et sont propres à \emph{ce} robot : c'est par eux que la géométrie de la section~\ref{sec:reperes} se trouve « câblée » au matériel réel.
+
+\paragraph{Une configuration centralisée.} Enfin, les éléments susceptibles de changer d'une machine ou d'un branchement à l'autre --- ports USB, index et résolution des caméras --- sont rassemblés dans un unique fichier de configuration. Les noms logiques (\texttt{cam\_0}, \texttt{cam\_1}, \texttt{cam\_2}) restent fixes ; seuls les index matériels varient. Rebrancher le matériel ou porter le projet sur un autre ordinateur ne demande donc d'éditer qu'un seul endroit.
+
+\begin{table}[ht]
+  \centering\small
+  \begin{tabularx}{\linewidth}{l l X}
+    \toprule
+    Matériel & Module (pilote) & Calibration (\texttt{configs/}) \\
+    \midrule
+    5 articulations + pince (bus Feetech) & \texttt{MotorController} & \texttt{calibration\_follower.json} \\
+    Paire stéréo fixe (\emph{eye-to-hand}) & \texttt{MultiCamera} & \texttt{calibration\_cam\_0/1.json}, \texttt{handeye\_cam\_0/1.json} \\
+    Caméra de poignet (\emph{eye-in-hand}) & \texttt{MultiCamera} & \texttt{calibration\_cam\_2.json}, \texttt{handeye\_cam\_2.json} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Correspondance entre dispositifs matériels, modules pilotes et fichiers de calibration.}
+  \label{tab:materiel-logiciel}
+\end{table}
+
+\section{Modes d'exécution : \textit{live}, \textit{dry-run} et \textit{replay}}
+\label{sec:live-replay}
+
+Les abstractions de la section~\ref{sec:interfaces} --- une entrée caméra et une source d'état du robot interchangeables, produisant toujours les mêmes types --- ont une conséquence pratique : le \emph{même} code de pipeline peut s'exécuter de trois manières, qui ne diffèrent que par l'origine des données et par le fait de commander ou non le robot (table~\ref{tab:modes}).
+
+\paragraph{Live.} C'est le mode de production. Les trois caméras USB sont capturées en temps réel, l'état du bras est lu sur le bus moteur, et les trajectoires calculées sont effectivement envoyées aux moteurs : le robot perçoit et agit. C'est ce mode qui réalise un cycle de \emph{pick-and-place} réel.
+
+\paragraph{Dry-run.} Ici, tout est calculé --- perception, planification, cinématique inverse, trajectoires --- mais \emph{aucune commande n'est envoyée aux moteurs}, et l'état du bras est pris comme une pose de référence fixe plutôt que lu en continu. Ce mode sert à valider la chaîne de décision sans risquer un mouvement ; il s'active aussi automatiquement, en repli, lorsque le bus moteur ne peut être ouvert.
+
+\paragraph{Replay.} Enfin, l'architecture rend possible de rejouer une séquence \emph{enregistrée} : au lieu des caméras live, le pipeline lit des images pré-enregistrées accompagnées des angles du bras au moment de la capture. Ni le robot ni les caméras n'ont alors besoin d'être connectés --- le bras n'étant pas commandé, ni la liaison au PC ni l'alimentation moteur ne sont requises. L'intérêt est double : itérer sur la perception --- par exemple comparer deux détecteurs --- hors-ligne, et obtenir des résultats \emph{exactement} reproductibles, une capture figée ne variant pas d'une exécution à l'autre. Ce mode est une capacité offerte par la conception plus qu'un passage obligé du développement.
+
+\bigskip
+
+Dans les trois cas, le code du pipeline est identique : seules changent la source des données et la décision de commander ou non les moteurs. C'est le bénéfice concret de la frontière de types (section~\ref{sec:interfaces}), et cela clôt la description de l'architecture. Les chapitres suivants entrent dans chacun des étages : la perception (chapitre~\ref{ch:perception}), la planification de saisie (chapitre~\ref{ch:planification}) et le contrôle (chapitre~\ref{ch:controle}).
+
+\begin{table}[ht]
+  \centering\small
+  \begin{tabularx}{\linewidth}{l l l c X}
+    \toprule
+    Mode & Images & État du bras & Moteurs & Usage \\
+    \midrule
+    \emph{live} & caméras USB & lu sur le bus & oui & exécution réelle (production) \\
+    \emph{dry-run} & caméras USB & pose fixe & non & valider sans mouvement ; repli si le bus est injoignable \\
+    \emph{replay} & fichiers enregistrés & rejoué (manifeste) & non & perception hors-ligne, reproductible \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Les trois modes d'exécution du pipeline. Le code applicatif est identique ; seuls changent la source des données et la commande des moteurs.}
+  \label{tab:modes}
+\end{table}
