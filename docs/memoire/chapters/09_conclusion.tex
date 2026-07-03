@@ -1,7 +1,7 @@
 \chapter{Conclusion}
 \label{ch:conclusion}
 
-Ce travail est parti d'une question simple à énoncer et exigeante à résoudre : faire saisir un objet à un bras robotique \emph{low-cost} guidé par la vision. Nous y avons répondu en construisant une \emph{pipeline} complète --- perception, planification de saisie, contrôle --- sur le SO-101, puis en la mettant en regard d'une seconde approche, une politique apprise par imitation, évaluée sur le même banc. Ce chapitre en dresse le bilan : au regard des objectifs du cahier des charges (section~\ref{sec:concl-bilan}), puis en résumant les \emph{contributions} (section~\ref{sec:concl-contrib}) et les \emph{perspectives} (section~\ref{sec:concl-perspectives}). Une dernière section explicite l'usage fait des outils d'assistance par intelligence artificielle (section~\ref{sec:concl-ia}).
+Ce travail portait sur une question précise : faire saisir un objet à un bras robotique \emph{low-cost} guidé par la vision. Nous y avons répondu en construisant une \emph{pipeline} complète --- perception, planification de saisie, contrôle --- sur le SO-101, puis en la comparant à une seconde approche, une politique apprise par imitation évaluée sur le même banc. Ce chapitre en dresse le bilan au regard des objectifs du cahier des charges (section~\ref{sec:concl-bilan}), puis résume les \emph{contributions} (section~\ref{sec:concl-contrib}) et les \emph{perspectives} (section~\ref{sec:concl-perspectives}). Une dernière section explicite l'usage fait des outils d'assistance par intelligence artificielle (section~\ref{sec:concl-ia}).
 
 \section{Bilan au regard des objectifs}
 \label{sec:concl-bilan}
@@ -20,40 +20,40 @@ Les six objectifs du cahier des charges, posés en introduction (section~\ref{se
 3.~Trajectoires sans obstacles & \emph{Écarté} délibérément : ni évitement, ni détection de collision. \\
 4.~Boucle fermée par la perception & Raffinement \texttt{cam\_2} avant la descente (${\sim}13$ mm d'erreur corrigés en moyenne) et re-tentatives de prise au couple. \\
 5.~Saisie adaptée à la géométrie & Prise géométrique : ouverture et orientation des mâchoires réglées sur la forme mesurée ; réussite $67$--$77\,\%$ (cube) et $67$--$78\,\%$ (cylindre) selon le détecteur. \\
-6.~Évaluation par métriques & Deux campagnes ($78$ essais pour la pipeline, $30$ pour la politique apprise), taux de réussite et intervalles de Wilson ; métrique « collisions évitées » sans objet. \\
+6.~Évaluation par métriques & Deux campagnes ($78$ essais pour le pipeline, $30$ pour la politique apprise, hors sonde de généralisation), taux de réussite et intervalles de Wilson ; métrique « collisions évitées » sans objet. \\
 \bottomrule
 \end{tabularx}
 \caption{Bilan : ce que le travail a concrètement réalisé pour chacun des six objectifs (leur \emph{statut} formel figure en table~\ref{tab:objectifs}).}
 \label{tab:bilan}
 \end{table}
 
-Le constat d'ensemble est clair : le \emph{cœur} du sujet --- architecture multi-caméras, saisie adaptée à la géométrie, évaluation chiffrée --- est \emph{atteint et mesuré} ; ce que le travail laisse de côté --- sélection active de points de vue, évitement d'obstacles --- constitue ses limites, discutées au chapitre~\ref{ch:discussion}.
+Le bilan d'ensemble est le suivant. La partie centrale du sujet --- architecture multi-caméras, saisie adaptée à la géométrie, évaluation chiffrée --- est \emph{atteinte et mesurée}. Ce que le travail laisse de côté (sélection active de points de vue, évitement d'obstacles) constitue ses limites, discutées au chapitre~\ref{ch:discussion}.
 
 \section{Contributions}
 \label{sec:concl-contrib}
 
-Au terme de ce travail, quatre contributions se dégagent, annoncées dès l'introduction et tenues tout au long des chapitres.
+Ce travail comporte quatre contributions, annoncées dès l'introduction et développées au fil des chapitres.
 
-\emph{(i)~Une pipeline complète, modulaire et reproductible.} Le c{\oe}ur du travail est une chaîne perception--planification--contrôle fonctionnelle (figure~\ref{fig:architecture}), du pixel à la prise, sur un bras \emph{low-cost} (SO-101) et trois caméras. Chaque module --- détection, triangulation, planification de saisie, cinématique inverse, contrôle moteur --- y est isolé, analysable et remplaçable (chapitres~\ref{ch:architecture} à~\ref{ch:controle}), et l'ensemble est \emph{open-source}.
+\emph{(i)~Un pipeline complet, modulaire et reproductible.} L'élément principal du travail est une chaîne perception--planification--contrôle fonctionnelle (figure~\ref{fig:architecture}), du pixel à la prise, sur un bras \emph{low-cost} (SO-101) et trois caméras. Chaque module --- détection, triangulation, planification de saisie, cinématique inverse, contrôle moteur --- y est isolé, analysable et remplaçable (chapitres~\ref{ch:architecture} à~\ref{ch:controle}), et l'ensemble est \emph{open-source}.
 
 \emph{(ii)~Une saisie adaptée à la géométrie de l'objet.} La planification de prise règle l'ouverture et l'orientation des mâchoires sur la forme mesurée, et choisit un angle d'attaque par balayage (chapitre~\ref{ch:planification}). Nous en avons aussi cerné la limite : cet angle est piloté par la \emph{position} de l'objet, non par sa \emph{forme} (chapitre~\ref{ch:discussion}).
 
-\emph{(iii)~La mise en regard de deux paradigmes.} Sur le même bras et la même tâche, la pipeline explicite a été comparée à une politique apprise de bout en bout (ACT). La comparaison est \emph{expérimentale} et \emph{équitable} --- même banc, mêmes positions, mêmes métriques (chapitre~\ref{ch:evaluation}) --- et débouche sur un constat nuancé : à égalité sur l'objet entraîné, la pipeline l'emporte en \emph{généralité}, la politique apprise en \emph{rapidité} de mise en {\oe}uvre.
+\emph{(iii)~La mise en regard de deux paradigmes.} Sur le même bras et la même tâche, le pipeline explicite a été comparé à une politique apprise de bout en bout (ACT). La comparaison est \emph{expérimentale} et \emph{équitable} --- même banc, mêmes positions, mêmes métriques (chapitre~\ref{ch:evaluation}) --- et débouche sur un constat nuancé : à égalité sur l'objet entraîné, le pipeline l'emporte en \emph{généralité}, la politique apprise en \emph{rapidité} de mise en {\oe}uvre.
 
 \emph{(iv)~Une évaluation à périmètre déclaré.} Les résultats reposent sur deux campagnes chiffrées, assorties d'intervalles de confiance, et surtout d'un périmètre et de limites \emph{explicitement déclarés} --- objets, occlusion, obstacles.
 
 \section{Perspectives}
 \label{sec:concl-perspectives}
 
-Les prolongements \emph{techniques} du travail ont été détaillés au fil de la discussion (section~\ref{sec:disc-pistes}) : segmentation fine, planification évitant les obstacles, perception active, asservissement visuel continu, retour tactile, ou encore un bras à six degrés de liberté. Sans y revenir dans le détail, deux directions nous paraissent les plus porteuses.
+Les prolongements \emph{techniques} du travail ont été détaillés au fil de la discussion (section~\ref{sec:disc-pistes}) : segmentation fine, planification évitant les obstacles, perception active, asservissement visuel continu, retour tactile, ou encore un bras à six degrés de liberté. Sans y revenir dans le détail, deux directions nous semblent les plus utiles.
 
-La première est \emph{matérielle} : lever le sous-actionnement. Un sixième degré de liberté débloquerait d'un coup les prises que la cinématique interdit aujourd'hui et rendrait l'angle d'attaque réellement libre --- c'est la contrainte la plus structurelle du travail, et la seule que ni le code ni la calibration ne peuvent contourner (chapitre~\ref{ch:discussion}).
+La première est \emph{matérielle} : lever le sous-actionnement. Un sixième degré de liberté rendrait possibles les prises que la cinématique interdit aujourd'hui et rendrait l'angle d'attaque réellement libre. C'est la contrainte la plus structurelle du travail, et la seule que ni le code ni la calibration ne peuvent contourner (chapitre~\ref{ch:discussion}).
 
-La seconde est \emph{conceptuelle} : marier les deux paradigmes plutôt que de les opposer. Ce travail les a comparés ; il en ressort qu'ils sont \emph{complémentaires} --- la pipeline explicite apporte la transparence, les garanties géométriques et la généralité, la politique apprise la souplesse et la rapidité d'adaptation. Une architecture \emph{hybride} --- par exemple un planificateur géométrique guidé par une perception \emph{apprise} des prises de l'objet --- réunirait leurs forces là où chacune, seule, montre ses limites. C'est la perspective la plus stimulante qu'ouvre ce travail.
+La seconde est \emph{conceptuelle} : combiner les deux paradigmes plutôt que de les opposer. Ce travail les a comparés ; il en ressort qu'ils sont \emph{complémentaires} --- le pipeline explicite apporte la transparence, les garanties géométriques et la généralité, la politique apprise la souplesse et la rapidité d'adaptation. Une architecture \emph{hybride} --- par exemple un planificateur géométrique guidé par une perception \emph{apprise} des prises de l'objet --- combinerait leurs avantages là où chacune, seule, atteint ses limites. C'est la principale direction de travail que suggère ce mémoire.
 
 \section{Note sur l'utilisation d'outils d'intelligence artificielle}
 \label{sec:concl-ia}
 
 Par souci de transparence, nous déclarons l'usage fait d'outils d'assistance par intelligence artificielle au cours de ce travail. Des assistants de programmation fondés sur de grands modèles de langage ont été employés de façon \emph{substantielle} pour l'\emph{implémentation} du code, ainsi que pour aider à \emph{formuler} et à \emph{documenter} les méthodes mathématiques standard mobilisées --- calibration, triangulation, cinématique, planification de trajectoire. Ces outils ont accéléré l'écriture et la mise au point du logiciel, et servi de support pour en expliciter les fondements.
 
-En revanche, la \emph{conception} du projet, le choix et le montage du matériel, la définition du protocole, la conduite des expériences et l'interprétation des résultats relèvent du travail propre de l'auteur --- de même que les dérivations de changements de repère qui forment le fil conducteur du mémoire. L'exigence de \emph{traçabilité} --- rapporter chaque chiffre à une source vérifiable dans le code ou les mesures --- a guidé la rédaction. Les outils d'intelligence artificielle ont été un \emph{moyen} ; les choix, la direction scientifique et la responsabilité du contenu final reviennent à l'auteur.
+En revanche, la \emph{conception} du projet, le choix et le montage du matériel, la définition du protocole, la conduite des expériences et l'interprétation des résultats relèvent du travail propre de l'auteur --- de même que les dérivations de changements de repère qui structurent le mémoire. L'exigence de \emph{traçabilité} --- rapporter chaque chiffre à une source vérifiable dans le code ou les mesures --- a guidé la rédaction. Les outils d'intelligence artificielle ont été un \emph{moyen} ; les choix, la direction scientifique et la responsabilité du contenu final reviennent à l'auteur.

@@ -2,30 +2,30 @@
 
 \section{Contexte}
 
-Les bras robotiques à bas coût sont devenus largement accessibles. Des plateformes open-source comme le SO-101, soutenues par des communautés telles que Hugging Face et son écosystème LeRobot, mettent aujourd'hui un bras manipulateur fonctionnel à la portée d'un étudiant, à un coût bien inférieur à celui des bras robotiques professionnels. Disposer d'un bras que l'on peut commander ne suffit pourtant pas à lui faire \emph{saisir} un objet de façon autonome : il faut enchaîner plusieurs maillons non triviaux --- percevoir la scène, localiser la cible en trois dimensions, décider comment l'attraper, puis exécuter le mouvement.
+Les bras robotiques à bas coût sont devenus largement accessibles. Des plateformes open-source comme le SO-101~\cite{therobotstudio_so101_2024}, soutenues par des communautés telles que Hugging Face et son écosystème LeRobot~\cite{cadene_lerobot_2024}, mettent aujourd'hui un bras manipulateur fonctionnel à la portée d'un étudiant, à un coût bien inférieur à celui des bras robotiques professionnels. Disposer d'un bras que l'on peut commander ne suffit pourtant pas à lui faire \emph{saisir} un objet de façon autonome : il faut enchaîner plusieurs étapes non triviales, à savoir percevoir la scène, localiser la cible en trois dimensions, décider comment l'attraper, puis exécuter le mouvement.
 
-Deux philosophies permettent de bâtir cet enchaînement. La première, \emph{modulaire et explicite}, décompose le problème en étapes que l'on conçoit et comprend séparément : calibration des caméras, détection de l'objet, reconstruction 3D, planification de la prise, puis contrôle du bras. La seconde, \emph{de bout en bout}, confie l'ensemble à une politique apprise qui imite directement des démonstrations humaines, sans décomposition explicite.
+Deux approches permettent de construire cet enchaînement. La première, \emph{modulaire et explicite}, décompose le problème en étapes que l'on conçoit et comprend séparément : calibration des caméras, détection de l'objet, reconstruction 3D, planification de la prise, puis contrôle du bras. La seconde, \emph{de bout en bout}, confie l'ensemble à une politique apprise qui imite directement des démonstrations humaines, sans décomposition explicite.
 
-La motivation de ce travail est de \textbf{construire entièrement une pipeline du premier type} --- complète, transparente, open-source et reproductible --- sur du matériel à bas coût, en maîtrisant et en expliquant chacune de ses étapes plutôt qu'en traitant la saisie comme une boîte noire.
+La motivation de ce travail est de \textbf{construire entièrement un pipeline du premier type} (complet, transparent, open-source et reproductible) sur du matériel à bas coût, en maîtrisant et en expliquant chacune de ses étapes plutôt qu'en traitant la saisie comme une boîte noire.
 
-Le SO-101 illustre d'ailleurs cette tension : il est d'abord conçu pour l'apprentissage par imitation (deux bras identiques, un « meneur » manipulé à la main et un « suiveur » qui le reproduit, servent à enregistrer des démonstrations). Sur cette plateforme, l'imitation est la voie naturelle et rapide ; construire à la place une pipeline géométrique explicite --- l'approche la moins immédiate pour ce matériel --- est précisément le parti pris, et la principale difficulté, de ce travail. Pour mettre ce choix en perspective, nous implémentons aussi l'approche de bout en bout (une politique \textit{Action Chunking Transformer}, ACT) sur le \emph{même} bras et la \emph{même} tâche ; l'imitation y sert alors de point de comparaison plutôt que de finalité, et ce contraste constitue un fil conducteur du mémoire.
+Le SO-101 illustre d'ailleurs ce contraste : il est d'abord conçu pour l'apprentissage par imitation (deux bras identiques, un « meneur » manipulé à la main et un « suiveur » qui le reproduit, servent à enregistrer des démonstrations). Sur cette plateforme, l'imitation est l'approche la plus directe et la plus rapide. Construire à la place un pipeline géométrique explicite, l'approche la moins immédiate pour ce matériel, est précisément le choix retenu et la principale difficulté de ce travail. Pour mettre ce choix en perspective, nous implémentons aussi l'approche de bout en bout (une politique \textit{Action Chunking Transformer}, ACT) sur le \emph{même} bras et la \emph{même} tâche ; l'imitation y sert alors de point de comparaison plutôt que de finalité, et cette comparaison revient tout au long du mémoire.
 
-Cet effort s'inscrit dans un horizon plus large, fixé par le cahier des charges : la saisie en \emph{environnement encombré}, où les occlusions, les points de vue partiels et les risques de collision interdisent de se contenter d'une trajectoire figée ou d'une stratégie de prise unique. Cette ambition structure les objectifs (section~\ref{sec:objectifs}) ; le présent travail en traite le cœur --- l'architecture perception--planification--contrôle multi-caméras et la saisie adaptative à la géométrie de l'objet --- et discute honnêtement, comme limites et perspectives, les aspects non couverts tels que l'évitement actif d'obstacles.
+Ce travail s'inscrit dans un but plus large, fixé par le cahier des charges : la saisie en \emph{environnement encombré}, où les occlusions, les points de vue partiels et les risques de collision interdisent de se contenter d'une trajectoire figée ou d'une stratégie de prise unique. Ce but structure les objectifs (section~\ref{sec:objectifs}). Le présent travail en traite la partie principale --- l'architecture perception--planification--contrôle multi-caméras et la saisie adaptative à la géométrie de l'objet --- et discute, comme limites et perspectives, les aspects non couverts tels que l'évitement actif d'obstacles.
 
 \section{Problématique}
 
-Prise isolément, chacune de ces étapes dispose de solutions connues : on sait calibrer une caméra, détecter un objet coloré ou décrire une cible par du texte, ou encore résoudre une cinématique inverse. La difficulté de la saisie autonome ne réside donc pas dans une brique isolée, mais dans leur \emph{orchestration} : faire coopérer de façon fiable perception, reconstruction 3D, planification de la prise et contrôle, sur un matériel à bas coût dont les imprécisions --- jeu mécanique, bruit de détection, incertitude de calibration --- se cumulent le long de la chaîne.
+Prise isolément, chacune de ces étapes dispose de solutions connues : on sait calibrer une caméra, détecter un objet coloré ou décrire une cible par du texte, ou encore résoudre une cinématique inverse. La difficulté de la saisie autonome ne réside donc pas dans une brique isolée, mais dans leur \emph{orchestration} : faire coopérer de façon fiable perception, reconstruction 3D, planification de la prise et contrôle, sur un matériel à bas coût dont les imprécisions (jeu mécanique, bruit de détection, incertitude de calibration) se cumulent le long de la chaîne.
 
-Cette difficulté s'accentue dès que l'objet cible n'est plus seul. En \emph{environnement encombré}, la perception devient sujette aux occlusions et aux points de vue partiels --- une caméra fixe peut ne plus voir la cible --- et la géométrie de l'objet n'est connue qu'imparfaitement. De plus, le chemin le plus direct vers l'objet n'est pas toujours praticable, en raison des risques de collision. Une trajectoire figée et une stratégie de prise unique ne suffisent alors plus.
+Cette difficulté s'accentue dès que l'objet cible n'est plus seul. En \emph{environnement encombré}, la perception devient sujette aux occlusions et aux points de vue partiels (une caméra fixe peut ne plus voir la cible) et la géométrie de l'objet n'est connue qu'imparfaitement. De plus, le chemin le plus direct vers l'objet n'est pas toujours praticable, en raison des risques de collision. Une trajectoire figée et une stratégie de prise unique ne suffisent alors plus.
 
-La question centrale de ce travail est donc la suivante : \emph{comment décider, à partir de plusieurs sources visuelles, où regarder et comment saisir un objet, tout en exécutant le mouvement de façon robuste ?} Nous l'abordons dans une logique \emph{perception--action}, où la valeur ne tient pas seulement à la qualité de chaque brique, mais à la décision et à la coordination de l'ensemble. Les objectifs qui en découlent --- et le périmètre effectivement traité --- sont précisés à la section~\ref{sec:objectifs}.
+La question centrale de ce travail est donc la suivante : \emph{comment décider, à partir de plusieurs sources visuelles, où regarder et comment saisir un objet, tout en exécutant le mouvement de façon robuste ?} Nous l'abordons dans une logique \emph{perception--action}, où le résultat dépend non seulement de la qualité de chaque brique, mais aussi de la décision et de la coordination de l'ensemble. Les objectifs qui en découlent, et le périmètre effectivement traité, sont précisés à la section~\ref{sec:objectifs}.
 
 \section{Objectifs}
 \label{sec:objectifs}
 
 La finalité de ce travail, telle que fixée par le cahier des charges, est de \emph{concevoir, implémenter et évaluer une architecture permettant à un bras robotique équipé de caméras \textit{eye-to-hand} et \textit{eye-in-hand} d'interagir de manière autonome avec un environnement encombré}. Cette finalité se décline en six objectifs, que nous reprenons ici en indiquant honnêtement leur degré de réalisation dans le présent travail.
 
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \renewcommand{\arraystretch}{1.2}
 \begin{tabularx}{\linewidth}{@{}Xll@{}}
@@ -36,7 +36,7 @@ La finalité de ce travail, telle que fixée par le cahier des charges, est de \
 2.~Sélection de points de vue contre les occlusions & Partiel & 4, 8 \\
 3.~Trajectoires évitant les obstacles & Hors périmètre & 8 \\
 4.~Replanification en boucle fermée par la perception & Partiel & 4, 6 \\
-5.~Stratégies de saisie adaptées à la géométrie & Atteint & 5 \\
+5.~Stratégies de saisie adaptées à la géométrie et à l'accessibilité & Atteint & 5 \\
 6.~Évaluation expérimentale par métriques & Partiel & 7 \\
 \bottomrule
 \end{tabularx}
@@ -44,40 +44,47 @@ La finalité de ce travail, telle que fixée par le cahier des charges, est de \
 \label{tab:objectifs}
 \end{table}
 
-Deux objectifs constituent le cœur réalisé du travail : l'architecture multi-caméras (objectif~1) et la saisie adaptative à la géométrie de l'objet (objectif~5). Deux autres sont traités partiellement : la perception bénéficie d'un raffinement par la caméra montée au poignet, qui atténue certaines occlusions et corrige la position en boucle fermée (objectifs~2 et~4), sans toutefois constituer une sélection active de points de vue ni un asservissement continu. L'évitement d'obstacles (objectif~3) n'est pas abordé : c'est un choix délibéré, dont le chapitre~\ref{ch:discussion} détaille le motif. Enfin, l'évaluation (objectif~6) repose sur deux campagnes de mesures ; la métrique des « collisions évitées » présuppose ce module d'évitement non développé et reste donc sans objet.
+Deux objectifs constituent la partie principale réalisée du travail : l'architecture multi-caméras (objectif~1) et la saisie adaptative à la géométrie de l'objet (objectif~5). Deux autres sont traités partiellement : la perception bénéficie d'un raffinement par la caméra montée au poignet, qui atténue certaines occlusions et corrige la position en boucle fermée (objectifs~2 et~4), sans toutefois constituer une sélection active de points de vue ni un asservissement continu. L'évitement d'obstacles (objectif~3) n'est pas abordé : c'est un choix délibéré, dont le chapitre~\ref{ch:discussion} détaille le motif. Enfin, l'évaluation (objectif~6) repose sur deux campagnes de mesures ; la métrique des « collisions évitées » présuppose ce module d'évitement non développé et reste donc sans objet.
 
-Le cahier des charges précise par ailleurs que, \enquote{dans un premier temps, la prise de décision reposera sur des règles heuristiques et des critères géométriques}, les approches par apprentissage étant \enquote{envisagées comme extensions}. C'est exactement la trajectoire suivie : la pipeline repose sur des heuristiques géométriques, et l'apprentissage par imitation est réalisé comme seconde méthode, à titre de comparaison.
+Le cahier des charges précise par ailleurs que, \enquote{dans un premier temps, la prise de décision reposera sur des règles heuristiques et des critères géométriques}, les approches par apprentissage étant \enquote{envisagées comme extensions}. C'est exactement la trajectoire suivie : le pipeline repose sur des heuristiques géométriques, et l'apprentissage par imitation est réalisé comme seconde méthode, à titre de comparaison.
 
 \section{Matériel}
 
-La plateforme matérielle réunit un bras manipulateur, trois caméras, une pince adaptée et une scène de saisie imprimée en 3D, le tout piloté depuis un ordinateur portable.
+La plateforme matérielle réunit un bras manipulateur, trois caméras, une pince adaptée et une scène de saisie imprimée en 3D, le tout piloté depuis un ordinateur portable (figure~\ref{fig:montage}).
 
-\paragraph{Bras robotique.} Le robot est un \textbf{SO-101}, un bras open-source à bas coût de l'écosystème LeRobot. Chaque bras comporte \textbf{six servomoteurs Feetech STS3215} : cinq commandent les articulations rotatives (rotation de base, épaule, coude, flexion et rotation du poignet) et le sixième actionne la pince. La plateforme se compose de deux bras identiques --- un « meneur » et un « suiveur » --- ; la pipeline modulaire n'utilise que le suiveur, tandis que l'apprentissage par imitation exploite la paire, le meneur servant à enregistrer les démonstrations. Le fait de ne disposer que de \emph{cinq} articulations pour positionner \emph{et} orienter la pince --- soit une de moins que les six degrés de liberté d'une pose quelconque dans l'espace --- est une contrainte centrale, analysée au chapitre~\ref{ch:planification}.
+\paragraph{Bras robotique.} Le robot est un \textbf{SO-101}, un bras open-source à bas coût de l'écosystème LeRobot. Chaque bras comporte \textbf{six servomoteurs Feetech STS3215} : cinq commandent les articulations rotatives (rotation de base, épaule, coude, flexion et rotation du poignet) et le sixième actionne la pince. La plateforme se compose de deux bras identiques (un « meneur » et un « suiveur ») ; le pipeline modulaire n'utilise que le suiveur, tandis que l'apprentissage par imitation exploite la paire, le meneur servant à enregistrer les démonstrations. Ne disposer que de \emph{cinq} articulations pour positionner \emph{et} orienter la pince --- soit une de moins que les six degrés de liberté d'une pose quelconque dans l'espace --- est une contrainte centrale, analysée au chapitre~\ref{ch:planification}.
 
 \paragraph{Caméras.} Trois caméras USB de résolution $1920\times1080$ équipent le système. Deux d'entre elles, \texttt{cam\_0} et \texttt{cam\_1}, sont fixes et placées face à la scène : montées \emph{eye-to-hand} (déportées du bras), elles forment une paire stéréo qui reconstruit la position tridimensionnelle de l'objet. La troisième, \texttt{cam\_2}, est montée \emph{eye-in-hand}, au poignet : embarquée, elle suit la pince et sert au raffinement de la prise en boucle fermée.
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering
-\photoplaceholder{Photo à insérer : vue d'ensemble du montage (bras SO-101, caméras fixes, caméra au poignet, scène imprimée en 3D).}
-\caption{Vue d'ensemble de la plateforme. \textit{(Photo à ajouter.)}}
+\includegraphics[width=0.72\linewidth]{setup_complet.jpg}
+\caption{Vue d'ensemble de la plateforme.}
 \label{fig:montage}
 \end{figure}
 
-\paragraph{Pince.} La pince d'origine a été remplacée par un modèle imprimé en \textbf{TPU} (filament souple) issu des extensions communautaires du projet \emph{XLeRobot} : le \emph{Compliant gripper (new)}, à nombreuses lamelles internes. Une version antérieure, le \emph{Compliant gripper}, plus souple, avait également été essayée, de même que différentes caméras de poignet, avant de retenir la configuration actuelle. Deux adaptations améliorent la tenue de l'objet : un \textbf{grip de tennis} collé sur les mâchoires augmente l'adhérence et réduit le glissement, et la souplesse du TPU permet aux mâchoires de se \textbf{déformer pour épouser la forme} de l'objet saisi. Cette compliance facilite la prise, mais introduit une incertitude sur le point de contact, discutée au chapitre~\ref{ch:planification}.
+\paragraph{Pince.} La pince d'origine a été remplacée par un modèle imprimé en \textbf{TPU} (filament souple) issu des extensions communautaires du projet \emph{XLeRobot} : le \emph{Compliant gripper (new)}, à nombreuses lamelles internes. Une version antérieure, le \emph{Compliant gripper}, plus souple, avait également été essayée, de même que différentes caméras de poignet, avant de retenir la configuration actuelle (figure~\ref{fig:pince}). Deux adaptations améliorent la tenue de l'objet : un \textbf{grip de tennis} collé sur les mâchoires augmente l'adhérence et réduit le glissement, et la souplesse du TPU permet aux mâchoires de se \textbf{déformer pour épouser la forme} de l'objet saisi. Cette compliance facilite la prise, mais introduit une incertitude sur le point de contact, discutée au chapitre~\ref{ch:planification}.
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering
-\photoplaceholder{Photo à insérer : gros plan de la pince TPU à lamelles, avec le grip de tennis.}
-\caption{Pince imprimée en TPU, équipée d'un grip de tennis. \textit{(Photo à ajouter.)}}
+    \begin{subfigure}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{pinces.jpg}
+    \end{subfigure}\hfill
+    \begin{subfigure}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{robot_pinces_grip.png}
+    \end{subfigure}
+\caption{Pince imprimée en TPU, équipée d'un grip de tennis.}
 \label{fig:pince}
 \end{figure}
 
 \paragraph{Scène de saisie.} L'environnement de saisie est une structure conçue et imprimée en 3D. Ses dimensions résultent d'une campagne de conception (caractéristiques visées puis cotes retenues), détaillée à l'annexe~\ref{ann:repro}. Elle se compose de quatre pièces distinctes, dont deux imprimées en double. Les fichiers de modélisation sont publiés sur le dépôt du projet plutôt que reproduits dans ce mémoire.
 
-\paragraph{Ordinateur et logiciels.} L'ensemble est piloté depuis un MacBook~M4 (24~Go). Le code est écrit en Python et s'appuie sur l'écosystème open-source Hugging Face / LeRobot, sur OpenCV pour la vision et NumPy pour le calcul ; le modèle cinématique du bras provient du fichier URDF \texttt{so101\_new\_calib.urdf}. Une première politique d'imitation a été entraînée localement, sur le processeur graphique intégré du Mac (MPS) ; faute de puissance et de temps, la version finale a toutefois été entraînée sur Google Colab Pro (GPU A100), via la plateforme Hugging Face. Les détails du protocole d'entraînement sont donnés au chapitre~\ref{ch:evaluation}.
+\paragraph{Ordinateur et logiciels.} L'ensemble est piloté depuis un MacBook~M4 (24~Go). Le code est écrit en Python et s'appuie sur l'écosystème open-source Hugging Face / LeRobot, sur OpenCV pour la vision et NumPy pour le calcul ; le modèle cinématique du bras provient du fichier URDF \texttt{so101\_new\_calib.urdf}. Une première politique d'imitation a été entraînée localement, sur le processeur graphique intégré du Mac (MPS). Faute de puissance et de temps, la version finale a toutefois été entraînée sur Google Colab Pro (GPU A100), via la plateforme Hugging Face. Les détails du protocole d'entraînement sont donnés au chapitre~\ref{ch:evaluation}.
 
 \section{Contributions et plan du mémoire}
 
-Les contributions de ce travail sont les suivantes. \emph{(i)}~Une pipeline complète et modulaire de perception, planification et contrôle, entièrement open-source et reproductible, mise en œuvre sur le SO-101 (un bras à bas coût). \emph{(ii)}~Une stratégie de saisie \emph{adaptative à la géométrie} de l'objet, fondée sur un balayage de l'angle d'attaque, qui en constitue l'apport central. \emph{(iii)}~La mise en perspective de cette approche explicite avec une politique d'imitation de bout en bout (ACT) entraînée sur le même bras et la même tâche, et leur comparaison expérimentale. \emph{(iv)}~Une évaluation conduite par deux campagnes de mesures, dont le périmètre et les limites sont déclarés explicitement.
+Les contributions de ce travail sont les suivantes. \emph{(i)}~Un pipeline complet et modulaire de perception, planification et contrôle, entièrement open-source et reproductible, mise en œuvre sur le SO-101 (un bras à bas coût). \emph{(ii)}~Une stratégie de saisie \emph{adaptative à la géométrie} de l'objet, fondée sur un balayage de l'angle d'attaque, qui en constitue l'apport central. \emph{(iii)}~La mise en perspective de cette approche explicite avec une politique d'imitation de bout en bout (ACT) entraînée sur le même bras et la même tâche, et leur comparaison expérimentale. \emph{(iv)}~Une évaluation conduite par deux campagnes de mesures, dont le périmètre et les limites sont déclarés explicitement.
 
 Le mémoire est organisé comme suit. Le chapitre~\ref{ch:etat} situe le travail par rapport à l'état de l'art. Le chapitre~\ref{ch:architecture} présente l'architecture logicielle et matérielle. Le chapitre~\ref{ch:perception} décrit la perception --- détection puis reconstruction 3D ---, le chapitre~\ref{ch:planification} la planification de saisie, et le chapitre~\ref{ch:controle} le contrôle du bras. Le chapitre~\ref{ch:evaluation} rapporte l'évaluation expérimentale des deux méthodes ; le chapitre~\ref{ch:discussion} en discute les limites et les choix, et le chapitre~\ref{ch:conclusion} conclut. Enfin, l'annexe~\ref{ann:repro} rassemble les éléments de reproductibilité.
