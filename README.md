@@ -1,5 +1,7 @@
 <img src="docs/media/logo_unige.png" alt="Université de Genève — Faculté des sciences, Département d'informatique" width="360">
 
+**Français** · [English](README.en.md)
+
 # Saisie d'objets assistée par vision — SO-101
 
 ![Licence : MIT](https://img.shields.io/badge/licence-MIT-green) ![Python 3.12](https://img.shields.io/badge/python-3.12-blue) ![Construit avec LeRobot](https://img.shields.io/badge/construit%20avec-LeRobot-ff9800)
